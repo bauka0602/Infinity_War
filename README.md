@@ -50,8 +50,8 @@ Backend читает переменные из:
 
 ## Тестовые аккаунты
 
-- `admin@university.kz` / `admin123`
-- `teacher@university.kz` / `teacher123`
+- `admin@kazatu.edu.kz` / `admin123`
+- `teacher@kazatu.edu.kz` / `teacher123`
 - `student@university.kz` / `student123`
 
 ## Роли и регистрация

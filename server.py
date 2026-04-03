@@ -63,20 +63,18 @@ def default_store():
     return {
         "users": [
             {
-                "email": "admin@university.kz",
+                "email": "admin@kazatu.edu.kz",
                 "password": "admin123",
                 "displayName": "System Admin",
                 "role": "admin",
                 "token": "seed-admin-token",
-                "teacherCode": None,
             },
             {
-                "email": "teacher@university.kz",
+                "email": "teacher@kazatu.edu.kz",
                 "password": "teacher123",
                 "displayName": "Default Teacher",
                 "role": "teacher",
                 "token": "seed-teacher-token",
-                "teacherCode": "TEACHER-DEMO-001",
             },
             {
                 "email": "student@university.kz",
@@ -84,21 +82,6 @@ def default_store():
                 "displayName": "Default Student",
                 "role": "student",
                 "token": "seed-student-token",
-                "teacherCode": None,
-            },
-        ],
-        "teacherCodes": [
-            {
-                "code": "TEACHER-DEMO-001",
-                "description": "Default teacher code",
-                "assignedEmail": "teacher@university.kz",
-                "isActive": True,
-            },
-            {
-                "code": "TEACHER-DEMO-002",
-                "description": "Reserve teacher code",
-                "assignedEmail": "",
-                "isActive": True,
             },
         ],
         "courses": [
@@ -270,8 +253,8 @@ def seed_from_store(connection, store):
         db_execute(
             connection,
             """
-            INSERT INTO users (email, password, display_name, role, token, teacher_code)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO users (email, password, display_name, role, token)
+            VALUES (?, ?, ?, ?, ?)
             """,
             (
                 user["email"],
@@ -279,22 +262,6 @@ def seed_from_store(connection, store):
                 user["displayName"],
                 user["role"],
                 user["token"],
-                user.get("teacherCode"),
-            ),
-        )
-
-    for teacher_code in store.get("teacherCodes", []):
-        db_execute(
-            connection,
-            """
-            INSERT INTO teacher_codes (code, description, assigned_email, is_active)
-            VALUES (?, ?, ?, ?)
-            """,
-            (
-                teacher_code["code"],
-                teacher_code.get("description", ""),
-                teacher_code.get("assignedEmail", ""),
-                1 if teacher_code.get("isActive", True) else 0,
             ),
         )
 
@@ -397,17 +364,7 @@ def sqlite_schema():
             password TEXT NOT NULL,
             display_name TEXT NOT NULL,
             role TEXT NOT NULL,
-            token TEXT NOT NULL,
-            teacher_code TEXT
-        )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS teacher_codes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            code TEXT NOT NULL UNIQUE,
-            description TEXT,
-            assigned_email TEXT,
-            is_active INTEGER NOT NULL DEFAULT 1
+            token TEXT NOT NULL
         )
         """,
         """
@@ -468,17 +425,7 @@ def postgres_schema():
             password TEXT NOT NULL,
             display_name TEXT NOT NULL,
             role TEXT NOT NULL,
-            token TEXT NOT NULL,
-            teacher_code TEXT
-        )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS teacher_codes (
-            id SERIAL PRIMARY KEY,
-            code TEXT NOT NULL UNIQUE,
-            description TEXT,
-            assigned_email TEXT,
-            is_active INTEGER NOT NULL DEFAULT 1
+            token TEXT NOT NULL
         )
         """,
         """
@@ -535,12 +482,12 @@ def ensure_database():
         schema = postgres_schema() if DB_ENGINE == "postgres" else sqlite_schema()
         for statement in schema:
             db_execute(connection, statement)
-        ensure_users_schema(connection)
+        migrate_default_user_emails(connection)
         connection.commit()
 
         counts = {
             table: query_scalar(connection, f"SELECT COUNT(*) FROM {table}")
-            for table in ("users", "teacher_codes", "courses", "teachers", "rooms", "schedules")
+            for table in ("users", "courses", "teachers", "rooms", "schedules")
         }
 
         if sum(counts.values()) == 0:
@@ -550,43 +497,38 @@ def ensure_database():
             connection.commit()
 
 
-def ensure_users_schema(connection):
-    try:
-        db_execute(connection, "ALTER TABLE users ADD COLUMN teacher_code TEXT")
-    except Exception as exc:
-        if exc.__class__.__name__ not in {
-            "OperationalError",
-            "DuplicateColumn",
-            "DuplicateColumnError",
-            "ProgrammingError",
-        }:
-            raise
+def migrate_default_user_emails(connection):
+    migrate_user_email(
+        connection,
+        role="admin",
+        old_email="admin@university.kz",
+        new_email="admin@kazatu.edu.kz",
+    )
+    migrate_user_email(
+        connection,
+        role="teacher",
+        old_email="teacher@university.kz",
+        new_email="teacher@kazatu.edu.kz",
+    )
+
+
+def migrate_user_email(connection, role, old_email, new_email):
+    existing_new_email = query_one(
+        connection,
+        "SELECT id FROM users WHERE lower(email) = lower(?)",
+        (new_email,),
+    )
+    if existing_new_email is not None:
+        return
 
     db_execute(
         connection,
         """
         UPDATE users
-        SET teacher_code = ?
-        WHERE lower(email) = lower(?) AND role = ? AND (teacher_code IS NULL OR teacher_code = '')
+        SET email = ?
+        WHERE lower(email) = lower(?) AND role = ?
         """,
-        ("TEACHER-DEMO-001", "teacher@university.kz", "teacher"),
-    )
-    db_execute(
-        connection,
-        """
-        INSERT INTO teacher_codes (code, description, assigned_email, is_active)
-        SELECT ?, ?, ?, ?
-        WHERE NOT EXISTS (
-            SELECT 1 FROM teacher_codes WHERE code = ?
-        )
-        """,
-        (
-            "TEACHER-DEMO-001",
-            "Default teacher code",
-            "teacher@university.kz",
-            1,
-            "TEACHER-DEMO-001",
-        ),
+        (new_email, old_email, role),
     )
 
 
@@ -1188,8 +1130,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                 user_id = insert_and_get_id(
                     connection,
                     """
-                    INSERT INTO users (email, password, display_name, role, token, teacher_code)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO users (email, password, display_name, role, token)
+                    VALUES (?, ?, ?, ?, ?)
                     """,
                     (
                         email,
@@ -1197,7 +1139,6 @@ class ApiHandler(BaseHTTPRequestHandler):
                         payload["displayName"],
                         role,
                         token,
-                        None,
                     ),
                 )
                 connection.commit()
