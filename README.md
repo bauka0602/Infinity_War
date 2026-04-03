@@ -31,6 +31,9 @@ PORT=8000
 ALLOWED_ORIGINS=http://localhost:5173
 DATABASE_URL=
 SQLITE_DB_FILE=backend/data/timetable.db
+RESEND_API_KEY=
+RESEND_FROM_EMAIL=no-reply@example.com
+REGISTRATION_CODE_TTL_MINUTES=10
 ```
 
 Backend читает переменные из:
@@ -59,4 +62,14 @@ Backend читает переменные из:
 - публичная регистрация доступна только для `student` и `teacher`
 - `admin` через публичную регистрацию создать нельзя
 - для регистрации `teacher` email должен оканчиваться на `@kazatu.edu.kz`
+- при регистрации отправляется одноразовый код подтверждения на email
+- аккаунт создаётся только после ввода правильного кода из письма
 - при логине выбранная роль должна совпадать с ролью аккаунта
+
+## Email verification
+
+Для отправки кодов используется Resend.
+
+- `RESEND_API_KEY` - API ключ Resend
+- `RESEND_FROM_EMAIL` - подтверждённый email отправителя в Resend
+- `REGISTRATION_CODE_TTL_MINUTES` - срок жизни кода в минутах
