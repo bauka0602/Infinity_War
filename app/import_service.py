@@ -100,6 +100,24 @@ ROOM_TYPE_ALIASES = {
     "семинар": "seminar",
 }
 
+TEMPLATE_HEADERS = {
+    "Courses": ["name", "code", "credits", "hours", "description"],
+    "Teachers": ["name", "email", "phone", "specialization", "max_hours_per_week"],
+    "Rooms": ["number", "capacity", "building", "type", "equipment"],
+}
+
+TEMPLATE_ROWS = {
+    "Courses": [
+        ["Programming 1", "CS101", 3, 45, "Introduction to programming"],
+    ],
+    "Teachers": [
+        ["Aruzhan Saparova", "aruzhan@kazatu.edu.kz", "+7 777 000 00 00", "Computer Science", 20],
+    ],
+    "Rooms": [
+        ["101", 30, "Main Building", "lecture", "Projector, whiteboard"],
+    ],
+}
+
 
 def _load_workbook(file_bytes):
     try:
@@ -400,3 +418,32 @@ def import_excel_data(headers, payload):
             "updated": total_updated,
         },
     }
+
+
+def generate_import_template(headers):
+    user = require_auth_user(headers)
+    if user["role"] != "admin":
+        raise ApiError(403, "forbidden", "Недостаточно прав")
+
+    try:
+        from openpyxl import Workbook
+    except ImportError as exc:
+        raise ApiError(
+            500,
+            "internal_server_error",
+            "Excel import dependency is not installed on the server.",
+        ) from exc
+
+    workbook = Workbook()
+    default_sheet = workbook.active
+    workbook.remove(default_sheet)
+
+    for sheet_name, headers_row in TEMPLATE_HEADERS.items():
+        sheet = workbook.create_sheet(title=sheet_name)
+        sheet.append(headers_row)
+        for row in TEMPLATE_ROWS[sheet_name]:
+            sheet.append(row)
+
+    buffer = BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()

@@ -15,7 +15,7 @@ from .collections import create_collection_item, delete_collection_item, list_co
 from .config import ALLOWED_ORIGINS, DB_ENGINE, DB_LOCK
 from .db import get_connection, query_one
 from .errors import ApiError
-from .import_service import import_excel_data
+from .import_service import generate_import_template, import_excel_data
 from .scheduling import build_schedule
 
 
@@ -65,6 +65,15 @@ class ApiHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_binary(self, status, body, content_type, filename=None):
+        self.send_response(status)
+        self._set_headers(content_type)
+        self.send_header("Content-Length", str(len(body)))
+        if filename:
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.end_headers()
+        self.wfile.write(body)
+
     def read_json(self):
         content_length = int(self.headers.get("Content-Length", "0"))
         if content_length == 0:
@@ -109,6 +118,16 @@ class ApiHandler(BaseHTTPRequestHandler):
 
             if api_path == "/import/excel" and method == "POST":
                 self.send_json(200, import_excel_data(self.headers, self.read_json()))
+                return
+
+            if api_path == "/import/template" and method == "GET":
+                template_bytes = generate_import_template(self.headers)
+                self.send_binary(
+                    200,
+                    template_bytes,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "timetable-import-template.xlsx",
+                )
                 return
 
             if api_path == "/schedules/generate" and method == "POST":
