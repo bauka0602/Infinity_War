@@ -24,6 +24,9 @@ def sanitize_user(row):
         "avatarData": row.get("avatar_data"),
         "department": row.get("department", ""),
         "programmeName": row.get("programme", ""),
+        "groupId": row.get("group_id"),
+        "groupName": row.get("group_name", ""),
+        "subgroup": row.get("subgroup", ""),
     }
 
 

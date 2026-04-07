@@ -198,6 +198,20 @@ def seed_from_store(connection, store):
             ),
         )
 
+    for group in store.get("groups", []):
+        db_execute(
+            connection,
+            """
+            INSERT INTO groups (name, student_count, has_subgroups)
+            VALUES (?, ?, ?)
+            """,
+            (
+                group.get("name"),
+                group.get("student_count"),
+                group.get("has_subgroups", 0),
+            ),
+        )
+
     if store["schedules"]:
         db_executemany(
             connection,
@@ -230,12 +244,14 @@ def seed_from_store(connection, store):
         db_execute(
             connection,
             """
-            INSERT INTO sections (course_id, course_name, classes_count)
-            VALUES (?, ?, ?)
+            INSERT INTO sections (course_id, course_name, group_id, group_name, classes_count)
+            VALUES (?, ?, ?, ?, ?)
             """,
             (
                 section.get("course_id"),
                 section.get("course_name"),
+                section.get("group_id"),
+                section.get("group_name", ""),
                 section.get("class_count", section.get("classes_count")),
             ),
         )
@@ -266,7 +282,10 @@ def sqlite_schema():
             token TEXT NOT NULL,
             avatar_data TEXT,
             department TEXT,
-            programme TEXT
+            programme TEXT,
+            group_id INTEGER,
+            group_name TEXT,
+            subgroup TEXT
         )
         """,
         """
@@ -308,14 +327,26 @@ def sqlite_schema():
         )
         """,
         """
+        CREATE TABLE IF NOT EXISTS groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            student_count INTEGER NOT NULL,
+            has_subgroups INTEGER DEFAULT 0
+        )
+        """,
+        """
         CREATE TABLE IF NOT EXISTS schedules (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            section_id INTEGER,
             course_id INTEGER,
             course_name TEXT NOT NULL,
             teacher_id INTEGER,
             teacher_name TEXT NOT NULL,
             room_id INTEGER,
             room_number TEXT NOT NULL,
+            group_id INTEGER,
+            group_name TEXT,
+            subgroup TEXT,
             day TEXT NOT NULL,
             start_hour INTEGER NOT NULL,
             semester INTEGER,
@@ -328,6 +359,8 @@ def sqlite_schema():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             course_id INTEGER NOT NULL,
             course_name TEXT NOT NULL,
+            group_id INTEGER,
+            group_name TEXT,
             classes_count INTEGER NOT NULL
         )
         """,
@@ -346,7 +379,10 @@ def postgres_schema():
             token TEXT NOT NULL,
             avatar_data TEXT,
             department TEXT,
-            programme TEXT
+            programme TEXT,
+            group_id INTEGER,
+            group_name TEXT,
+            subgroup TEXT
         )
         """,
         """
@@ -388,14 +424,26 @@ def postgres_schema():
         )
         """,
         """
+        CREATE TABLE IF NOT EXISTS groups (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            student_count INTEGER NOT NULL,
+            has_subgroups INTEGER DEFAULT 0
+        )
+        """,
+        """
         CREATE TABLE IF NOT EXISTS schedules (
             id SERIAL PRIMARY KEY,
+            section_id INTEGER,
             course_id INTEGER,
             course_name TEXT NOT NULL,
             teacher_id INTEGER,
             teacher_name TEXT NOT NULL,
             room_id INTEGER,
             room_number TEXT NOT NULL,
+            group_id INTEGER,
+            group_name TEXT,
+            subgroup TEXT,
             day TEXT NOT NULL,
             start_hour INTEGER NOT NULL,
             semester INTEGER,
@@ -408,6 +456,8 @@ def postgres_schema():
             id SERIAL PRIMARY KEY,
             course_id INTEGER NOT NULL,
             course_name TEXT NOT NULL,
+            group_id INTEGER,
+            group_name TEXT,
             classes_count INTEGER NOT NULL
         )
         """,
@@ -465,6 +515,9 @@ def ensure_database():
         ensure_column(connection, "users", "avatar_data", "TEXT")
         ensure_column(connection, "users", "department", "TEXT")
         ensure_column(connection, "users", "programme", "TEXT")
+        ensure_column(connection, "users", "group_id", "INTEGER")
+        ensure_column(connection, "users", "group_name", "TEXT")
+        ensure_column(connection, "users", "subgroup", "TEXT")
         ensure_column(connection, "courses", "year", "INTEGER")
         ensure_column(connection, "courses", "semester", "INTEGER")
         ensure_column(connection, "courses", "department", "TEXT")
@@ -475,12 +528,19 @@ def ensure_database():
         ensure_column(connection, "teachers", "weekly_hours_limit", "INTEGER")
         ensure_column(connection, "rooms", "department", "TEXT")
         ensure_column(connection, "rooms", "available", "INTEGER DEFAULT 1")
+        ensure_column(connection, "groups", "has_subgroups", "INTEGER DEFAULT 0")
+        ensure_column(connection, "sections", "group_id", "INTEGER")
+        ensure_column(connection, "sections", "group_name", "TEXT")
+        ensure_column(connection, "schedules", "section_id", "INTEGER")
+        ensure_column(connection, "schedules", "group_id", "INTEGER")
+        ensure_column(connection, "schedules", "group_name", "TEXT")
+        ensure_column(connection, "schedules", "subgroup", "TEXT")
         migrate_default_user_emails(connection)
         connection.commit()
 
         counts = {
             table: query_scalar(connection, f"SELECT COUNT(*) FROM {table}")
-            for table in ("users", "courses", "teachers", "rooms", "schedules", "sections")
+            for table in ("users", "courses", "teachers", "rooms", "groups", "schedules", "sections")
         }
 
         if sum(counts.values()) == 0:

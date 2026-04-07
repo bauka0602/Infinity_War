@@ -25,7 +25,7 @@ def require_auth_user(headers):
             user = query_one(
                 connection,
                 """
-                SELECT id, email, full_name, role, token, avatar_data, department, programme
+                SELECT id, email, full_name, role, token, avatar_data, department, programme, group_id, group_name, subgroup
                 FROM users
                 WHERE token = ?
                 """,
@@ -53,6 +53,8 @@ def register_user(payload):
     email = payload["email"].strip()
     department = (payload.get("department") or "").strip()
     programme_name = (payload.get("programmeName") or "").strip()
+    subgroup = (payload.get("subgroup") or "").strip().upper()
+    group_id = payload.get("groupId")
     if role not in {"student", "teacher"}:
         raise ApiError(
             400,
@@ -66,6 +68,8 @@ def register_user(payload):
             student_missing.append("department")
         if not programme_name:
             student_missing.append("programmeName")
+        if not group_id:
+            student_missing.append("groupId")
         if student_missing:
             raise ApiError(
                 400,
@@ -74,10 +78,45 @@ def register_user(payload):
                 {"fields": student_missing},
             )
 
+    selected_group = None
+
     ensure_teacher_email_allowed(email, role)
 
     with DB_LOCK:
         with get_connection() as connection:
+            if role == "student":
+                try:
+                    group_id = int(group_id)
+                except (TypeError, ValueError) as exc:
+                    raise ApiError(
+                        400,
+                        "fill_required_fields",
+                        "Заполните поля: groupId",
+                        {"fields": ["groupId"]},
+                    ) from exc
+
+                selected_group = query_one(
+                    connection,
+                    """
+                    SELECT id, name, has_subgroups
+                    FROM groups
+                    WHERE id = ?
+                    """,
+                    (group_id,),
+                )
+                if selected_group is None:
+                    raise ApiError(400, "bad_request", "Выбрана некорректная группа")
+                if selected_group.get("has_subgroups"):
+                    if subgroup not in {"A", "B"}:
+                        raise ApiError(
+                            400,
+                            "fill_required_fields",
+                            "Заполните поля: subgroup",
+                            {"fields": ["subgroup"]},
+                        )
+                else:
+                    subgroup = ""
+
             existing = query_one(
                 connection,
                 "SELECT id FROM users WHERE lower(email) = lower(?)",
@@ -95,9 +134,9 @@ def register_user(payload):
                 connection,
                 """
                 INSERT INTO users (
-                    email, password, full_name, role, token, avatar_data, department, programme
+                    email, password, full_name, role, token, avatar_data, department, programme, group_id, group_name, subgroup
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     email,
@@ -108,6 +147,9 @@ def register_user(payload):
                     None,
                     department if role == "student" else "",
                     programme_name if role == "student" else "",
+                    selected_group["id"] if role == "student" else None,
+                    selected_group["name"] if role == "student" else "",
+                    subgroup if role == "student" else "",
                 ),
             )
             connection.commit()

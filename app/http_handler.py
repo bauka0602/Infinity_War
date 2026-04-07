@@ -14,9 +14,9 @@ from .auth_service import (
 from .admin_service import clear_all_data, clear_collection_data
 from .collections import create_collection_item, delete_collection_item, list_collection, update_collection_item
 from .config import ALLOWED_ORIGINS, DB_ENGINE, DB_LOCK
-from .db import get_connection, query_one
+from .db import get_connection, query_all, query_one
 from .errors import ApiError
-from .import_service import generate_import_template, import_excel_data
+from .import_service import generate_import_template, generate_schedule_export, import_excel_data
 from .scheduling import build_schedule
 
 
@@ -117,6 +117,22 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self.send_json(200, update_profile_avatar(self.headers, self.read_json()))
                 return
 
+            if api_path == "/public/groups" and method == "GET":
+                with DB_LOCK:
+                    with get_connection() as connection:
+                        self.send_json(
+                            200,
+                            query_all(
+                                connection,
+                                """
+                                SELECT id, name, student_count, has_subgroups
+                                FROM groups
+                                ORDER BY name, id
+                                """,
+                            ),
+                        )
+                return
+
             if api_path == "/import/excel" and method == "POST":
                 self.send_json(200, import_excel_data(self.headers, self.read_json()))
                 return
@@ -128,6 +144,16 @@ class ApiHandler(BaseHTTPRequestHandler):
                     template_bytes,
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     "timetable-import-template.xlsx",
+                )
+                return
+
+            if api_path == "/export/schedule" and method == "GET":
+                export_bytes = generate_schedule_export(self.headers)
+                self.send_binary(
+                    200,
+                    export_bytes,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "schedule-export.xlsx",
                 )
                 return
 
@@ -168,7 +194,7 @@ class ApiHandler(BaseHTTPRequestHandler):
             return
 
         collection = parts[0]
-        if collection not in {"courses", "teachers", "rooms", "schedules", "sections"}:
+        if collection not in {"courses", "teachers", "rooms", "groups", "schedules", "sections"}:
             self.send_json(404, {"error": "Not found", "errorCode": "not_found"})
             return
 
@@ -178,7 +204,7 @@ class ApiHandler(BaseHTTPRequestHandler):
             self.send_json(exc.status, {"error": exc.message, "errorCode": exc.code})
             return
 
-        if collection in {"courses", "teachers", "rooms", "sections"} and user["role"] != "admin":
+        if collection in {"courses", "teachers", "rooms", "groups", "sections"} and user["role"] != "admin":
             self.send_json(403, {"error": "Недостаточно прав", "errorCode": "forbidden"})
             return
 

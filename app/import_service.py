@@ -4,7 +4,7 @@ from io import BytesIO
 from .auth_service import require_auth_user
 from .collections import normalize_number_fields
 from .config import DB_LOCK
-from .db import db_execute, get_connection, insert_and_get_id, query_one
+from .db import db_execute, get_connection, insert_and_get_id, query_all, query_one
 from .errors import ApiError
 
 SHEET_ALIASES = {
@@ -14,6 +14,10 @@ SHEET_ALIASES = {
     "teacher": "teachers",
     "rooms": "rooms",
     "room": "rooms",
+    "groups": "groups",
+    "group": "groups",
+    "sections": "sections",
+    "section": "sections",
 }
 
 COURSE_HEADERS = {
@@ -109,10 +113,41 @@ ROOM_HEADERS = {
     "жабдықтар": "equipment",
 }
 
+GROUP_HEADERS = {
+    "name": "name",
+    "group_name": "name",
+    "group_number": "name",
+    "номер_группы": "name",
+    "топ_нөмірі": "name",
+    "student_count": "student_count",
+    "students_count": "student_count",
+    "количество_студентов": "student_count",
+    "студент_саны": "student_count",
+    "has_subgroups": "has_subgroups",
+    "subgroups": "has_subgroups",
+    "подгруппы": "has_subgroups",
+}
+
+SECTION_HEADERS = {
+    "course_code": "course_code",
+    "code": "course_code",
+    "код_курса": "course_code",
+    "group_name": "group_name",
+    "group_number": "group_name",
+    "номер_группы": "group_name",
+    "топ_нөмірі": "group_name",
+    "classes_count": "classes_count",
+    "class_count": "classes_count",
+    "количество_занятий": "classes_count",
+    "сабақ_саны": "classes_count",
+}
+
 REQUIRED_FIELDS = {
     "courses": ["code", "name", "study_year", "semester", "programme_name", "department"],
     "teachers": ["name", "email"],
     "rooms": ["number", "capacity", "department"],
+    "groups": ["name", "student_count"],
+    "sections": ["course_code", "group_name", "classes_count"],
 }
 
 ROOM_TYPE_ALIASES = {
@@ -150,6 +185,8 @@ TEMPLATE_HEADERS = {
     ],
     "Teachers": ["name", "email", "phone", "faculty_institute"],
     "Rooms": ["number", "capacity", "building", "type", "department", "is_available", "equipment"],
+    "Groups": ["name", "student_count", "has_subgroups"],
+    "Sections": ["course_code", "group_name", "classes_count"],
 }
 
 TEMPLATE_ROWS = {
@@ -183,6 +220,12 @@ TEMPLATE_ROWS = {
             "yes",
             "Projector, whiteboard",
         ],
+    ],
+    "Groups": [
+        ["SE-23-01", 24, "yes"],
+    ],
+    "Sections": [
+        ["CS101", "SE-23-01", 2],
     ],
 }
 
@@ -498,6 +541,132 @@ def _upsert_room(connection, payload):
     return "inserted"
 
 
+def _normalize_bool(value):
+    if value in (None, ""):
+        return 0
+    if isinstance(value, bool):
+        return 1 if value else 0
+    normalized = _normalize_header(value).replace("_", " ")
+    if normalized in {"1", "true", "yes", "да", "иә", "a/b", "a / b"}:
+        return 1
+    return 0
+
+
+def _upsert_group(connection, payload):
+    normalized = normalize_number_fields(payload, ["student_count"])
+    has_subgroups = _normalize_bool(payload.get("has_subgroups"))
+    existing = query_one(
+        connection,
+        "SELECT id FROM groups WHERE lower(name) = lower(?)",
+        (normalized["name"],),
+    )
+    if existing:
+        db_execute(
+            connection,
+            """
+            UPDATE groups
+            SET name = ?, student_count = ?, has_subgroups = ?
+            WHERE id = ?
+            """,
+            (
+                normalized["name"],
+                normalized["student_count"],
+                has_subgroups,
+                existing["id"],
+            ),
+        )
+        return "updated"
+
+    insert_and_get_id(
+        connection,
+        """
+        INSERT INTO groups (name, student_count, has_subgroups)
+        VALUES (?, ?, ?)
+        """,
+        (
+            normalized["name"],
+            normalized["student_count"],
+            has_subgroups,
+        ),
+    )
+    return "inserted"
+
+
+def _upsert_section(connection, payload):
+    normalized = normalize_number_fields(payload, ["classes_count"])
+    course = query_one(
+        connection,
+        """
+        SELECT id, name, code
+        FROM courses
+        WHERE lower(code) = lower(?)
+        """,
+        (normalized["course_code"],),
+    )
+    if not course:
+        raise ApiError(
+            400,
+            "bad_request",
+            f"Для секции не найден курс с кодом '{normalized['course_code']}'.",
+        )
+
+    group = query_one(
+        connection,
+        """
+        SELECT id, name
+        FROM groups
+        WHERE lower(name) = lower(?)
+        """,
+        (normalized["group_name"],),
+    )
+    if not group:
+        raise ApiError(
+            400,
+            "bad_request",
+            f"Для секции не найдена группа '{normalized['group_name']}'.",
+        )
+
+    existing = query_one(
+        connection,
+        "SELECT id FROM sections WHERE course_id = ? AND group_id = ?",
+        (course["id"], group["id"]),
+    )
+    if existing:
+        db_execute(
+            connection,
+            """
+            UPDATE sections
+            SET course_id = ?, course_name = ?, group_id = ?, group_name = ?, classes_count = ?
+            WHERE id = ?
+            """,
+            (
+                course["id"],
+                course["name"],
+                group["id"],
+                group["name"],
+                normalized["classes_count"],
+                existing["id"],
+            ),
+        )
+        return "updated"
+
+    insert_and_get_id(
+        connection,
+        """
+        INSERT INTO sections (course_id, course_name, group_id, group_name, classes_count)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            course["id"],
+            course["name"],
+            group["id"],
+            group["name"],
+            normalized["classes_count"],
+        ),
+    )
+    return "inserted"
+
+
 def import_excel_data(headers, payload):
     user = require_auth_user(headers)
     if user["role"] != "admin":
@@ -508,12 +677,17 @@ def import_excel_data(headers, payload):
         "courses": COURSE_HEADERS,
         "teachers": TEACHER_HEADERS,
         "rooms": ROOM_HEADERS,
+        "groups": GROUP_HEADERS,
+        "sections": SECTION_HEADERS,
     }
     recognized_sheets = []
+    parsed_sheets = {}
     summary = {
         "courses": {"inserted": 0, "updated": 0},
         "teachers": {"inserted": 0, "updated": 0},
         "rooms": {"inserted": 0, "updated": 0},
+        "groups": {"inserted": 0, "updated": 0},
+        "sections": {"inserted": 0, "updated": 0},
     }
 
     with DB_LOCK:
@@ -524,22 +698,29 @@ def import_excel_data(headers, payload):
                     continue
 
                 recognized_sheets.append(sheet.title)
-                rows = _read_sheet_rows(sheet, sheet_map[entity_name])
+                parsed_sheets[entity_name] = _read_sheet_rows(sheet, sheet_map[entity_name])
+
+            for entity_name in ("courses", "teachers", "rooms", "groups", "sections"):
+                rows = parsed_sheets.get(entity_name, [])
                 for row_index, row_payload in rows:
                     _validate_required_fields(entity_name, row_index, row_payload)
                     if entity_name == "courses":
                         result = _upsert_course(connection, row_payload)
                     elif entity_name == "teachers":
                         result = _upsert_teacher(connection, row_payload)
-                    else:
+                    elif entity_name == "rooms":
                         result = _upsert_room(connection, row_payload)
+                    elif entity_name == "groups":
+                        result = _upsert_group(connection, row_payload)
+                    else:
+                        result = _upsert_section(connection, row_payload)
                     summary[entity_name][result] += 1
 
             if not recognized_sheets:
                 raise ApiError(
                     400,
                     "bad_request",
-                    "В Excel не найдены листы Courses, Teachers или Rooms.",
+                    "В Excel не найдены листы Courses, Teachers, Rooms, Groups или Sections.",
                 )
 
             connection.commit()
@@ -580,6 +761,83 @@ def generate_import_template(headers):
         sheet.append(headers_row)
         for row in TEMPLATE_ROWS[sheet_name]:
             sheet.append(row)
+
+    buffer = BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+def generate_schedule_export(headers):
+    user = require_auth_user(headers)
+    if user["role"] != "admin":
+        raise ApiError(403, "forbidden", "Недостаточно прав")
+
+    try:
+        from openpyxl import Workbook
+    except ImportError as exc:
+        raise ApiError(
+            500,
+            "internal_server_error",
+            "Excel export dependency is not installed on the server.",
+        ) from exc
+
+    with DB_LOCK:
+        with get_connection() as connection:
+            schedules = query_all(
+                connection,
+                """
+                SELECT
+                    course_name,
+                    group_name,
+                    subgroup,
+                    teacher_name,
+                    room_number,
+                    day,
+                    start_hour,
+                    semester,
+                    year,
+                    algorithm
+                FROM schedules
+                ORDER BY day, start_hour, course_name, group_name, id
+                """,
+            )
+
+    if not schedules:
+        raise ApiError(400, "bad_request", "Расписание ещё не сгенерировано.")
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Schedule"
+    sheet.append(
+        [
+            "course_name",
+            "group_name",
+            "subgroup",
+            "teacher_name",
+            "room_number",
+            "day",
+            "start_hour",
+            "semester",
+            "year",
+            "algorithm",
+        ]
+    )
+
+    for item in schedules:
+        sheet.append(
+            [
+                item.get("course_name", ""),
+                item.get("group_name", ""),
+                item.get("subgroup", ""),
+                item.get("teacher_name", ""),
+                item.get("room_number", ""),
+                item.get("day", ""),
+                item.get("start_hour", ""),
+                item.get("semester", ""),
+                item.get("year", ""),
+                item.get("algorithm", ""),
+            ]
+        )
 
     buffer = BytesIO()
     workbook.save(buffer)

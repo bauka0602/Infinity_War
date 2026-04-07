@@ -58,11 +58,21 @@ def list_collection(connection, collection, query, user=None):
             """,
         )
 
+    if collection == "groups":
+        return query_all(
+            connection,
+            """
+            SELECT id, name, student_count, has_subgroups
+            FROM groups
+            ORDER BY id
+            """,
+        )
+
     if collection == "sections":
         return query_all(
             connection,
             """
-            SELECT id, course_id, course_name, classes_count AS class_count
+            SELECT id, course_id, course_name, group_id, group_name, classes_count AS class_count
             FROM sections
             ORDER BY id
             """,
@@ -80,13 +90,15 @@ def list_collection(connection, collection, query, user=None):
         clauses.append("s.year = ?")
         params.append(year)
     if collection == "schedules" and user and user.get("role") == "student":
-        if not user.get("department") or not user.get("programme"):
+        if not user.get("group_id"):
             return []
-        from_sql += " JOIN courses c ON c.id = s.course_id"
-        clauses.append("c.department = ?")
-        params.append(user["department"])
-        clauses.append("c.programme = ?")
-        params.append(user["programme"])
+        clauses.append("s.group_id = ?")
+        params.append(user["group_id"])
+        if user.get("subgroup") in {"A", "B"}:
+            clauses.append("(coalesce(s.subgroup, '') = '' OR upper(s.subgroup) = ?)")
+            params.append(user["subgroup"])
+        else:
+            clauses.append("coalesce(s.subgroup, '') = ''")
     elif collection == "schedules" and user and user.get("role") == "teacher":
         from_sql += " LEFT JOIN teachers t ON t.id = s.teacher_id"
         clauses.append(
@@ -100,8 +112,8 @@ def list_collection(connection, collection, query, user=None):
         connection,
         f"""
         SELECT
-            s.id, s.course_id, s.course_name, s.teacher_id, s.teacher_name, s.room_id, s.room_number,
-            s.day, s.start_hour, s.semester, s.year, s.algorithm
+            s.id, s.section_id, s.course_id, s.course_name, s.teacher_id, s.teacher_name, s.room_id, s.room_number,
+            s.group_id, s.group_name, s.subgroup, s.day, s.start_hour, s.semester, s.year, s.algorithm
         {from_sql}
         {where_sql}
         ORDER BY s.day, s.start_hour, s.id
@@ -207,17 +219,44 @@ def create_collection_item(connection, collection, payload):
             (item_id,),
         )
 
-    if collection == "sections":
-        normalized = normalize_number_fields(payload, ["course_id", "class_count"])
+    if collection == "groups":
+        normalized = normalize_number_fields(payload, ["student_count", "has_subgroups"])
         item_id = insert_and_get_id(
             connection,
             """
-            INSERT INTO sections (course_id, course_name, classes_count)
+            INSERT INTO groups (name, student_count, has_subgroups)
             VALUES (?, ?, ?)
+            """,
+            (
+                normalized.get("name"),
+                normalized.get("student_count"),
+                1 if normalized.get("has_subgroups", 0) else 0,
+            ),
+        )
+        connection.commit()
+        return query_one(
+            connection,
+            """
+            SELECT id, name, student_count, has_subgroups
+            FROM groups
+            WHERE id = ?
+            """,
+            (item_id,),
+        )
+
+    if collection == "sections":
+        normalized = normalize_number_fields(payload, ["course_id", "group_id", "class_count"])
+        item_id = insert_and_get_id(
+            connection,
+            """
+            INSERT INTO sections (course_id, course_name, group_id, group_name, classes_count)
+            VALUES (?, ?, ?, ?, ?)
             """,
             (
                 normalized.get("course_id"),
                 normalized.get("course_name"),
+                normalized.get("group_id"),
+                normalized.get("group_name", ""),
                 normalized.get("class_count", normalized.get("classes_count")),
             ),
         )
@@ -225,7 +264,7 @@ def create_collection_item(connection, collection, payload):
         return query_one(
             connection,
             """
-            SELECT id, course_id, course_name, classes_count AS class_count
+            SELECT id, course_id, course_name, group_id, group_name, classes_count AS class_count
             FROM sections
             WHERE id = ?
             """,
@@ -235,24 +274,28 @@ def create_collection_item(connection, collection, payload):
     if collection == "schedules":
         normalized = normalize_number_fields(
             payload,
-            ["course_id", "teacher_id", "room_id", "start_hour", "semester", "year"],
+            ["section_id", "course_id", "teacher_id", "room_id", "group_id", "start_hour", "semester", "year"],
         )
         item_id = insert_and_get_id(
             connection,
             """
             INSERT INTO schedules (
-                course_id, course_name, teacher_id, teacher_name, room_id, room_number,
-                day, start_hour, semester, year, algorithm
+                section_id, course_id, course_name, teacher_id, teacher_name, room_id, room_number,
+                group_id, group_name, subgroup, day, start_hour, semester, year, algorithm
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                normalized.get("section_id"),
                 normalized.get("course_id"),
                 normalized.get("course_name"),
                 normalized.get("teacher_id"),
                 normalized.get("teacher_name"),
                 normalized.get("room_id"),
                 normalized.get("room_number"),
+                normalized.get("group_id"),
+                normalized.get("group_name"),
+                normalized.get("subgroup", ""),
                 normalized.get("day"),
                 normalized.get("start_hour"),
                 normalized.get("semester"),
@@ -265,8 +308,8 @@ def create_collection_item(connection, collection, payload):
             connection,
             """
             SELECT
-                id, course_id, course_name, teacher_id, teacher_name, room_id, room_number,
-                day, start_hour, semester, year, algorithm
+                id, section_id, course_id, course_name, teacher_id, teacher_name, room_id, room_number,
+                group_id, group_name, subgroup, day, start_hour, semester, year, algorithm
             FROM schedules
             WHERE id = ?
             """,
@@ -379,18 +422,47 @@ def update_collection_item(connection, collection, item_id, payload):
             (item_id,),
         )
 
+    if collection == "groups":
+        normalized = normalize_number_fields(payload, ["student_count", "has_subgroups"])
+        db_execute(
+            connection,
+            """
+            UPDATE groups
+            SET name = ?, student_count = ?, has_subgroups = ?
+            WHERE id = ?
+            """,
+            (
+                normalized.get("name"),
+                normalized.get("student_count"),
+                1 if normalized.get("has_subgroups", 0) else 0,
+                item_id,
+            ),
+        )
+        connection.commit()
+        return query_one(
+            connection,
+            """
+            SELECT id, name, student_count, has_subgroups
+            FROM groups
+            WHERE id = ?
+            """,
+            (item_id,),
+        )
+
     if collection == "sections":
-        normalized = normalize_number_fields(payload, ["course_id", "class_count"])
+        normalized = normalize_number_fields(payload, ["course_id", "group_id", "class_count"])
         db_execute(
             connection,
             """
             UPDATE sections
-            SET course_id = ?, course_name = ?, classes_count = ?
+            SET course_id = ?, course_name = ?, group_id = ?, group_name = ?, classes_count = ?
             WHERE id = ?
             """,
             (
                 normalized.get("course_id"),
                 normalized.get("course_name"),
+                normalized.get("group_id"),
+                normalized.get("group_name", ""),
                 normalized.get("class_count", normalized.get("classes_count")),
                 item_id,
             ),
@@ -399,7 +471,7 @@ def update_collection_item(connection, collection, item_id, payload):
         return query_one(
             connection,
             """
-            SELECT id, course_id, course_name, classes_count AS class_count
+            SELECT id, course_id, course_name, group_id, group_name, classes_count AS class_count
             FROM sections
             WHERE id = ?
             """,
@@ -409,25 +481,29 @@ def update_collection_item(connection, collection, item_id, payload):
     if collection == "schedules":
         normalized = normalize_number_fields(
             payload,
-            ["course_id", "teacher_id", "room_id", "start_hour", "semester", "year"],
+            ["section_id", "course_id", "teacher_id", "room_id", "group_id", "start_hour", "semester", "year"],
         )
         db_execute(
             connection,
             """
             UPDATE schedules
             SET
-                course_id = ?, course_name = ?, teacher_id = ?, teacher_name = ?,
-                room_id = ?, room_number = ?, day = ?, start_hour = ?,
-                semester = ?, year = ?, algorithm = ?
+                section_id = ?, course_id = ?, course_name = ?, teacher_id = ?, teacher_name = ?,
+                room_id = ?, room_number = ?, group_id = ?, group_name = ?, subgroup = ?,
+                day = ?, start_hour = ?, semester = ?, year = ?, algorithm = ?
             WHERE id = ?
             """,
             (
+                normalized.get("section_id"),
                 normalized.get("course_id"),
                 normalized.get("course_name"),
                 normalized.get("teacher_id"),
                 normalized.get("teacher_name"),
                 normalized.get("room_id"),
                 normalized.get("room_number"),
+                normalized.get("group_id"),
+                normalized.get("group_name"),
+                normalized.get("subgroup", ""),
                 normalized.get("day"),
                 normalized.get("start_hour"),
                 normalized.get("semester"),
@@ -441,8 +517,8 @@ def update_collection_item(connection, collection, item_id, payload):
             connection,
             """
             SELECT
-                id, course_id, course_name, teacher_id, teacher_name, room_id, room_number,
-                day, start_hour, semester, year, algorithm
+                id, section_id, course_id, course_name, teacher_id, teacher_name, room_id, room_number,
+                group_id, group_name, subgroup, day, start_hour, semester, year, algorithm
             FROM schedules
             WHERE id = ?
             """,
