@@ -3,7 +3,7 @@ from .config import DB_LOCK
 from .db import db_execute, get_connection
 from .errors import ApiError
 
-CLEARABLE_COLLECTIONS = {"courses", "teachers", "rooms", "schedules"}
+CLEARABLE_COLLECTIONS = {"courses", "teachers", "rooms", "schedules", "sections"}
 
 
 def _require_admin(headers):
@@ -21,6 +21,11 @@ def clear_collection_data(headers, collection):
 
     with DB_LOCK:
         with get_connection() as connection:
+            if collection == "courses":
+                db_execute(connection, "DELETE FROM schedules")
+                db_execute(connection, "DELETE FROM sections")
+            elif collection in {"teachers", "rooms"}:
+                db_execute(connection, "DELETE FROM schedules")
             db_execute(connection, f"DELETE FROM {collection}")
             connection.commit()
 
@@ -32,11 +37,11 @@ def clear_all_data(headers):
 
     with DB_LOCK:
         with get_connection() as connection:
-            for collection in ("schedules", "courses", "teachers", "rooms"):
+            for collection in ("schedules", "sections", "courses", "teachers", "rooms"):
                 db_execute(connection, f"DELETE FROM {collection}")
             connection.commit()
 
     return {
         "success": True,
-        "collections": ["courses", "teachers", "rooms", "schedules"],
+        "collections": ["courses", "teachers", "rooms", "schedules", "sections"],
     }

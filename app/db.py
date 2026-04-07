@@ -130,9 +130,9 @@ def seed_from_store(connection, store):
             """
             INSERT INTO courses (
                 name, code, credits, hours, description,
-                study_year, semester, department, instructor_id, instructor_name
+                study_year, semester, department, instructor_id, instructor_name, programme_name
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 course["name"],
@@ -145,6 +145,7 @@ def seed_from_store(connection, store):
                 course.get("department", ""),
                 course.get("instructor_id"),
                 course.get("instructor_name", ""),
+                course.get("programme_name", ""),
             ),
         )
 
@@ -168,8 +169,8 @@ def seed_from_store(connection, store):
         db_execute(
             connection,
             """
-            INSERT INTO rooms (number, capacity, building, type, equipment)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO rooms (number, capacity, building, type, equipment, department, is_available)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 room["number"],
@@ -177,6 +178,8 @@ def seed_from_store(connection, store):
                 room.get("building", ""),
                 room.get("type", ""),
                 room.get("equipment", ""),
+                room.get("department", ""),
+                room.get("is_available", 1),
             ),
         )
 
@@ -206,6 +209,20 @@ def seed_from_store(connection, store):
                 )
                 for schedule in store["schedules"]
             ],
+        )
+
+    for section in store.get("sections", []):
+        db_execute(
+            connection,
+            """
+            INSERT INTO sections (course_id, course_name, class_count)
+            VALUES (?, ?, ?)
+            """,
+            (
+                section.get("course_id"),
+                section.get("course_name"),
+                section.get("class_count"),
+            ),
         )
 
 
@@ -247,7 +264,8 @@ def sqlite_schema():
             semester INTEGER,
             department TEXT,
             instructor_id INTEGER,
-            instructor_name TEXT
+            instructor_name TEXT,
+            programme_name TEXT
         )
         """,
         """
@@ -267,7 +285,9 @@ def sqlite_schema():
             capacity INTEGER,
             building TEXT,
             type TEXT,
-            equipment TEXT
+            equipment TEXT,
+            department TEXT,
+            is_available INTEGER DEFAULT 1
         )
         """,
         """
@@ -284,6 +304,14 @@ def sqlite_schema():
             semester INTEGER,
             year INTEGER,
             algorithm TEXT
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS sections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            course_id INTEGER NOT NULL,
+            course_name TEXT NOT NULL,
+            class_count INTEGER NOT NULL
         )
         """,
     ]
@@ -314,7 +342,8 @@ def postgres_schema():
             semester INTEGER,
             department TEXT,
             instructor_id INTEGER,
-            instructor_name TEXT
+            instructor_name TEXT,
+            programme_name TEXT
         )
         """,
         """
@@ -334,7 +363,9 @@ def postgres_schema():
             capacity INTEGER,
             building TEXT,
             type TEXT,
-            equipment TEXT
+            equipment TEXT,
+            department TEXT,
+            is_available INTEGER DEFAULT 1
         )
         """,
         """
@@ -351,6 +382,14 @@ def postgres_schema():
             semester INTEGER,
             year INTEGER,
             algorithm TEXT
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS sections (
+            id SERIAL PRIMARY KEY,
+            course_id INTEGER NOT NULL,
+            course_name TEXT NOT NULL,
+            class_count INTEGER NOT NULL
         )
         """,
     ]
@@ -402,12 +441,15 @@ def ensure_database():
         ensure_column(connection, "courses", "department", "TEXT")
         ensure_column(connection, "courses", "instructor_id", "INTEGER")
         ensure_column(connection, "courses", "instructor_name", "TEXT")
+        ensure_column(connection, "courses", "programme_name", "TEXT")
+        ensure_column(connection, "rooms", "department", "TEXT")
+        ensure_column(connection, "rooms", "is_available", "INTEGER DEFAULT 1")
         migrate_default_user_emails(connection)
         connection.commit()
 
         counts = {
             table: query_scalar(connection, f"SELECT COUNT(*) FROM {table}")
-            for table in ("users", "courses", "teachers", "rooms", "schedules")
+            for table in ("users", "courses", "teachers", "rooms", "schedules", "sections")
         }
 
         if sum(counts.values()) == 0:

@@ -72,4 +72,5 @@ def default_store():
             },
         ],
         "schedules": [],
+        "sections": [],
     }

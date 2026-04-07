@@ -168,7 +168,7 @@ class ApiHandler(BaseHTTPRequestHandler):
             return
 
         collection = parts[0]
-        if collection not in {"courses", "teachers", "rooms", "schedules"}:
+        if collection not in {"courses", "teachers", "rooms", "schedules", "sections"}:
             self.send_json(404, {"error": "Not found", "errorCode": "not_found"})
             return
 
@@ -178,7 +178,7 @@ class ApiHandler(BaseHTTPRequestHandler):
             self.send_json(exc.status, {"error": exc.message, "errorCode": exc.code})
             return
 
-        if collection in {"courses", "teachers", "rooms"} and user["role"] != "admin":
+        if collection in {"courses", "teachers", "rooms", "sections"} and user["role"] != "admin":
             self.send_json(403, {"error": "Недостаточно прав", "errorCode": "forbidden"})
             return
 
@@ -224,6 +224,15 @@ class ApiHandler(BaseHTTPRequestHandler):
                         return
 
                     if method == "DELETE":
+                        if collection == "sections":
+                            self.send_json(
+                                405,
+                                {
+                                    "error": "Удаление секций недоступно",
+                                    "errorCode": "method_not_allowed",
+                                },
+                            )
+                            return
                         delete_collection_item(connection, collection, item_id)
                         self.send_json(200, {"success": True})
                         return

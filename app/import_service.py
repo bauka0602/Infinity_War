@@ -17,20 +17,39 @@ SHEET_ALIASES = {
 }
 
 COURSE_HEADERS = {
+    "code": "code",
+    "course_code": "code",
+    "код": "code",
+    "course_code": "code",
     "name": "name",
     "course_name": "name",
     "название": "name",
     "атауы": "name",
-    "code": "code",
-    "course_code": "code",
-    "код": "code",
-    "credits": "credits",
-    "credit": "credits",
-    "кредиты": "credits",
-    "кредит": "credits",
-    "hours": "hours",
-    "часы": "hours",
-    "сағат": "hours",
+    "study_year": "study_year",
+    "year": "study_year",
+    "курс": "study_year",
+    "год": "study_year",
+    "semester": "semester",
+    "семестр": "semester",
+    "department": "department",
+    "faculty": "department",
+    "faculty_institute": "department",
+    "faculty_or_institute": "department",
+    "факультет": "department",
+    "факультет_институт": "department",
+    "институт": "department",
+    "instructor": "instructor_name",
+    "teacher": "instructor_name",
+    "teacher_name": "instructor_name",
+    "instructor_name": "instructor_name",
+    "преподаватель": "instructor_name",
+    "оқытушы": "instructor_name",
+    "programme": "programme_name",
+    "programme_name": "programme_name",
+    "program_name": "programme_name",
+    "program": "programme_name",
+    "образовательная_программа": "programme_name",
+    "бағдарлама": "programme_name",
     "description": "description",
     "описание": "description",
     "сипаттама": "description",
@@ -45,6 +64,13 @@ TEACHER_HEADERS = {
     "phone": "phone",
     "телефон": "phone",
     "specialization": "specialization",
+    "faculty": "specialization",
+    "department": "specialization",
+    "faculty_institute": "specialization",
+    "faculty_or_institute": "specialization",
+    "факультет": "specialization",
+    "факультет_институт": "specialization",
+    "институт": "specialization",
     "специализация": "specialization",
     "мамандығы": "specialization",
     "max_hours_per_week": "max_hours_per_week",
@@ -67,15 +93,26 @@ ROOM_HEADERS = {
     "type": "type",
     "тип": "type",
     "түрі": "type",
+    "department": "department",
+    "faculty": "department",
+    "faculty_institute": "department",
+    "faculty_or_institute": "department",
+    "факультет": "department",
+    "факультет_институт": "department",
+    "институт": "department",
+    "available": "is_available",
+    "is_available": "is_available",
+    "доступно": "is_available",
+    "қолжетімді": "is_available",
     "equipment": "equipment",
     "оборудование": "equipment",
     "жабдықтар": "equipment",
 }
 
 REQUIRED_FIELDS = {
-    "courses": ["name", "code", "credits", "hours"],
+    "courses": ["code", "name", "study_year", "semester", "programme_name", "department"],
     "teachers": ["name", "email"],
-    "rooms": ["number", "capacity"],
+    "rooms": ["number", "capacity", "department"],
 }
 
 ROOM_TYPE_ALIASES = {
@@ -101,21 +138,68 @@ ROOM_TYPE_ALIASES = {
 }
 
 TEMPLATE_HEADERS = {
-    "Courses": ["name", "code", "credits", "hours", "description"],
-    "Teachers": ["name", "email", "phone", "specialization", "max_hours_per_week"],
-    "Rooms": ["number", "capacity", "building", "type", "equipment"],
+    "Courses": [
+        "code",
+        "name",
+        "study_year",
+        "semester",
+        "programme_name",
+        "department",
+        "instructor_name",
+        "description",
+    ],
+    "Teachers": ["name", "email", "phone", "faculty_institute"],
+    "Rooms": ["number", "capacity", "building", "type", "department", "is_available", "equipment"],
 }
 
 TEMPLATE_ROWS = {
     "Courses": [
-        ["Programming 1", "CS101", 3, 45, "Introduction to programming"],
+        [
+            "CS101",
+            "Programming 1",
+            1,
+            1,
+            "Программная инженерия (6B06101)",
+            "Факультет компьютерных систем и профессионального образования (КСиПО-БжЦТ)",
+            "Aruzhan Saparova",
+            "Introduction to programming",
+        ],
     ],
     "Teachers": [
-        ["Aruzhan Saparova", "aruzhan@kazatu.edu.kz", "+7 777 000 00 00", "Computer Science", 20],
+        [
+            "Aruzhan Saparova",
+            "aruzhan@kazatu.edu.kz",
+            "+7 777 000 00 00",
+            "Факультет компьютерных систем и профессионального образования (КСиПО-БжЦТ)",
+        ],
     ],
     "Rooms": [
-        ["101", 30, "Main Building", "lecture", "Projector, whiteboard"],
+        [
+            "101",
+            30,
+            "Main Building",
+            "lecture",
+            "Факультет компьютерных систем и профессионального образования (КСиПО-БжЦТ)",
+            "yes",
+            "Projector, whiteboard",
+        ],
     ],
+}
+
+AVAILABLE_ALIASES = {
+    "1": 1,
+    "true": 1,
+    "yes": 1,
+    "available": 1,
+    "да": 1,
+    "иә": 1,
+    "нет": 0,
+    "no": 0,
+    "false": 0,
+    "0": 0,
+    "not_available": 0,
+    "not available": 0,
+    "жоқ": 0,
 }
 
 
@@ -190,6 +274,16 @@ def _normalize_room_type(value):
     )
 
 
+def _normalize_availability(value):
+    if value in (None, ""):
+        return 1
+    if isinstance(value, bool):
+        return 1 if value else 0
+    normalized = _normalize_header(value).replace("_", " ")
+    compact = normalized.replace(" ", "_")
+    return AVAILABLE_ALIASES.get(compact, AVAILABLE_ALIASES.get(normalized, 1 if value else 0))
+
+
 def _read_sheet_rows(sheet, header_aliases):
     rows = list(sheet.iter_rows(values_only=True))
     if not rows:
@@ -232,7 +326,23 @@ def _validate_required_fields(entity_name, row_index, payload):
 
 
 def _upsert_course(connection, payload):
-    normalized = normalize_number_fields(payload, ["credits", "hours"])
+    normalized = normalize_number_fields(payload, ["study_year", "semester"])
+    instructor_name = (normalized.get("instructor_name") or "").strip()
+    instructor_id = None
+    if instructor_name:
+        teacher = query_one(
+            connection,
+            """
+            SELECT id, name
+            FROM teachers
+            WHERE lower(name) = lower(?)
+            """,
+            (instructor_name,),
+        )
+        if teacher:
+            instructor_id = teacher["id"]
+            instructor_name = teacher["name"]
+
     existing = query_one(
         connection,
         "SELECT id FROM courses WHERE lower(code) = lower(?)",
@@ -243,15 +353,28 @@ def _upsert_course(connection, payload):
             connection,
             """
             UPDATE courses
-            SET name = ?, code = ?, credits = ?, hours = ?, description = ?
+            SET
+                name = ?,
+                code = ?,
+                description = ?,
+                study_year = ?,
+                semester = ?,
+                department = ?,
+                instructor_id = ?,
+                instructor_name = ?,
+                programme_name = ?
             WHERE id = ?
             """,
             (
                 normalized["name"],
                 normalized["code"],
-                normalized["credits"],
-                normalized["hours"],
                 normalized.get("description", "") or "",
+                normalized.get("study_year"),
+                normalized.get("semester"),
+                normalized.get("department", "") or "",
+                instructor_id,
+                instructor_name,
+                normalized.get("programme_name", "") or "",
                 existing["id"],
             ),
         )
@@ -260,15 +383,24 @@ def _upsert_course(connection, payload):
     insert_and_get_id(
         connection,
         """
-        INSERT INTO courses (name, code, credits, hours, description)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO courses (
+            name, code, credits, hours, description,
+            study_year, semester, department, instructor_id, instructor_name, programme_name
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             normalized["name"],
             normalized["code"],
-            normalized["credits"],
-            normalized["hours"],
+            None,
+            None,
             normalized.get("description", "") or "",
+            normalized.get("study_year"),
+            normalized.get("semester"),
+            normalized.get("department", "") or "",
+            instructor_id,
+            instructor_name,
+            normalized.get("programme_name", "") or "",
         ),
     )
     return "inserted"
@@ -320,6 +452,7 @@ def _upsert_teacher(connection, payload):
 def _upsert_room(connection, payload):
     normalized = normalize_number_fields(payload, ["capacity"])
     normalized["type"] = _normalize_room_type(normalized.get("type"))
+    normalized["is_available"] = _normalize_availability(normalized.get("is_available"))
     existing = query_one(
         connection,
         "SELECT id FROM rooms WHERE number = ?",
@@ -330,7 +463,7 @@ def _upsert_room(connection, payload):
             connection,
             """
             UPDATE rooms
-            SET number = ?, capacity = ?, building = ?, type = ?, equipment = ?
+            SET number = ?, capacity = ?, building = ?, type = ?, equipment = ?, department = ?, is_available = ?
             WHERE id = ?
             """,
             (
@@ -339,6 +472,8 @@ def _upsert_room(connection, payload):
                 normalized.get("building", "") or "",
                 normalized.get("type", "") or "",
                 normalized.get("equipment", "") or "",
+                normalized.get("department", "") or "",
+                normalized.get("is_available", 1),
                 existing["id"],
             ),
         )
@@ -347,8 +482,8 @@ def _upsert_room(connection, payload):
     insert_and_get_id(
         connection,
         """
-        INSERT INTO rooms (number, capacity, building, type, equipment)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO rooms (number, capacity, building, type, equipment, department, is_available)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
         (
             str(normalized["number"]),
@@ -356,6 +491,8 @@ def _upsert_room(connection, payload):
             normalized.get("building", "") or "",
             normalized.get("type", "") or "",
             normalized.get("equipment", "") or "",
+            normalized.get("department", "") or "",
+            normalized.get("is_available", 1),
         ),
     )
     return "inserted"
