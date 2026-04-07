@@ -308,10 +308,28 @@ def sqlite_schema():
         CREATE TABLE IF NOT EXISTS teachers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
-            email TEXT NOT NULL,
+            email TEXT NOT NULL UNIQUE,
+            password TEXT,
+            token TEXT,
+            avatar_data TEXT,
             phone TEXT,
             department TEXT,
             weekly_hours_limit INTEGER
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS students (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            email TEXT NOT NULL UNIQUE,
+            password TEXT NOT NULL,
+            token TEXT NOT NULL,
+            avatar_data TEXT,
+            department TEXT,
+            programme TEXT,
+            group_id INTEGER,
+            group_name TEXT,
+            subgroup TEXT
         )
         """,
         """
@@ -405,10 +423,28 @@ def postgres_schema():
         CREATE TABLE IF NOT EXISTS teachers (
             id SERIAL PRIMARY KEY,
             name TEXT NOT NULL,
-            email TEXT NOT NULL,
+            email TEXT NOT NULL UNIQUE,
+            password TEXT,
+            token TEXT,
+            avatar_data TEXT,
             phone TEXT,
             department TEXT,
             weekly_hours_limit INTEGER
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS students (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            email TEXT NOT NULL UNIQUE,
+            password TEXT NOT NULL,
+            token TEXT NOT NULL,
+            avatar_data TEXT,
+            department TEXT,
+            programme TEXT,
+            group_id INTEGER,
+            group_name TEXT,
+            subgroup TEXT
         )
         """,
         """
@@ -499,6 +535,141 @@ def migrate_default_user_emails(connection):
     )
 
 
+def migrate_legacy_role_accounts(connection):
+    legacy_accounts = query_all(
+        connection,
+        """
+        SELECT
+            id,
+            email,
+            password,
+            full_name,
+            role,
+            token,
+            avatar_data,
+            department,
+            programme,
+            group_id,
+            group_name,
+            subgroup
+        FROM users
+        WHERE role IN ('teacher', 'student')
+        ORDER BY id
+        """,
+    )
+
+    for account in legacy_accounts:
+        if account["role"] == "teacher":
+            existing_teacher = query_one(
+                connection,
+                "SELECT id FROM teachers WHERE lower(email) = lower(?)",
+                (account["email"],),
+            )
+            if existing_teacher is None:
+                db_execute(
+                    connection,
+                    """
+                    INSERT INTO teachers (
+                        name, email, password, token, avatar_data, phone, department, weekly_hours_limit
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        account["full_name"],
+                        account["email"],
+                        account["password"],
+                        account["token"],
+                        account.get("avatar_data"),
+                        "",
+                        account.get("department", ""),
+                        None,
+                    ),
+                )
+            else:
+                db_execute(
+                    connection,
+                    """
+                    UPDATE teachers
+                    SET
+                        name = COALESCE(NULLIF(name, ''), ?),
+                        password = COALESCE(password, ?),
+                        token = COALESCE(token, ?),
+                        avatar_data = COALESCE(avatar_data, ?),
+                        department = COALESCE(NULLIF(department, ''), ?)
+                    WHERE id = ?
+                    """,
+                    (
+                        account["full_name"],
+                        account["password"],
+                        account["token"],
+                        account.get("avatar_data"),
+                        account.get("department", ""),
+                        existing_teacher["id"],
+                    ),
+                )
+        else:
+            existing_student = query_one(
+                connection,
+                "SELECT id FROM students WHERE lower(email) = lower(?)",
+                (account["email"],),
+            )
+            if existing_student is None:
+                db_execute(
+                    connection,
+                    """
+                    INSERT INTO students (
+                        name, email, password, token, avatar_data, department, programme, group_id, group_name, subgroup
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        account["full_name"],
+                        account["email"],
+                        account["password"],
+                        account["token"],
+                        account.get("avatar_data"),
+                        account.get("department", ""),
+                        account.get("programme", ""),
+                        account.get("group_id"),
+                        account.get("group_name", ""),
+                        account.get("subgroup", ""),
+                    ),
+                )
+            else:
+                db_execute(
+                    connection,
+                    """
+                    UPDATE students
+                    SET
+                        name = COALESCE(NULLIF(name, ''), ?),
+                        password = COALESCE(password, ?),
+                        token = COALESCE(token, ?),
+                        avatar_data = COALESCE(avatar_data, ?),
+                        department = COALESCE(NULLIF(department, ''), ?),
+                        programme = COALESCE(NULLIF(programme, ''), ?),
+                        group_id = COALESCE(group_id, ?),
+                        group_name = COALESCE(NULLIF(group_name, ''), ?),
+                        subgroup = COALESCE(NULLIF(subgroup, ''), ?)
+                    WHERE id = ?
+                    """,
+                    (
+                        account["full_name"],
+                        account["password"],
+                        account["token"],
+                        account.get("avatar_data"),
+                        account.get("department", ""),
+                        account.get("programme", ""),
+                        account.get("group_id"),
+                        account.get("group_name", ""),
+                        account.get("subgroup", ""),
+                        existing_student["id"],
+                    ),
+                )
+
+    if legacy_accounts:
+        db_execute(connection, "DELETE FROM users WHERE role IN ('teacher', 'student')")
+
+
 def ensure_database():
     with get_connection() as connection:
         schema = postgres_schema() if DB_ENGINE == "postgres" else sqlite_schema()
@@ -526,6 +697,15 @@ def ensure_database():
         ensure_column(connection, "courses", "programme", "TEXT")
         ensure_column(connection, "teachers", "department", "TEXT")
         ensure_column(connection, "teachers", "weekly_hours_limit", "INTEGER")
+        ensure_column(connection, "teachers", "password", "TEXT")
+        ensure_column(connection, "teachers", "token", "TEXT")
+        ensure_column(connection, "teachers", "avatar_data", "TEXT")
+        ensure_column(connection, "students", "avatar_data", "TEXT")
+        ensure_column(connection, "students", "department", "TEXT")
+        ensure_column(connection, "students", "programme", "TEXT")
+        ensure_column(connection, "students", "group_id", "INTEGER")
+        ensure_column(connection, "students", "group_name", "TEXT")
+        ensure_column(connection, "students", "subgroup", "TEXT")
         ensure_column(connection, "rooms", "department", "TEXT")
         ensure_column(connection, "rooms", "available", "INTEGER DEFAULT 1")
         ensure_column(connection, "groups", "has_subgroups", "INTEGER DEFAULT 0")
@@ -536,11 +716,12 @@ def ensure_database():
         ensure_column(connection, "schedules", "group_name", "TEXT")
         ensure_column(connection, "schedules", "subgroup", "TEXT")
         migrate_default_user_emails(connection)
+        migrate_legacy_role_accounts(connection)
         connection.commit()
 
         counts = {
             table: query_scalar(connection, f"SELECT COUNT(*) FROM {table}")
-            for table in ("users", "courses", "teachers", "rooms", "groups", "schedules", "sections")
+            for table in ("users", "courses", "teachers", "students", "rooms", "groups", "schedules", "sections")
         }
 
         if sum(counts.values()) == 0:

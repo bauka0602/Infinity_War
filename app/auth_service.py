@@ -14,6 +14,115 @@ def ensure_teacher_email_allowed(email, role):
             "Для преподавателя нужен email, оканчивающийся на @kazatu.edu.kz",
         )
 
+def _find_account_by_token(connection, token):
+    admin = query_one(
+        connection,
+        """
+        SELECT id, email, full_name, role, token, avatar_data, department, programme, group_id, group_name, subgroup
+        FROM users
+        WHERE role = 'admin' AND token = ?
+        """,
+        (token,),
+    )
+    if admin:
+        return admin
+
+    teacher = query_one(
+        connection,
+        """
+        SELECT
+            id, email, name AS full_name, 'teacher' AS role, token, avatar_data,
+            department, '' AS programme, NULL AS group_id, '' AS group_name, '' AS subgroup
+        FROM teachers
+        WHERE token = ?
+        """,
+        (token,),
+    )
+    if teacher:
+        return teacher
+
+    return query_one(
+        connection,
+        """
+        SELECT
+            id, email, name AS full_name, 'student' AS role, token, avatar_data,
+            department, programme, group_id, group_name, subgroup
+        FROM students
+        WHERE token = ?
+        """,
+        (token,),
+    )
+
+
+def _email_exists(connection, email):
+    normalized = email.strip().lower()
+    checks = (
+        ("users", "SELECT id FROM users WHERE lower(email) = lower(?)"),
+        ("teachers", "SELECT id FROM teachers WHERE lower(email) = lower(?)"),
+        ("students", "SELECT id FROM students WHERE lower(email) = lower(?)"),
+    )
+    for _, query in checks:
+        if query_one(connection, query, (normalized,)):
+            return True
+    return False
+
+
+def _find_teacher_by_email(connection, email):
+    normalized = email.strip().lower()
+    return query_one(
+        connection,
+        """
+        SELECT id, email, password, token, name, phone, department, weekly_hours_limit, avatar_data
+        FROM teachers
+        WHERE lower(email) = lower(?)
+        """,
+        (normalized,),
+    )
+
+
+def _find_login_account(connection, email, selected_role):
+    normalized = email.strip().lower()
+    if selected_role == "admin":
+        return query_one(
+            connection,
+            """
+            SELECT id, email, password, full_name, role, token, avatar_data, department, programme, group_id, group_name, subgroup
+            FROM users
+            WHERE role = 'admin' AND lower(email) = lower(?)
+            """,
+            (normalized,),
+        )
+    if selected_role == "teacher":
+        return query_one(
+            connection,
+            """
+            SELECT
+                id, email, password, name AS full_name, 'teacher' AS role, token, avatar_data,
+                department, '' AS programme, NULL AS group_id, '' AS group_name, '' AS subgroup
+            FROM teachers
+            WHERE lower(email) = lower(?)
+            """,
+            (normalized,),
+        )
+    if selected_role == "student":
+        return query_one(
+            connection,
+            """
+            SELECT
+                id, email, password, name AS full_name, 'student' AS role, token, avatar_data,
+                department, programme, group_id, group_name, subgroup
+            FROM students
+            WHERE lower(email) = lower(?)
+            """,
+            (normalized,),
+        )
+
+    return (
+        _find_login_account(connection, email, "admin")
+        or _find_login_account(connection, email, "teacher")
+        or _find_login_account(connection, email, "student")
+    )
+
 
 def require_auth_user(headers):
     token = parse_bearer_token(headers.get("Authorization"))
@@ -22,15 +131,7 @@ def require_auth_user(headers):
 
     with DB_LOCK:
         with get_connection() as connection:
-            user = query_one(
-                connection,
-                """
-                SELECT id, email, full_name, role, token, avatar_data, department, programme, group_id, group_name, subgroup
-                FROM users
-                WHERE token = ?
-                """,
-                (token,),
-            )
+            user = _find_account_by_token(connection, token)
 
     if user is None:
         raise ApiError(401, "invalid_token", "Недействительный токен")
@@ -84,6 +185,9 @@ def register_user(payload):
 
     with DB_LOCK:
         with get_connection() as connection:
+            existing_teacher = (
+                _find_teacher_by_email(connection, email) if role == "teacher" else None
+            )
             if role == "student":
                 try:
                     group_id = int(group_id)
@@ -117,12 +221,12 @@ def register_user(payload):
                 else:
                     subgroup = ""
 
-            existing = query_one(
-                connection,
-                "SELECT id FROM users WHERE lower(email) = lower(?)",
-                (email,),
-            )
-            if existing:
+            if _email_exists(connection, email) and not (
+                role == "teacher"
+                and existing_teacher
+                and not existing_teacher.get("password")
+                and not existing_teacher.get("token")
+            ):
                 raise ApiError(
                     400,
                     "email_already_exists",
@@ -130,30 +234,88 @@ def register_user(payload):
                 )
 
             token = secrets.token_urlsafe(32)
-            user_id = insert_and_get_id(
-                connection,
-                """
-                INSERT INTO users (
-                    email, password, full_name, role, token, avatar_data, department, programme, group_id, group_name, subgroup
+            if role == "teacher":
+                if existing_teacher:
+                    db_execute(
+                        connection,
+                        """
+                        UPDATE teachers
+                        SET name = ?, password = ?, token = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            payload["displayName"],
+                            hash_password(payload["password"]),
+                            token,
+                            existing_teacher["id"],
+                        ),
+                    )
+                    user_id = existing_teacher["id"]
+                else:
+                    user_id = insert_and_get_id(
+                        connection,
+                        """
+                        INSERT INTO teachers (
+                            name, email, password, token, avatar_data, phone, department, weekly_hours_limit
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            payload["displayName"],
+                            email,
+                            hash_password(payload["password"]),
+                            token,
+                            None,
+                            "",
+                            "",
+                            None,
+                        ),
+                    )
+                user = query_one(
+                    connection,
+                    """
+                    SELECT
+                        id, email, name AS full_name, 'teacher' AS role, token, avatar_data,
+                        department, '' AS programme, NULL AS group_id, '' AS group_name, '' AS subgroup
+                    FROM teachers
+                    WHERE id = ?
+                    """,
+                    (user_id,),
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    email,
-                    hash_password(payload["password"]),
-                    payload["displayName"],
-                    role,
-                    token,
-                    None,
-                    department if role == "student" else "",
-                    programme_name if role == "student" else "",
-                    selected_group["id"] if role == "student" else None,
-                    selected_group["name"] if role == "student" else "",
-                    subgroup if role == "student" else "",
-                ),
-            )
+            else:
+                user_id = insert_and_get_id(
+                    connection,
+                    """
+                    INSERT INTO students (
+                        name, email, password, token, avatar_data, department, programme, group_id, group_name, subgroup
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        payload["displayName"],
+                        email,
+                        hash_password(payload["password"]),
+                        token,
+                        None,
+                        department,
+                        programme_name,
+                        selected_group["id"],
+                        selected_group["name"],
+                        subgroup,
+                    ),
+                )
+                user = query_one(
+                    connection,
+                    """
+                    SELECT
+                        id, email, name AS full_name, 'student' AS role, token, avatar_data,
+                        department, programme, group_id, group_name, subgroup
+                    FROM students
+                    WHERE id = ?
+                    """,
+                    (user_id,),
+                )
             connection.commit()
-            user = query_one(connection, "SELECT * FROM users WHERE id = ?", (user_id,))
 
     return sanitize_user(user)
 
@@ -177,17 +339,38 @@ def update_profile_avatar(headers, payload):
 
     with DB_LOCK:
         with get_connection() as connection:
-            db_execute(
-                connection,
-                """
-                UPDATE users
-                SET avatar_data = ?
-                WHERE id = ?
-                """,
-                (avatar_data, user["id"]),
-            )
+            if user["role"] == "admin":
+                db_execute(
+                    connection,
+                    """
+                    UPDATE users
+                    SET avatar_data = ?
+                    WHERE id = ?
+                    """,
+                    (avatar_data, user["id"]),
+                )
+            elif user["role"] == "teacher":
+                db_execute(
+                    connection,
+                    """
+                    UPDATE teachers
+                    SET avatar_data = ?
+                    WHERE id = ?
+                    """,
+                    (avatar_data, user["id"]),
+                )
+            else:
+                db_execute(
+                    connection,
+                    """
+                    UPDATE students
+                    SET avatar_data = ?
+                    WHERE id = ?
+                    """,
+                    (avatar_data, user["id"]),
+                )
             connection.commit()
-            updated_user = query_one(connection, "SELECT * FROM users WHERE id = ?", (user["id"],))
+            updated_user = _find_account_by_token(connection, user["token"])
 
     return sanitize_user(updated_user)
 
@@ -202,14 +385,7 @@ def login_user(payload):
 
     with DB_LOCK:
         with get_connection() as connection:
-            user = query_one(
-                connection,
-                """
-                SELECT * FROM users
-                WHERE lower(email) = lower(?)
-                """,
-                (email,),
-            )
+            user = _find_login_account(connection, email, selected_role or None)
 
     if user is None or not verify_password(user["password"], password):
         raise ApiError(401, "invalid_credentials", "Неверный email или пароль")

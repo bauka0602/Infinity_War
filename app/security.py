@@ -9,6 +9,8 @@ def hash_password(password):
 
 
 def verify_password(stored_password, plain_password):
+    if not stored_password:
+        return False
     if stored_password.startswith(PASSWORD_PREFIX):
         return stored_password == hash_password(plain_password)
     return stored_password == plain_password
@@ -18,7 +20,7 @@ def sanitize_user(row):
     return {
         "id": row["id"],
         "email": row["email"],
-        "displayName": row["full_name"],
+        "displayName": row.get("full_name") or row.get("name") or "",
         "role": row["role"],
         "token": row["token"],
         "avatarData": row.get("avatar_data"),

@@ -59,6 +59,16 @@ def list_collection(connection, collection, query, user=None):
             """,
         )
 
+    if collection == "students":
+        return query_all(
+            connection,
+            """
+            SELECT id, name, email, department, programme, group_id, group_name, subgroup
+            FROM students
+            ORDER BY id
+            """,
+        )
+
     if collection == "rooms":
         return query_all(
             connection,
@@ -548,7 +558,7 @@ def delete_collection_item(connection, collection, item_id):
     elif collection == "groups":
         db_execute(connection, "DELETE FROM schedules WHERE group_id = ?", (item_id,))
         db_execute(connection, "DELETE FROM sections WHERE group_id = ?", (item_id,))
-        db_execute(connection, "UPDATE users SET group_id = NULL, group_name = '', subgroup = '' WHERE group_id = ?", (item_id,))
+        db_execute(connection, "UPDATE students SET group_id = NULL, group_name = '', subgroup = '' WHERE group_id = ?", (item_id,))
     elif collection == "teachers":
         db_execute(connection, "DELETE FROM schedules WHERE teacher_id = ?", (item_id,))
         db_execute(connection, "UPDATE courses SET instructor_id = NULL, instructor_name = '' WHERE instructor_id = ?", (item_id,))

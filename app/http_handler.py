@@ -198,7 +198,7 @@ class ApiHandler(BaseHTTPRequestHandler):
         }
         raw_collection = parts[0]
         collection = collection_aliases.get(raw_collection, raw_collection)
-        if collection not in {"courses", "teachers", "rooms", "groups", "schedules", "sections"}:
+        if collection not in {"courses", "teachers", "students", "rooms", "groups", "schedules", "sections"}:
             self.send_json(404, {"error": "Not found", "errorCode": "not_found"})
             return
 
@@ -208,7 +208,7 @@ class ApiHandler(BaseHTTPRequestHandler):
             self.send_json(exc.status, {"error": exc.message, "errorCode": exc.code})
             return
 
-        if collection in {"courses", "teachers", "rooms", "groups", "sections"} and user["role"] != "admin":
+        if collection in {"courses", "teachers", "students", "rooms", "groups", "sections"} and user["role"] != "admin":
             self.send_json(403, {"error": "Недостаточно прав", "errorCode": "forbidden"})
             return
 
