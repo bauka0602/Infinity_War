@@ -106,13 +106,24 @@ def ensure_column(connection, table_name, column_name, column_definition):
     )
 
 
+def rename_column(connection, table_name, old_name, new_name):
+    if not column_exists(connection, table_name, old_name):
+        return
+    if column_exists(connection, table_name, new_name):
+        return
+    db_execute(
+        connection,
+        f"ALTER TABLE {table_name} RENAME COLUMN {old_name} TO {new_name}",
+    )
+
+
 def seed_from_store(connection, store):
     for user in store["users"]:
         db_execute(
             connection,
             """
             INSERT INTO users (
-                email, password, display_name, role, token, avatar_data, department, programme_name
+                email, password, full_name, role, token, avatar_data, department, programme
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -134,7 +145,7 @@ def seed_from_store(connection, store):
             """
             INSERT INTO courses (
                 name, code, credits, hours, description,
-                study_year, semester, department, instructor_id, instructor_name, programme_name
+                year, semester, department, instructor_id, instructor_name, programme
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -149,7 +160,7 @@ def seed_from_store(connection, store):
                 course.get("department", ""),
                 course.get("instructor_id"),
                 course.get("instructor_name", ""),
-                course.get("programme_name", ""),
+                course.get("programme_name", course.get("programme", "")),
             ),
         )
 
@@ -157,15 +168,15 @@ def seed_from_store(connection, store):
         db_execute(
             connection,
             """
-            INSERT INTO teachers (name, email, phone, specialization, max_hours_per_week)
+            INSERT INTO teachers (name, email, phone, department, weekly_hours_limit)
             VALUES (?, ?, ?, ?, ?)
             """,
             (
                 teacher["name"],
                 teacher["email"],
                 teacher.get("phone", ""),
-                teacher.get("specialization", ""),
-                teacher.get("max_hours_per_week"),
+                teacher.get("specialization", teacher.get("department", "")),
+                teacher.get("max_hours_per_week", teacher.get("weekly_hours_limit")),
             ),
         )
 
@@ -173,7 +184,7 @@ def seed_from_store(connection, store):
         db_execute(
             connection,
             """
-            INSERT INTO rooms (number, capacity, building, type, equipment, department, is_available)
+            INSERT INTO rooms (number, capacity, building, type, equipment, department, available)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
@@ -183,7 +194,7 @@ def seed_from_store(connection, store):
                 room.get("type", ""),
                 room.get("equipment", ""),
                 room.get("department", ""),
-                room.get("is_available", 1),
+                room.get("is_available", room.get("available", 1)),
             ),
         )
 
@@ -219,13 +230,13 @@ def seed_from_store(connection, store):
         db_execute(
             connection,
             """
-            INSERT INTO sections (course_id, course_name, class_count)
+            INSERT INTO sections (course_id, course_name, classes_count)
             VALUES (?, ?, ?)
             """,
             (
                 section.get("course_id"),
                 section.get("course_name"),
-                section.get("class_count"),
+                section.get("class_count", section.get("classes_count")),
             ),
         )
 
@@ -250,12 +261,12 @@ def sqlite_schema():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             email TEXT NOT NULL UNIQUE,
             password TEXT NOT NULL,
-            display_name TEXT NOT NULL,
+            full_name TEXT NOT NULL,
             role TEXT NOT NULL,
             token TEXT NOT NULL,
             avatar_data TEXT,
             department TEXT,
-            programme_name TEXT
+            programme TEXT
         )
         """,
         """
@@ -266,12 +277,12 @@ def sqlite_schema():
             credits INTEGER,
             hours INTEGER,
             description TEXT,
-            study_year INTEGER,
+            year INTEGER,
             semester INTEGER,
             department TEXT,
             instructor_id INTEGER,
             instructor_name TEXT,
-            programme_name TEXT
+            programme TEXT
         )
         """,
         """
@@ -280,8 +291,8 @@ def sqlite_schema():
             name TEXT NOT NULL,
             email TEXT NOT NULL,
             phone TEXT,
-            specialization TEXT,
-            max_hours_per_week INTEGER
+            department TEXT,
+            weekly_hours_limit INTEGER
         )
         """,
         """
@@ -293,7 +304,7 @@ def sqlite_schema():
             type TEXT,
             equipment TEXT,
             department TEXT,
-            is_available INTEGER DEFAULT 1
+            available INTEGER DEFAULT 1
         )
         """,
         """
@@ -317,7 +328,7 @@ def sqlite_schema():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             course_id INTEGER NOT NULL,
             course_name TEXT NOT NULL,
-            class_count INTEGER NOT NULL
+            classes_count INTEGER NOT NULL
         )
         """,
     ]
@@ -330,12 +341,12 @@ def postgres_schema():
             id SERIAL PRIMARY KEY,
             email TEXT NOT NULL UNIQUE,
             password TEXT NOT NULL,
-            display_name TEXT NOT NULL,
+            full_name TEXT NOT NULL,
             role TEXT NOT NULL,
             token TEXT NOT NULL,
             avatar_data TEXT,
             department TEXT,
-            programme_name TEXT
+            programme TEXT
         )
         """,
         """
@@ -346,12 +357,12 @@ def postgres_schema():
             credits INTEGER,
             hours INTEGER,
             description TEXT,
-            study_year INTEGER,
+            year INTEGER,
             semester INTEGER,
             department TEXT,
             instructor_id INTEGER,
             instructor_name TEXT,
-            programme_name TEXT
+            programme TEXT
         )
         """,
         """
@@ -360,8 +371,8 @@ def postgres_schema():
             name TEXT NOT NULL,
             email TEXT NOT NULL,
             phone TEXT,
-            specialization TEXT,
-            max_hours_per_week INTEGER
+            department TEXT,
+            weekly_hours_limit INTEGER
         )
         """,
         """
@@ -373,7 +384,7 @@ def postgres_schema():
             type TEXT,
             equipment TEXT,
             department TEXT,
-            is_available INTEGER DEFAULT 1
+            available INTEGER DEFAULT 1
         )
         """,
         """
@@ -397,7 +408,7 @@ def postgres_schema():
             id SERIAL PRIMARY KEY,
             course_id INTEGER NOT NULL,
             course_name TEXT NOT NULL,
-            class_count INTEGER NOT NULL
+            classes_count INTEGER NOT NULL
         )
         """,
     ]
@@ -443,17 +454,27 @@ def ensure_database():
         schema = postgres_schema() if DB_ENGINE == "postgres" else sqlite_schema()
         for statement in schema:
             db_execute(connection, statement)
+        rename_column(connection, "users", "display_name", "full_name")
+        rename_column(connection, "users", "programme_name", "programme")
+        rename_column(connection, "courses", "study_year", "year")
+        rename_column(connection, "courses", "programme_name", "programme")
+        rename_column(connection, "teachers", "specialization", "department")
+        rename_column(connection, "teachers", "max_hours_per_week", "weekly_hours_limit")
+        rename_column(connection, "rooms", "is_available", "available")
+        rename_column(connection, "sections", "class_count", "classes_count")
         ensure_column(connection, "users", "avatar_data", "TEXT")
         ensure_column(connection, "users", "department", "TEXT")
-        ensure_column(connection, "users", "programme_name", "TEXT")
-        ensure_column(connection, "courses", "study_year", "INTEGER")
+        ensure_column(connection, "users", "programme", "TEXT")
+        ensure_column(connection, "courses", "year", "INTEGER")
         ensure_column(connection, "courses", "semester", "INTEGER")
         ensure_column(connection, "courses", "department", "TEXT")
         ensure_column(connection, "courses", "instructor_id", "INTEGER")
         ensure_column(connection, "courses", "instructor_name", "TEXT")
-        ensure_column(connection, "courses", "programme_name", "TEXT")
+        ensure_column(connection, "courses", "programme", "TEXT")
+        ensure_column(connection, "teachers", "department", "TEXT")
+        ensure_column(connection, "teachers", "weekly_hours_limit", "INTEGER")
         ensure_column(connection, "rooms", "department", "TEXT")
-        ensure_column(connection, "rooms", "is_available", "INTEGER DEFAULT 1")
+        ensure_column(connection, "rooms", "available", "INTEGER DEFAULT 1")
         migrate_default_user_emails(connection)
         connection.commit()
 

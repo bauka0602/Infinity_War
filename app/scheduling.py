@@ -14,7 +14,7 @@ def build_schedule(connection, semester, year, algorithm):
     courses = query_all(
         connection,
         """
-        SELECT id, name, instructor_id, instructor_name, semester, study_year
+        SELECT id, name, instructor_id, instructor_name, semester, year AS study_year
         FROM courses
         ORDER BY id
         """,

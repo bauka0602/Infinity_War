@@ -357,12 +357,12 @@ def _upsert_course(connection, payload):
                 name = ?,
                 code = ?,
                 description = ?,
-                study_year = ?,
+                year = ?,
                 semester = ?,
                 department = ?,
                 instructor_id = ?,
                 instructor_name = ?,
-                programme_name = ?
+                programme = ?
             WHERE id = ?
             """,
             (
@@ -385,7 +385,7 @@ def _upsert_course(connection, payload):
         """
         INSERT INTO courses (
             name, code, credits, hours, description,
-            study_year, semester, department, instructor_id, instructor_name, programme_name
+            year, semester, department, instructor_id, instructor_name, programme
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
@@ -418,15 +418,15 @@ def _upsert_teacher(connection, payload):
             connection,
             """
             UPDATE teachers
-            SET name = ?, email = ?, phone = ?, specialization = ?, max_hours_per_week = ?
+            SET name = ?, email = ?, phone = ?, department = ?, weekly_hours_limit = ?
             WHERE id = ?
             """,
             (
                 normalized["name"],
                 normalized["email"],
                 normalized.get("phone", "") or "",
-                normalized.get("specialization", "") or "",
-                normalized.get("max_hours_per_week"),
+                normalized.get("specialization", normalized.get("department", "")) or "",
+                normalized.get("max_hours_per_week", normalized.get("weekly_hours_limit")),
                 existing["id"],
             ),
         )
@@ -435,15 +435,15 @@ def _upsert_teacher(connection, payload):
     insert_and_get_id(
         connection,
         """
-        INSERT INTO teachers (name, email, phone, specialization, max_hours_per_week)
+        INSERT INTO teachers (name, email, phone, department, weekly_hours_limit)
         VALUES (?, ?, ?, ?, ?)
         """,
         (
             normalized["name"],
             normalized["email"],
             normalized.get("phone", "") or "",
-            normalized.get("specialization", "") or "",
-            normalized.get("max_hours_per_week"),
+            normalized.get("specialization", normalized.get("department", "")) or "",
+            normalized.get("max_hours_per_week", normalized.get("weekly_hours_limit")),
         ),
     )
     return "inserted"
@@ -463,7 +463,7 @@ def _upsert_room(connection, payload):
             connection,
             """
             UPDATE rooms
-            SET number = ?, capacity = ?, building = ?, type = ?, equipment = ?, department = ?, is_available = ?
+            SET number = ?, capacity = ?, building = ?, type = ?, equipment = ?, department = ?, available = ?
             WHERE id = ?
             """,
             (
@@ -482,7 +482,7 @@ def _upsert_room(connection, payload):
     insert_and_get_id(
         connection,
         """
-        INSERT INTO rooms (number, capacity, building, type, equipment, department, is_available)
+        INSERT INTO rooms (number, capacity, building, type, equipment, department, available)
         VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
         (

@@ -18,12 +18,12 @@ def sanitize_user(row):
     return {
         "id": row["id"],
         "email": row["email"],
-        "displayName": row["display_name"],
+        "displayName": row["full_name"],
         "role": row["role"],
         "token": row["token"],
         "avatarData": row.get("avatar_data"),
         "department": row.get("department", ""),
-        "programmeName": row.get("programme_name", ""),
+        "programmeName": row.get("programme", ""),
     }
 
 

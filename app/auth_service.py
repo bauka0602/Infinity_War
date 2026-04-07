@@ -25,7 +25,7 @@ def require_auth_user(headers):
             user = query_one(
                 connection,
                 """
-                SELECT id, email, display_name, role, token, avatar_data, department, programme_name
+                SELECT id, email, full_name, role, token, avatar_data, department, programme
                 FROM users
                 WHERE token = ?
                 """,
@@ -95,7 +95,7 @@ def register_user(payload):
                 connection,
                 """
                 INSERT INTO users (
-                    email, password, display_name, role, token, avatar_data, department, programme_name
+                    email, password, full_name, role, token, avatar_data, department, programme
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
