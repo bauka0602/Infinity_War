@@ -15,6 +15,7 @@ from .collections import create_collection_item, delete_collection_item, list_co
 from .config import ALLOWED_ORIGINS, DB_ENGINE, DB_LOCK
 from .db import get_connection, query_one
 from .errors import ApiError
+from .import_service import import_excel_data
 from .scheduling import build_schedule
 
 
@@ -104,6 +105,10 @@ class ApiHandler(BaseHTTPRequestHandler):
 
             if api_path == "/profile/avatar" and method == "POST":
                 self.send_json(200, update_profile_avatar(self.headers, self.read_json()))
+                return
+
+            if api_path == "/import/excel" and method == "POST":
+                self.send_json(200, import_excel_data(self.headers, self.read_json()))
                 return
 
             if api_path == "/schedules/generate" and method == "POST":
