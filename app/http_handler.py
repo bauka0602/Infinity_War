@@ -18,6 +18,14 @@ from .db import get_connection, query_all, query_one
 from .errors import ApiError
 from .import_service import generate_import_template, generate_schedule_export, import_excel_data
 from .job_store import create_schedule_generation_job, get_schedule_generation_job
+from .notification_service import (
+    create_schedule_change_notifications,
+    delete_all_notifications,
+    delete_notification,
+    list_notifications,
+    mark_all_notifications_as_read,
+    mark_notification_as_read,
+)
 from .preference_service import (
     create_teacher_preference_request,
     list_teacher_preference_requests,
@@ -120,6 +128,28 @@ class ApiHandler(BaseHTTPRequestHandler):
 
             if api_path == "/profile/avatar" and method == "POST":
                 self.send_json(200, update_profile_avatar(self.headers, self.read_json()))
+                return
+
+            if api_path == "/notifications" and method == "GET":
+                self.send_json(200, list_notifications(self.headers))
+                return
+
+            if api_path == "/notifications/read-all" and method == "POST":
+                self.send_json(200, mark_all_notifications_as_read(self.headers))
+                return
+
+            if api_path == "/notifications" and method == "DELETE":
+                self.send_json(200, delete_all_notifications(self.headers))
+                return
+
+            if api_path.startswith("/notifications/") and api_path.endswith("/read") and method == "PUT":
+                notification_id = api_path.split("/")[-2]
+                self.send_json(200, mark_notification_as_read(self.headers, int(notification_id)))
+                return
+
+            if api_path.startswith("/notifications/") and method == "DELETE":
+                notification_id = api_path.rsplit("/", 1)[-1]
+                self.send_json(200, delete_notification(self.headers, int(notification_id)))
                 return
 
             if api_path == "/teacher-preferences/mine" and method == "GET":
@@ -254,6 +284,8 @@ class ApiHandler(BaseHTTPRequestHandler):
 
                     if method == "POST":
                         created = create_collection_item(connection, collection, self.read_json())
+                        if collection == "schedules":
+                            create_schedule_change_notifications(connection, after_item=created)
                         self.send_json(201, created)
                         return
 
@@ -279,6 +311,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                             item_id,
                             self.read_json(),
                         )
+                        if collection == "schedules":
+                            create_schedule_change_notifications(connection, before_item=existing, after_item=updated)
                         self.send_json(200, updated)
                         return
 
@@ -293,6 +327,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                             )
                             return
                         delete_collection_item(connection, collection, item_id)
+                        if collection == "schedules":
+                            create_schedule_change_notifications(connection, before_item=existing)
                         self.send_json(200, {"success": True})
                         return
 

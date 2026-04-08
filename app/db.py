@@ -401,6 +401,20 @@ def sqlite_schema():
             updated_at TEXT NOT NULL
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recipient_role TEXT NOT NULL,
+            recipient_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            message TEXT NOT NULL,
+            metadata TEXT,
+            notification_type TEXT NOT NULL,
+            is_read INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            read_at TEXT
+        )
+        """,
     ]
 
 
@@ -532,6 +546,20 @@ def postgres_schema():
             admin_comment TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS notifications (
+            id SERIAL PRIMARY KEY,
+            recipient_role TEXT NOT NULL,
+            recipient_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            message TEXT NOT NULL,
+            metadata TEXT,
+            notification_type TEXT NOT NULL,
+            is_read INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            read_at TEXT
         )
         """,
     ]
@@ -758,6 +786,18 @@ def ensure_database():
         ensure_column(connection, "schedules", "subgroup", "TEXT")
         ensure_column(connection, "teacher_preference_requests", "note", "TEXT")
         ensure_column(connection, "teacher_preference_requests", "status", "TEXT DEFAULT 'pending'")
+        ensure_column(connection, "teacher_preference_requests", "admin_comment", "TEXT")
+        ensure_column(connection, "teacher_preference_requests", "created_at", "TEXT")
+        ensure_column(connection, "teacher_preference_requests", "updated_at", "TEXT")
+        ensure_column(connection, "notifications", "recipient_role", "TEXT")
+        ensure_column(connection, "notifications", "recipient_id", "INTEGER")
+        ensure_column(connection, "notifications", "title", "TEXT")
+        ensure_column(connection, "notifications", "message", "TEXT")
+        ensure_column(connection, "notifications", "metadata", "TEXT")
+        ensure_column(connection, "notifications", "notification_type", "TEXT")
+        ensure_column(connection, "notifications", "is_read", "INTEGER NOT NULL DEFAULT 0")
+        ensure_column(connection, "notifications", "created_at", "TEXT")
+        ensure_column(connection, "notifications", "read_at", "TEXT")
         ensure_column(connection, "teacher_preference_requests", "admin_comment", "TEXT")
         ensure_column(connection, "teacher_preference_requests", "created_at", "TEXT")
         ensure_column(connection, "teacher_preference_requests", "updated_at", "TEXT")

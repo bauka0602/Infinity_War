@@ -24,15 +24,21 @@ def clear_collection_data(headers, collection):
             if collection == "courses":
                 db_execute(connection, "DELETE FROM schedules")
                 db_execute(connection, "DELETE FROM sections")
+                db_execute(connection, "DELETE FROM notifications")
             elif collection == "groups":
                 db_execute(connection, "DELETE FROM schedules")
                 db_execute(connection, "DELETE FROM sections")
+                db_execute(connection, "DELETE FROM notifications")
                 db_execute(
                     connection,
                     "UPDATE students SET group_id = NULL, group_name = '', subgroup = ''",
                 )
             elif collection in {"teachers", "rooms"}:
                 db_execute(connection, "DELETE FROM schedules")
+                if collection == "teachers":
+                    db_execute(connection, "DELETE FROM notifications")
+            elif collection in {"students", "schedules"}:
+                db_execute(connection, "DELETE FROM notifications")
             db_execute(connection, f"DELETE FROM {collection}")
             connection.commit()
 
@@ -44,7 +50,16 @@ def clear_all_data(headers):
 
     with DB_LOCK:
         with get_connection() as connection:
-            for collection in ("schedules", "sections", "courses", "teachers", "students", "rooms", "groups"):
+            for collection in (
+                "notifications",
+                "schedules",
+                "sections",
+                "courses",
+                "teachers",
+                "students",
+                "rooms",
+                "groups",
+            ):
                 db_execute(connection, f"DELETE FROM {collection}")
             connection.commit()
 

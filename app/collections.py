@@ -615,7 +615,10 @@ def delete_collection_item(connection, collection, item_id):
     elif collection == "teachers":
         db_execute(connection, "DELETE FROM schedules WHERE teacher_id = ?", (item_id,))
         db_execute(connection, "UPDATE courses SET instructor_id = NULL, instructor_name = '' WHERE instructor_id = ?", (item_id,))
+        db_execute(connection, "DELETE FROM notifications WHERE recipient_role = 'teacher' AND recipient_id = ?", (item_id,))
     elif collection == "rooms":
         db_execute(connection, "DELETE FROM schedules WHERE room_id = ?", (item_id,))
+    elif collection == "students":
+        db_execute(connection, "DELETE FROM notifications WHERE recipient_role = 'student' AND recipient_id = ?", (item_id,))
     db_execute(connection, f"DELETE FROM {collection} WHERE id = ?", (item_id,))
     connection.commit()

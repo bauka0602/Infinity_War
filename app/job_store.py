@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from threading import Lock
+from threading import Lock, Thread
 from uuid import uuid4
 
 from .config import DB_LOCK
-from .db import get_connection
+from .db import get_connection, query_all
 from .errors import ApiError
+from .notification_service import create_schedule_regeneration_notifications
 from .scheduling import build_schedule
 
 _JOB_TTL = timedelta(hours=1)
@@ -63,7 +64,38 @@ def _run_schedule_generation_job(job_id, semester, year, algorithm):
     try:
         with DB_LOCK:
             with get_connection() as connection:
+                previous_schedule = query_all(
+                    connection,
+                    """
+                    SELECT
+                        id, section_id, course_id, course_name, teacher_id, teacher_name, room_id, room_number,
+                        group_id, group_name, subgroup, day, start_hour, semester, year, algorithm
+                    FROM schedules
+                    WHERE semester = ? AND year = ?
+                    ORDER BY id
+                    """,
+                    (semester, year),
+                )
                 generated = build_schedule(connection, semester, year, algorithm)
+                updated_schedule = query_all(
+                    connection,
+                    """
+                    SELECT
+                        id, section_id, course_id, course_name, teacher_id, teacher_name, room_id, room_number,
+                        group_id, group_name, subgroup, day, start_hour, semester, year, algorithm
+                    FROM schedules
+                    WHERE semester = ? AND year = ?
+                    ORDER BY id
+                    """,
+                    (semester, year),
+                )
+                create_schedule_regeneration_notifications(
+                    connection,
+                    semester,
+                    year,
+                    previous_schedule,
+                    updated_schedule,
+                )
         _set_job_state(
             job_id,
             status="completed",
