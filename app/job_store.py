@@ -1,20 +1,17 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-import logging
-from threading import Lock, Thread
+from threading import Lock
 from uuid import uuid4
 
 from .config import DB_LOCK
-from .db import get_connection, query_all
+from .db import get_connection
 from .errors import ApiError
-from .notification_service import send_schedule_regeneration_notifications
 from .scheduling import build_schedule
 
 _JOB_TTL = timedelta(hours=1)
 _jobs = {}
 _jobs_lock = Lock()
-logger = logging.getLogger(__name__)
 
 
 def _utc_now():
@@ -61,42 +58,12 @@ def _set_job_state(job_id, **updates):
         job["updatedAt"] = _utc_now_iso()
 
 
-def _notify_generated_schedule(semester, year, previous_schedule, generated_schedule):
-    try:
-        with get_connection() as connection:
-            send_schedule_regeneration_notifications(
-                connection,
-                semester,
-                year,
-                previous_schedule,
-                generated_schedule,
-            )
-    except Exception:
-        logger.exception("Failed to send schedule regeneration notifications")
-
-
 def _run_schedule_generation_job(job_id, semester, year, algorithm):
     _set_job_state(job_id, status="running")
     try:
         with DB_LOCK:
             with get_connection() as connection:
-                previous_schedule = query_all(
-                    connection,
-                    """
-                    SELECT
-                        id, section_id, course_id, course_name, teacher_id, teacher_name, room_id, room_number,
-                        group_id, group_name, subgroup, day, start_hour, semester, year, algorithm
-                    FROM schedules
-                    WHERE semester = ? AND year = ?
-                    """,
-                    (semester, year),
-                )
                 generated = build_schedule(connection, semester, year, algorithm)
-        Thread(
-            target=_notify_generated_schedule,
-            args=(semester, year, previous_schedule, generated),
-            daemon=True,
-        ).start()
         _set_job_state(
             job_id,
             status="completed",

@@ -50,16 +50,4 @@ ALLOWED_ORIGINS = [
     origin.strip() for origin in raw_allowed_origins.split(",") if origin.strip()
 ]
 
-EMAIL_NOTIFICATIONS_ENABLED = env_flag("EMAIL_NOTIFICATIONS_ENABLED", False)
-EMAIL_NOTIFY_TEACHERS = env_flag("EMAIL_NOTIFY_TEACHERS", True)
-EMAIL_NOTIFY_STUDENTS = env_flag("EMAIL_NOTIFY_STUDENTS", True)
-SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER = os.getenv("SMTP_USER", "").strip()
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "").strip()
-SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", "").strip()
-SMTP_USE_TLS = env_flag("SMTP_USE_TLS", True)
-SMTP_USE_SSL = env_flag("SMTP_USE_SSL", False)
-SMTP_TIMEOUT_SECONDS = float(os.getenv("SMTP_TIMEOUT_SECONDS", "10"))
-
 DB_LOCK = threading.Lock()

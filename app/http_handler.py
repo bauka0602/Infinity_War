@@ -1,7 +1,5 @@
 import json
-import logging
 import sqlite3
-import threading
 from datetime import date
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
@@ -20,16 +18,11 @@ from .db import get_connection, query_all, query_one
 from .errors import ApiError
 from .import_service import generate_import_template, generate_schedule_export, import_excel_data
 from .job_store import create_schedule_generation_job, get_schedule_generation_job
-from .notification_service import send_schedule_change_notifications, send_test_email
 from .preference_service import (
     create_teacher_preference_request,
     list_teacher_preference_requests,
     update_teacher_preference_status,
 )
-from .scheduling import build_schedule
-
-
-logger = logging.getLogger(__name__)
 
 
 def resolve_allowed_origin(request_origin):
@@ -189,10 +182,6 @@ class ApiHandler(BaseHTTPRequestHandler):
                 )
                 return
 
-            if api_path == "/notifications/test-email" and method == "POST":
-                self.send_json(200, send_test_email(self.headers, self.read_json()))
-                return
-
             if api_path == "/admin/clear-all" and method == "POST":
                 self.send_json(200, clear_all_data(self.headers))
                 return
@@ -265,8 +254,6 @@ class ApiHandler(BaseHTTPRequestHandler):
 
                     if method == "POST":
                         created = create_collection_item(connection, collection, self.read_json())
-                        if collection == "schedules":
-                            self._notify_schedule_change("created", None, created)
                         self.send_json(201, created)
                         return
 
@@ -292,8 +279,6 @@ class ApiHandler(BaseHTTPRequestHandler):
                             item_id,
                             self.read_json(),
                         )
-                        if collection == "schedules":
-                            self._notify_schedule_change("updated", existing, updated)
                         self.send_json(200, updated)
                         return
 
@@ -308,22 +293,10 @@ class ApiHandler(BaseHTTPRequestHandler):
                             )
                             return
                         delete_collection_item(connection, collection, item_id)
-                        if collection == "schedules":
-                            self._notify_schedule_change("deleted", existing, None)
                         self.send_json(200, {"success": True})
                         return
 
         self.send_json(405, {"error": "Method not allowed", "errorCode": "method_not_allowed"})
-
-    def _notify_schedule_change(self, action, before_item, after_item):
-        def worker():
-            try:
-                with get_connection() as connection:
-                    send_schedule_change_notifications(connection, action, before_item, after_item)
-            except Exception:
-                logger.exception("Failed to process schedule change notifications")
-
-        threading.Thread(target=worker, daemon=True).start()
 
     def handle_schedule_generation(self):
         try:
