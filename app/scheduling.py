@@ -42,6 +42,7 @@ def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
             "preferredSlots": teacher_preferences.get(section["instructor_id"], []),
             "forbiddenSlots": [],
             "lessonType": lesson_type,
+            "pcRequired": bool(section.get("requires_computers")),
         }
 
         if lesson_type == "lecture":
@@ -63,7 +64,6 @@ def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
                         "streamId": f"{section['course_id']}-{section['group_id']}",
                         "subgroupIds": [f"{base_group_id}-{subgroup}"],
                         "studentCount": subgroup_size,
-                        "pcRequired": False,
                     }
                 )
         else:
@@ -75,7 +75,6 @@ def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
                     "roomTypeRequired": "lab" if lesson_type == "lab" else "practical",
                     "streamId": f"{section['course_id']}-{section['group_id']}",
                     "subgroupIds": [],
-                    "pcRequired": False,
                 }
             )
 
@@ -101,6 +100,7 @@ def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
                 "roomTypeRequired": "lecture",
                 "subgroupIds": [],
                 "streamId": f"lecture-{course_id}-{instructor_id}",
+                "pcRequired": bool(first_section.get("requires_computers")),
             }
         )
 
@@ -137,7 +137,7 @@ def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
                 "type": room.get("type") or "",
                 "building": room.get("building") or "",
                 "floor": None,
-                "pcCount": 0,
+                "pcCount": int(room.get("computer_count") or 0),
             }
             for room in rooms
         ],
@@ -169,6 +169,7 @@ def build_schedule(connection, semester, year, algorithm):
             c.department,
             c.semester,
             c.year,
+            c.requires_computers,
             g.student_count,
             g.has_subgroups,
             g.language AS group_language
@@ -191,7 +192,7 @@ def build_schedule(connection, semester, year, algorithm):
     rooms = query_all(
         connection,
         """
-        SELECT id, number, capacity, available, type, building, department
+        SELECT id, number, capacity, available, type, building, department, computer_count
         FROM rooms
         WHERE available = 1
         ORDER BY capacity, id

@@ -145,9 +145,9 @@ def seed_from_store(connection, store):
             """
             INSERT INTO courses (
                 name, code, credits, hours, description,
-                year, semester, department, instructor_id, instructor_name, programme
+                year, semester, department, instructor_id, instructor_name, programme, requires_computers
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 course["name"],
@@ -161,6 +161,7 @@ def seed_from_store(connection, store):
                 course.get("instructor_id"),
                 course.get("instructor_name", ""),
                 course.get("programme_name", course.get("programme", "")),
+                1 if course.get("requires_computers") else 0,
             ),
         )
 
@@ -184,8 +185,8 @@ def seed_from_store(connection, store):
         db_execute(
             connection,
             """
-            INSERT INTO rooms (number, capacity, building, type, equipment, department, available)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO rooms (number, capacity, building, type, equipment, department, available, computer_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 room["number"],
@@ -195,6 +196,7 @@ def seed_from_store(connection, store):
                 room.get("equipment", ""),
                 room.get("department", ""),
                 room.get("is_available", room.get("available", 1)),
+                room.get("computer_count", 0),
             ),
         )
 
@@ -302,7 +304,8 @@ def sqlite_schema():
             department TEXT,
             instructor_id INTEGER,
             instructor_name TEXT,
-            programme TEXT
+            programme TEXT,
+            requires_computers INTEGER DEFAULT 0
         )
         """,
         """
@@ -344,7 +347,8 @@ def sqlite_schema():
             type TEXT,
             equipment TEXT,
             department TEXT,
-            available INTEGER DEFAULT 1
+            available INTEGER DEFAULT 1,
+            computer_count INTEGER DEFAULT 0
         )
         """,
         """
@@ -449,7 +453,8 @@ def postgres_schema():
             department TEXT,
             instructor_id INTEGER,
             instructor_name TEXT,
-            programme TEXT
+            programme TEXT,
+            requires_computers INTEGER DEFAULT 0
         )
         """,
         """
@@ -491,7 +496,8 @@ def postgres_schema():
             type TEXT,
             equipment TEXT,
             department TEXT,
-            available INTEGER DEFAULT 1
+            available INTEGER DEFAULT 1,
+            computer_count INTEGER DEFAULT 0
         )
         """,
         """
@@ -760,6 +766,7 @@ def ensure_database():
         ensure_column(connection, "courses", "instructor_id", "INTEGER")
         ensure_column(connection, "courses", "instructor_name", "TEXT")
         ensure_column(connection, "courses", "programme", "TEXT")
+        ensure_column(connection, "courses", "requires_computers", "INTEGER DEFAULT 0")
         ensure_column(connection, "teachers", "department", "TEXT")
         ensure_column(connection, "teachers", "weekly_hours_limit", "INTEGER")
         ensure_column(connection, "teachers", "password", "TEXT")
@@ -775,6 +782,7 @@ def ensure_database():
         ensure_column(connection, "students", "language", "TEXT DEFAULT 'ru'")
         ensure_column(connection, "rooms", "department", "TEXT")
         ensure_column(connection, "rooms", "available", "INTEGER DEFAULT 1")
+        ensure_column(connection, "rooms", "computer_count", "INTEGER DEFAULT 0")
         ensure_column(connection, "groups", "has_subgroups", "INTEGER DEFAULT 0")
         ensure_column(connection, "groups", "language", "TEXT DEFAULT 'ru'")
         ensure_column(connection, "sections", "group_id", "INTEGER")

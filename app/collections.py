@@ -84,7 +84,7 @@ def list_collection(connection, collection, query, user=None):
             """
             SELECT
                 id, name, code, credits, hours, description,
-                year, semester, department, instructor_id, instructor_name, programme
+                year, semester, department, instructor_id, instructor_name, programme, requires_computers
             FROM courses
             ORDER BY id
             """,
@@ -114,7 +114,7 @@ def list_collection(connection, collection, query, user=None):
         return query_all(
             connection,
             """
-            SELECT id, number, capacity, building, type, equipment, department, available
+            SELECT id, number, capacity, building, type, equipment, department, available, computer_count
             FROM rooms
             ORDER BY id
             """,
@@ -186,7 +186,7 @@ def list_collection(connection, collection, query, user=None):
 
 def create_collection_item(connection, collection, payload):
     if collection == "courses":
-        normalized = normalize_number_fields(payload, ["year", "study_year", "semester", "instructor_id"])
+        normalized = normalize_number_fields(payload, ["year", "study_year", "semester", "instructor_id", "requires_computers"])
         course_name = normalized.get("name")
         course_code = normalized.get("code") or course_name
         item_id = insert_and_get_id(
@@ -194,9 +194,9 @@ def create_collection_item(connection, collection, payload):
             """
             INSERT INTO courses (
                 name, code, credits, hours, description,
-                year, semester, department, instructor_id, instructor_name, programme
+                year, semester, department, instructor_id, instructor_name, programme, requires_computers
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 course_name,
@@ -210,6 +210,7 @@ def create_collection_item(connection, collection, payload):
                 normalized.get("instructor_id"),
                 normalized.get("instructor_name", ""),
                 normalized.get("programme", normalized.get("programme_name", "")),
+                1 if normalized.get("requires_computers", 0) else 0,
             ),
         )
         connection.commit()
@@ -218,7 +219,7 @@ def create_collection_item(connection, collection, payload):
             """
             SELECT
                 id, name, code, credits, hours, description,
-                year, semester, department, instructor_id, instructor_name, programme
+                year, semester, department, instructor_id, instructor_name, programme, requires_computers
             FROM courses
             WHERE id = ?
             """,
@@ -256,12 +257,12 @@ def create_collection_item(connection, collection, payload):
         )
 
     if collection == "rooms":
-        normalized = normalize_number_fields(payload, ["capacity", "available", "is_available"])
+        normalized = normalize_number_fields(payload, ["capacity", "available", "is_available", "computer_count"])
         item_id = insert_and_get_id(
             connection,
             """
-            INSERT INTO rooms (number, capacity, building, type, equipment, department, available)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO rooms (number, capacity, building, type, equipment, department, available, computer_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 normalized.get("number"),
@@ -271,13 +272,14 @@ def create_collection_item(connection, collection, payload):
                 normalized.get("equipment", ""),
                 normalized.get("department", ""),
                 1 if normalized.get("available", normalized.get("is_available", 1)) else 0,
+                normalized.get("computer_count", 0),
             ),
         )
         connection.commit()
         return query_one(
             connection,
             """
-            SELECT id, number, capacity, building, type, equipment, department, available
+            SELECT id, number, capacity, building, type, equipment, department, available, computer_count
             FROM rooms
             WHERE id = ?
             """,
@@ -390,7 +392,7 @@ def create_collection_item(connection, collection, payload):
 
 def update_collection_item(connection, collection, item_id, payload):
     if collection == "courses":
-        normalized = normalize_number_fields(payload, ["year", "study_year", "semester", "instructor_id"])
+        normalized = normalize_number_fields(payload, ["year", "study_year", "semester", "instructor_id", "requires_computers"])
         course_name = normalized.get("name")
         course_code = normalized.get("code") or course_name
         db_execute(
@@ -400,7 +402,7 @@ def update_collection_item(connection, collection, item_id, payload):
             SET
                 name = ?, code = ?, credits = ?, hours = ?, description = ?,
                 year = ?, semester = ?, department = ?, instructor_id = ?, instructor_name = ?,
-                programme = ?
+                programme = ?, requires_computers = ?
             WHERE id = ?
             """,
             (
@@ -415,6 +417,7 @@ def update_collection_item(connection, collection, item_id, payload):
                 normalized.get("instructor_id"),
                 normalized.get("instructor_name", ""),
                 normalized.get("programme", normalized.get("programme_name", "")),
+                1 if normalized.get("requires_computers", 0) else 0,
                 item_id,
             ),
         )
@@ -424,7 +427,7 @@ def update_collection_item(connection, collection, item_id, payload):
             """
             SELECT
                 id, name, code, credits, hours, description,
-                year, semester, department, instructor_id, instructor_name, programme
+                year, semester, department, instructor_id, instructor_name, programme, requires_computers
             FROM courses
             WHERE id = ?
             """,
@@ -464,12 +467,12 @@ def update_collection_item(connection, collection, item_id, payload):
         )
 
     if collection == "rooms":
-        normalized = normalize_number_fields(payload, ["capacity", "available", "is_available"])
+        normalized = normalize_number_fields(payload, ["capacity", "available", "is_available", "computer_count"])
         db_execute(
             connection,
             """
             UPDATE rooms
-            SET number = ?, capacity = ?, building = ?, type = ?, equipment = ?, department = ?, available = ?
+            SET number = ?, capacity = ?, building = ?, type = ?, equipment = ?, department = ?, available = ?, computer_count = ?
             WHERE id = ?
             """,
             (
@@ -480,6 +483,7 @@ def update_collection_item(connection, collection, item_id, payload):
                 normalized.get("equipment", ""),
                 normalized.get("department", ""),
                 1 if normalized.get("available", normalized.get("is_available", 1)) else 0,
+                normalized.get("computer_count", 0),
                 item_id,
             ),
         )
@@ -487,7 +491,7 @@ def update_collection_item(connection, collection, item_id, payload):
         return query_one(
             connection,
             """
-            SELECT id, number, capacity, building, type, equipment, department, available
+            SELECT id, number, capacity, building, type, equipment, department, available, computer_count
             FROM rooms
             WHERE id = ?
             """,

@@ -63,6 +63,14 @@ COURSE_HEADERS = {
     "description": "description",
     "описание": "description",
     "сипаттама": "description",
+    "requires_computers": "requires_computers",
+    "computer_required": "requires_computers",
+    "computers_required": "requires_computers",
+    "pc_required": "requires_computers",
+    "requires_pc": "requires_computers",
+    "нужны_компьютеры": "requires_computers",
+    "требуются_компьютеры": "requires_computers",
+    "компьютер_қажет": "requires_computers",
 }
 
 TEACHER_HEADERS = {
@@ -121,6 +129,13 @@ ROOM_HEADERS = {
     "equipment": "equipment",
     "оборудование": "equipment",
     "жабдықтар": "equipment",
+    "computer_count": "computer_count",
+    "computers": "computer_count",
+    "pc_count": "computer_count",
+    "pcs": "computer_count",
+    "компьютеры": "computer_count",
+    "количество_компьютеров": "computer_count",
+    "компьютер_саны": "computer_count",
 }
 
 GROUP_HEADERS = {
@@ -218,9 +233,19 @@ TEMPLATE_HEADERS = {
         "department",
         "instructor_name",
         "description",
+        "requires_computers",
     ],
     "Teachers": ["name", "email", "phone", "department", "teaching_languages"],
-    "Rooms": ["number", "capacity", "building", "type", "department", "available", "equipment"],
+    "Rooms": [
+        "number",
+        "capacity",
+        "building",
+        "type",
+        "department",
+        "available",
+        "equipment",
+        "computer_count",
+    ],
     "Groups": ["name", "student_count", "has_subgroups", "language"],
     "Sections": ["course_code", "group_name", "classes_count", "lesson_type"],
 }
@@ -236,6 +261,7 @@ TEMPLATE_ROWS = {
             "Факультет компьютерных систем и профессионального образования (КСиПО-БжЦТ)",
             "Aruzhan Saparova",
             "Introduction to programming",
+            "no",
         ],
     ],
     "Teachers": [
@@ -256,6 +282,7 @@ TEMPLATE_ROWS = {
             "Факультет компьютерных систем и профессионального образования (КСиПО-БжЦТ)",
             "yes",
             "Projector, whiteboard",
+            0,
         ],
     ],
     "Groups": [
@@ -364,6 +391,27 @@ def _normalize_availability(value):
     return AVAILABLE_ALIASES.get(compact, AVAILABLE_ALIASES.get(normalized, 1 if value else 0))
 
 
+def _normalize_bool_flag(value):
+    if value in (None, ""):
+        return 0
+    if isinstance(value, bool):
+        return 1 if value else 0
+    normalized = _normalize_header(value).replace("_", " ")
+    compact = normalized.replace(" ", "_")
+    truthy_values = {
+        "1",
+        "true",
+        "yes",
+        "да",
+        "иә",
+        "required",
+        "needed",
+        "need",
+        "қажет",
+    }
+    return 1 if normalized in truthy_values or compact in truthy_values else 0
+
+
 def _normalize_lesson_type(value):
     if value in (None, ""):
         return "lecture"
@@ -415,6 +463,7 @@ def _validate_required_fields(entity_name, row_index, payload):
 
 def _upsert_course(connection, payload):
     normalized = normalize_number_fields(payload, ["year", "study_year", "semester"])
+    requires_computers = _normalize_bool_flag(normalized.get("requires_computers"))
     instructor_name = (normalized.get("instructor_name") or "").strip()
     instructor_id = None
     if instructor_name:
@@ -450,7 +499,8 @@ def _upsert_course(connection, payload):
                 department = ?,
                 instructor_id = ?,
                 instructor_name = ?,
-                programme = ?
+                programme = ?,
+                requires_computers = ?
             WHERE id = ?
             """,
             (
@@ -463,6 +513,7 @@ def _upsert_course(connection, payload):
                 instructor_id,
                 instructor_name,
                 normalized.get("programme", normalized.get("programme_name", "")) or "",
+                requires_computers,
                 existing["id"],
             ),
         )
@@ -473,9 +524,9 @@ def _upsert_course(connection, payload):
         """
         INSERT INTO courses (
             name, code, credits, hours, description,
-            year, semester, department, instructor_id, instructor_name, programme
+            year, semester, department, instructor_id, instructor_name, programme, requires_computers
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             normalized["name"],
@@ -489,6 +540,7 @@ def _upsert_course(connection, payload):
             instructor_id,
             instructor_name,
             normalized.get("programme", normalized.get("programme_name", "")) or "",
+            requires_computers,
         ),
     )
     return "inserted"
@@ -541,7 +593,7 @@ def _upsert_teacher(connection, payload):
 
 
 def _upsert_room(connection, payload):
-    normalized = normalize_number_fields(payload, ["capacity"])
+    normalized = normalize_number_fields(payload, ["capacity", "computer_count"])
     normalized["type"] = _normalize_room_type(normalized.get("type"))
     normalized["available"] = _normalize_availability(normalized.get("available"))
     existing = query_one(
@@ -554,7 +606,7 @@ def _upsert_room(connection, payload):
             connection,
             """
             UPDATE rooms
-            SET number = ?, capacity = ?, building = ?, type = ?, equipment = ?, department = ?, available = ?
+            SET number = ?, capacity = ?, building = ?, type = ?, equipment = ?, department = ?, available = ?, computer_count = ?
             WHERE id = ?
             """,
             (
@@ -565,6 +617,7 @@ def _upsert_room(connection, payload):
                 normalized.get("equipment", "") or "",
                 normalized.get("department", "") or "",
                 normalized.get("available", 1),
+                normalized.get("computer_count", 0),
                 existing["id"],
             ),
         )
@@ -573,8 +626,8 @@ def _upsert_room(connection, payload):
     insert_and_get_id(
         connection,
         """
-        INSERT INTO rooms (number, capacity, building, type, equipment, department, available)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO rooms (number, capacity, building, type, equipment, department, available, computer_count)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             str(normalized["number"]),
@@ -584,6 +637,7 @@ def _upsert_room(connection, payload):
             normalized.get("equipment", "") or "",
             normalized.get("department", "") or "",
             normalized.get("available", 1),
+            normalized.get("computer_count", 0),
         ),
     )
     return "inserted"
