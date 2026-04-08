@@ -1,4 +1,5 @@
 import base64
+from datetime import date
 from io import BytesIO
 
 from .auth_service import require_auth_user
@@ -200,7 +201,7 @@ TEMPLATE_ROWS = {
         [
             "CS101",
             "Programming 1",
-            1,
+            date.today().year,
             1,
             "Программная инженерия (6B06101)",
             "Факультет компьютерных систем и профессионального образования (КСиПО-БжЦТ)",
