@@ -14,11 +14,29 @@ def ensure_teacher_email_allowed(email, role):
             "Для преподавателя нужен email, оканчивающийся на @kazatu.edu.kz",
         )
 
+
+def normalize_language(value, default="ru"):
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in {"ru", "kk"} else default
+
+
+def normalize_teaching_languages(value):
+    if isinstance(value, str):
+        raw_values = value.split(",")
+    else:
+        raw_values = value or []
+    seen = []
+    for raw in raw_values:
+        normalized = normalize_language(raw, "")
+        if normalized and normalized not in seen:
+            seen.append(normalized)
+    return seen or ["ru", "kk"]
+
 def _find_account_by_token(connection, token):
     admin = query_one(
         connection,
         """
-        SELECT id, email, full_name, role, token, avatar_data, department, programme, group_id, group_name, subgroup
+        SELECT id, email, full_name, role, token, avatar_data, department, programme, group_id, group_name, subgroup, '' AS language, '' AS teaching_languages
         FROM users
         WHERE role = 'admin' AND token = ?
         """,
@@ -32,7 +50,7 @@ def _find_account_by_token(connection, token):
         """
         SELECT
             id, email, name AS full_name, 'teacher' AS role, token, avatar_data,
-            department, '' AS programme, NULL AS group_id, '' AS group_name, '' AS subgroup
+            department, '' AS programme, NULL AS group_id, '' AS group_name, '' AS subgroup, '' AS language, teaching_languages
         FROM teachers
         WHERE token = ?
         """,
@@ -46,7 +64,7 @@ def _find_account_by_token(connection, token):
         """
         SELECT
             id, email, name AS full_name, 'student' AS role, token, avatar_data,
-            department, programme, group_id, group_name, subgroup
+            department, programme, group_id, group_name, subgroup, language, '' AS teaching_languages
         FROM students
         WHERE token = ?
         """,
@@ -72,7 +90,7 @@ def _find_teacher_by_email(connection, email):
     return query_one(
         connection,
         """
-        SELECT id, email, password, token, name, phone, department, weekly_hours_limit, avatar_data
+        SELECT id, email, password, token, name, phone, department, weekly_hours_limit, avatar_data, teaching_languages
         FROM teachers
         WHERE lower(email) = lower(?)
         """,
@@ -86,7 +104,7 @@ def _find_login_account(connection, email, selected_role):
         return query_one(
             connection,
             """
-            SELECT id, email, password, full_name, role, token, avatar_data, department, programme, group_id, group_name, subgroup
+            SELECT id, email, password, full_name, role, token, avatar_data, department, programme, group_id, group_name, subgroup, '' AS language, '' AS teaching_languages
             FROM users
             WHERE role = 'admin' AND lower(email) = lower(?)
             """,
@@ -98,7 +116,7 @@ def _find_login_account(connection, email, selected_role):
             """
             SELECT
                 id, email, password, name AS full_name, 'teacher' AS role, token, avatar_data,
-                department, '' AS programme, NULL AS group_id, '' AS group_name, '' AS subgroup
+                department, '' AS programme, NULL AS group_id, '' AS group_name, '' AS subgroup, '' AS language, teaching_languages
             FROM teachers
             WHERE lower(email) = lower(?)
             """,
@@ -110,7 +128,7 @@ def _find_login_account(connection, email, selected_role):
             """
             SELECT
                 id, email, password, name AS full_name, 'student' AS role, token, avatar_data,
-                department, programme, group_id, group_name, subgroup
+                department, programme, group_id, group_name, subgroup, language, '' AS teaching_languages
             FROM students
             WHERE lower(email) = lower(?)
             """,
@@ -156,6 +174,7 @@ def register_user(payload):
     programme_name = (payload.get("programmeName") or "").strip()
     subgroup = (payload.get("subgroup") or "").strip().upper()
     group_id = payload.get("groupId")
+    student_language = normalize_language(payload.get("language"), "")
     if role not in {"student", "teacher"}:
         raise ApiError(
             400,
@@ -171,6 +190,8 @@ def register_user(payload):
             student_missing.append("programmeName")
         if not group_id:
             student_missing.append("groupId")
+        if not student_language:
+            student_missing.append("language")
         if student_missing:
             raise ApiError(
                 400,
@@ -202,7 +223,7 @@ def register_user(payload):
                 selected_group = query_one(
                     connection,
                     """
-                    SELECT id, name, has_subgroups
+                    SELECT id, name, has_subgroups, language
                     FROM groups
                     WHERE id = ?
                     """,
@@ -210,6 +231,12 @@ def register_user(payload):
                 )
                 if selected_group is None:
                     raise ApiError(400, "bad_request", "Выбрана некорректная группа")
+                if student_language != normalize_language(selected_group.get("language"), "ru"):
+                    raise ApiError(
+                        400,
+                        "bad_request",
+                        "Язык студента должен совпадать с языком обучения группы",
+                    )
                 if selected_group.get("has_subgroups"):
                     if subgroup not in {"A", "B"}:
                         raise ApiError(
@@ -233,6 +260,7 @@ def register_user(payload):
                     "Пользователь с таким email уже существует",
                 )
 
+            teaching_languages = normalize_teaching_languages(payload.get("teachingLanguages"))
             token = secrets.token_urlsafe(32)
             if role == "teacher":
                 if existing_teacher:
@@ -240,13 +268,14 @@ def register_user(payload):
                         connection,
                         """
                         UPDATE teachers
-                        SET name = ?, password = ?, token = ?
+                        SET name = ?, password = ?, token = ?, teaching_languages = ?
                         WHERE id = ?
                         """,
                         (
                             payload["displayName"],
                             hash_password(payload["password"]),
                             token,
+                            ",".join(teaching_languages),
                             existing_teacher["id"],
                         ),
                     )
@@ -256,9 +285,9 @@ def register_user(payload):
                         connection,
                         """
                         INSERT INTO teachers (
-                            name, email, password, token, avatar_data, phone, department, weekly_hours_limit
+                            name, email, password, token, avatar_data, phone, department, weekly_hours_limit, teaching_languages
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             payload["displayName"],
@@ -269,6 +298,7 @@ def register_user(payload):
                             "",
                             "",
                             None,
+                            ",".join(teaching_languages),
                         ),
                     )
                 user = query_one(
@@ -276,7 +306,7 @@ def register_user(payload):
                     """
                     SELECT
                         id, email, name AS full_name, 'teacher' AS role, token, avatar_data,
-                        department, '' AS programme, NULL AS group_id, '' AS group_name, '' AS subgroup
+                        department, '' AS programme, NULL AS group_id, '' AS group_name, '' AS subgroup, '' AS language, teaching_languages
                     FROM teachers
                     WHERE id = ?
                     """,
@@ -287,9 +317,9 @@ def register_user(payload):
                     connection,
                     """
                     INSERT INTO students (
-                        name, email, password, token, avatar_data, department, programme, group_id, group_name, subgroup
+                        name, email, password, token, avatar_data, department, programme, group_id, group_name, subgroup, language
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         payload["displayName"],
@@ -302,6 +332,7 @@ def register_user(payload):
                         selected_group["id"],
                         selected_group["name"],
                         subgroup,
+                        student_language,
                     ),
                 )
                 user = query_one(
@@ -309,7 +340,7 @@ def register_user(payload):
                     """
                     SELECT
                         id, email, name AS full_name, 'student' AS role, token, avatar_data,
-                        department, programme, group_id, group_name, subgroup
+                        department, programme, group_id, group_name, subgroup, language, '' AS teaching_languages
                     FROM students
                     WHERE id = ?
                     """,

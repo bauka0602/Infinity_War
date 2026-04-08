@@ -38,6 +38,8 @@ def notifications_configured():
     return (
         EMAIL_NOTIFICATIONS_ENABLED
         and bool(SMTP_HOST)
+        and bool(SMTP_USER)
+        and bool(SMTP_PASSWORD)
         and bool(SMTP_FROM_EMAIL)
     )
 
@@ -227,14 +229,17 @@ def _send_email(recipient, subject, body):
             timeout=SMTP_TIMEOUT_SECONDS,
             context=ssl.create_default_context(),
         ) as server:
+            server.ehlo()
             if SMTP_USER:
                 server.login(SMTP_USER, SMTP_PASSWORD)
             server.send_message(message)
         return
 
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=SMTP_TIMEOUT_SECONDS) as server:
+        server.ehlo()
         if SMTP_USE_TLS:
             server.starttls(context=ssl.create_default_context())
+            server.ehlo()
         if SMTP_USER:
             server.login(SMTP_USER, SMTP_PASSWORD)
         server.send_message(message)

@@ -315,7 +315,8 @@ def sqlite_schema():
             avatar_data TEXT,
             phone TEXT,
             department TEXT,
-            weekly_hours_limit INTEGER
+            weekly_hours_limit INTEGER,
+            teaching_languages TEXT DEFAULT 'ru,kk'
         )
         """,
         """
@@ -330,7 +331,8 @@ def sqlite_schema():
             programme TEXT,
             group_id INTEGER,
             group_name TEXT,
-            subgroup TEXT
+            subgroup TEXT,
+            language TEXT DEFAULT 'ru'
         )
         """,
         """
@@ -350,7 +352,8 @@ def sqlite_schema():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL UNIQUE,
             student_count INTEGER NOT NULL,
-            has_subgroups INTEGER DEFAULT 0
+            has_subgroups INTEGER DEFAULT 0,
+            language TEXT DEFAULT 'ru'
         )
         """,
         """
@@ -445,7 +448,8 @@ def postgres_schema():
             avatar_data TEXT,
             phone TEXT,
             department TEXT,
-            weekly_hours_limit INTEGER
+            weekly_hours_limit INTEGER,
+            teaching_languages TEXT DEFAULT 'ru,kk'
         )
         """,
         """
@@ -460,7 +464,8 @@ def postgres_schema():
             programme TEXT,
             group_id INTEGER,
             group_name TEXT,
-            subgroup TEXT
+            subgroup TEXT,
+            language TEXT DEFAULT 'ru'
         )
         """,
         """
@@ -480,7 +485,8 @@ def postgres_schema():
             id SERIAL PRIMARY KEY,
             name TEXT NOT NULL UNIQUE,
             student_count INTEGER NOT NULL,
-            has_subgroups INTEGER DEFAULT 0
+            has_subgroups INTEGER DEFAULT 0,
+            language TEXT DEFAULT 'ru'
         )
         """,
         """
@@ -731,15 +737,18 @@ def ensure_database():
         ensure_column(connection, "teachers", "password", "TEXT")
         ensure_column(connection, "teachers", "token", "TEXT")
         ensure_column(connection, "teachers", "avatar_data", "TEXT")
+        ensure_column(connection, "teachers", "teaching_languages", "TEXT DEFAULT 'ru,kk'")
         ensure_column(connection, "students", "avatar_data", "TEXT")
         ensure_column(connection, "students", "department", "TEXT")
         ensure_column(connection, "students", "programme", "TEXT")
         ensure_column(connection, "students", "group_id", "INTEGER")
         ensure_column(connection, "students", "group_name", "TEXT")
         ensure_column(connection, "students", "subgroup", "TEXT")
+        ensure_column(connection, "students", "language", "TEXT DEFAULT 'ru'")
         ensure_column(connection, "rooms", "department", "TEXT")
         ensure_column(connection, "rooms", "available", "INTEGER DEFAULT 1")
         ensure_column(connection, "groups", "has_subgroups", "INTEGER DEFAULT 0")
+        ensure_column(connection, "groups", "language", "TEXT DEFAULT 'ru'")
         ensure_column(connection, "sections", "group_id", "INTEGER")
         ensure_column(connection, "sections", "group_name", "TEXT")
         ensure_column(connection, "sections", "lesson_type", "TEXT DEFAULT 'lecture'")

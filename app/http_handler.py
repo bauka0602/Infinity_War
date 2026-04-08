@@ -157,7 +157,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                             query_all(
                                 connection,
                                 """
-                                SELECT id, name, student_count, has_subgroups
+                                SELECT id, name, student_count, has_subgroups, language
                                 FROM groups
                                 ORDER BY name, id
                                 """,

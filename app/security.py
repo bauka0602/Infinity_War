@@ -29,6 +29,8 @@ def sanitize_user(row):
         "groupId": row.get("group_id"),
         "groupName": row.get("group_name", ""),
         "subgroup": row.get("subgroup", ""),
+        "language": row.get("language", ""),
+        "teachingLanguages": row.get("teaching_languages", ""),
     }
 
 

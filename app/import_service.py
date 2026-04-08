@@ -84,6 +84,10 @@ TEACHER_HEADERS = {
     "max_hours": "weekly_hours_limit",
     "максимум_часов_в_неделю": "weekly_hours_limit",
     "апталық_сағат_лимиті": "weekly_hours_limit",
+    "teaching_languages": "teaching_languages",
+    "languages": "teaching_languages",
+    "языки": "teaching_languages",
+    "оқыту_тілдері": "teaching_languages",
 }
 
 ROOM_HEADERS = {
@@ -129,6 +133,10 @@ GROUP_HEADERS = {
     "has_subgroups": "has_subgroups",
     "subgroups": "has_subgroups",
     "подгруппы": "has_subgroups",
+    "language": "language",
+    "lang": "language",
+    "язык": "language",
+    "оқыту_тілі": "language",
 }
 
 SECTION_HEADERS = {
@@ -208,9 +216,9 @@ TEMPLATE_HEADERS = {
         "instructor_name",
         "description",
     ],
-    "Teachers": ["name", "email", "phone", "department"],
+    "Teachers": ["name", "email", "phone", "department", "teaching_languages"],
     "Rooms": ["number", "capacity", "building", "type", "department", "available", "equipment"],
-    "Groups": ["name", "student_count", "has_subgroups"],
+    "Groups": ["name", "student_count", "has_subgroups", "language"],
     "Sections": ["course_code", "group_name", "classes_count", "lesson_type"],
 }
 
@@ -233,6 +241,7 @@ TEMPLATE_ROWS = {
             "aruzhan@kazatu.edu.kz",
             "+7 777 000 00 00",
             "Факультет компьютерных систем и профессионального образования (КСиПО-БжЦТ)",
+            "ru,kk",
         ],
     ],
     "Rooms": [
@@ -247,7 +256,7 @@ TEMPLATE_ROWS = {
         ],
     ],
     "Groups": [
-        ["SE-23-01", 24, "yes"],
+        ["SE-23-01", 24, "yes", "ru"],
     ],
     "Sections": [
         ["CS101", "SE-23-01", 2, "lecture"],
@@ -484,6 +493,7 @@ def _upsert_course(connection, payload):
 
 def _upsert_teacher(connection, payload):
     normalized = normalize_number_fields(payload, ["weekly_hours_limit", "max_hours_per_week"])
+    teaching_languages = _normalize_teaching_languages(normalized.get("teaching_languages"))
     existing = query_one(
         connection,
         "SELECT id FROM teachers WHERE lower(email) = lower(?)",
@@ -494,7 +504,7 @@ def _upsert_teacher(connection, payload):
             connection,
             """
             UPDATE teachers
-            SET name = ?, email = ?, phone = ?, department = ?, weekly_hours_limit = ?
+            SET name = ?, email = ?, phone = ?, department = ?, weekly_hours_limit = ?, teaching_languages = ?
             WHERE id = ?
             """,
             (
@@ -503,6 +513,7 @@ def _upsert_teacher(connection, payload):
                 normalized.get("phone", "") or "",
                 normalized.get("department", normalized.get("specialization", "")) or "",
                 normalized.get("weekly_hours_limit", normalized.get("max_hours_per_week")),
+                teaching_languages,
                 existing["id"],
             ),
         )
@@ -511,8 +522,8 @@ def _upsert_teacher(connection, payload):
     insert_and_get_id(
         connection,
         """
-        INSERT INTO teachers (name, email, phone, department, weekly_hours_limit)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO teachers (name, email, phone, department, weekly_hours_limit, teaching_languages)
+        VALUES (?, ?, ?, ?, ?, ?)
         """,
         (
             normalized["name"],
@@ -520,6 +531,7 @@ def _upsert_teacher(connection, payload):
             normalized.get("phone", "") or "",
             normalized.get("department", normalized.get("specialization", "")) or "",
             normalized.get("weekly_hours_limit", normalized.get("max_hours_per_week")),
+            teaching_languages,
         ),
     )
     return "inserted"
@@ -585,9 +597,31 @@ def _normalize_bool(value):
     return 0
 
 
+def _normalize_language(value, default="ru"):
+    normalized = _normalize_header(value)
+    if normalized in {"ru", "рус", "русский"}:
+        return "ru"
+    if normalized in {"kk", "kaz", "қаз", "каз", "kazakh", "қазақ", "казахский"}:
+        return "kk"
+    return default
+
+
+def _normalize_teaching_languages(value):
+    if value in (None, ""):
+        return "ru,kk"
+    values = str(value).replace(";", ",").split(",")
+    result = []
+    for item in values:
+        normalized = _normalize_language(item, "")
+        if normalized and normalized not in result:
+            result.append(normalized)
+    return ",".join(result or ["ru", "kk"])
+
+
 def _upsert_group(connection, payload):
     normalized = normalize_number_fields(payload, ["student_count"])
     has_subgroups = _normalize_bool(payload.get("has_subgroups"))
+    language = _normalize_language(payload.get("language"), "ru")
     existing = query_one(
         connection,
         "SELECT id FROM groups WHERE lower(name) = lower(?)",
@@ -598,13 +632,14 @@ def _upsert_group(connection, payload):
             connection,
             """
             UPDATE groups
-            SET name = ?, student_count = ?, has_subgroups = ?
+            SET name = ?, student_count = ?, has_subgroups = ?, language = ?
             WHERE id = ?
             """,
             (
                 normalized["name"],
                 normalized["student_count"],
                 has_subgroups,
+                language,
                 existing["id"],
             ),
         )
@@ -613,13 +648,14 @@ def _upsert_group(connection, payload):
     insert_and_get_id(
         connection,
         """
-        INSERT INTO groups (name, student_count, has_subgroups)
-        VALUES (?, ?, ?)
+        INSERT INTO groups (name, student_count, has_subgroups, language)
+        VALUES (?, ?, ?, ?)
         """,
         (
             normalized["name"],
             normalized["student_count"],
             has_subgroups,
+            language,
         ),
     )
     return "inserted"

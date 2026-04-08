@@ -95,6 +95,7 @@ def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
                 "preferredBuildings": [],
                 "preferredDays": [],
                 "preferredHours": [],
+                "preferredSlots": teacher_preferences.get(instructor_id, []),
                 "forbiddenSlots": [],
                 "lessonType": "lecture",
                 "roomTypeRequired": "lecture",
@@ -124,6 +125,7 @@ def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
                 "name": teacher["name"],
                 "maxHoursPerWeek": teacher.get("weekly_hours_limit"),
                 "availability": [],
+                "teachingLanguages": teacher.get("teaching_languages", ""),
             }
             for teacher in teachers
         ],
@@ -168,7 +170,8 @@ def build_schedule(connection, semester, year, algorithm):
             c.semester,
             c.year,
             g.student_count,
-            g.has_subgroups
+            g.has_subgroups,
+            g.language AS group_language
         FROM sections s
         JOIN courses c ON c.id = s.course_id
         JOIN groups g ON g.id = s.group_id
@@ -180,7 +183,7 @@ def build_schedule(connection, semester, year, algorithm):
     teachers = query_all(
         connection,
         """
-        SELECT id, name, weekly_hours_limit
+        SELECT id, name, weekly_hours_limit, teaching_languages
         FROM teachers
         ORDER BY id
         """,
@@ -221,6 +224,25 @@ def build_schedule(connection, semester, year, algorithm):
                 400,
                 "bad_request",
                 f"Для курса '{section['course_name']}' не найден преподаватель.",
+            )
+
+    teacher_language_map = {}
+    for teacher in teachers:
+        raw_languages = str(teacher.get("teaching_languages") or "ru,kk").split(",")
+        teacher_language_map[teacher["id"]] = {
+            language.strip().lower()
+            for language in raw_languages
+            if language.strip().lower() in {"ru", "kk"}
+        } or {"ru", "kk"}
+
+    for section in sections:
+        group_language = str(section.get("group_language") or "ru").strip().lower()
+        teacher_languages = teacher_language_map.get(section["instructor_id"], {"ru", "kk"})
+        if group_language not in teacher_languages:
+            raise ApiError(
+                400,
+                "bad_request",
+                f"Преподаватель курса '{section['course_name']}' не поддерживает язык группы '{group_language}'.",
             )
 
     teacher_preference_rows = get_approved_teacher_preferences(connection)
