@@ -32,6 +32,7 @@
 ### 3. Groups
 - `name`
 - `student_count`
+- `study_course`
 - `has_subgroups`
 - `language`
 
@@ -89,5 +90,5 @@
 4. Импортировать или заполнить `groups`
 5. Импортировать или заполнить `disciplines`
 6. Импортировать или заполнить `sections`
-7. Выбрать нужный `semester` и `course`
+7. Выбрать нужный `semester` и `year`
 8. Запустить генерацию

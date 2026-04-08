@@ -155,6 +155,11 @@ GROUP_HEADERS = {
     "lang": "language",
     "язык": "language",
     "оқыту_тілі": "language",
+    "study_course": "study_course",
+    "course": "study_course",
+    "group_course": "study_course",
+    "курс": "study_course",
+    "оқу_курсы": "study_course",
 }
 
 SECTION_HEADERS = {
@@ -179,7 +184,7 @@ REQUIRED_FIELDS = {
     "courses": ["code", "name", "year", "semester", "programme", "department"],
     "teachers": ["name", "email"],
     "rooms": ["number", "capacity", "department"],
-    "groups": ["name", "student_count"],
+    "groups": ["name", "student_count", "study_course"],
     "sections": ["course_code", "group_name", "classes_count"],
 }
 
@@ -246,7 +251,7 @@ TEMPLATE_HEADERS = {
         "equipment",
         "computer_count",
     ],
-    "Groups": ["name", "student_count", "has_subgroups", "language"],
+    "Groups": ["name", "student_count", "study_course", "has_subgroups", "language"],
     "Sections": ["course_code", "group_name", "classes_count", "lesson_type"],
 }
 
@@ -286,7 +291,7 @@ TEMPLATE_ROWS = {
         ],
     ],
     "Groups": [
-        ["SE-23-01", 24, "yes", "ru"],
+        ["SE-23-01", 24, 2, "yes", "ru"],
     ],
     "Sections": [
         ["CS101", "SE-23-01", 2, "lecture"],
@@ -676,7 +681,7 @@ def _normalize_teaching_languages(value):
 
 
 def _upsert_group(connection, payload):
-    normalized = normalize_number_fields(payload, ["student_count"])
+    normalized = normalize_number_fields(payload, ["student_count", "study_course"])
     has_subgroups = _normalize_bool(payload.get("has_subgroups"))
     language = _normalize_language(payload.get("language"), "ru")
     existing = query_one(
@@ -689,12 +694,13 @@ def _upsert_group(connection, payload):
             connection,
             """
             UPDATE groups
-            SET name = ?, student_count = ?, has_subgroups = ?, language = ?
+            SET name = ?, student_count = ?, study_course = ?, has_subgroups = ?, language = ?
             WHERE id = ?
             """,
             (
                 normalized["name"],
                 normalized["student_count"],
+                normalized.get("study_course"),
                 has_subgroups,
                 language,
                 existing["id"],
@@ -705,12 +711,13 @@ def _upsert_group(connection, payload):
     insert_and_get_id(
         connection,
         """
-        INSERT INTO groups (name, student_count, has_subgroups, language)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO groups (name, student_count, study_course, has_subgroups, language)
+        VALUES (?, ?, ?, ?, ?)
         """,
         (
             normalized["name"],
             normalized["student_count"],
+            normalized.get("study_course"),
             has_subgroups,
             language,
         ),

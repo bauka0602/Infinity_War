@@ -124,7 +124,7 @@ def list_collection(connection, collection, query, user=None):
         return query_all(
             connection,
             """
-            SELECT id, name, student_count, has_subgroups, language
+            SELECT id, name, student_count, has_subgroups, language, study_course
             FROM groups
             ORDER BY id
             """,
@@ -287,26 +287,27 @@ def create_collection_item(connection, collection, payload):
         )
 
     if collection == "groups":
-        normalized = normalize_number_fields(payload, ["student_count", "has_subgroups"])
+        normalized = normalize_number_fields(payload, ["student_count", "has_subgroups", "study_course"])
         group_language = normalize_language(normalized.get("language"), "ru")
         item_id = insert_and_get_id(
             connection,
             """
-            INSERT INTO groups (name, student_count, has_subgroups, language)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO groups (name, student_count, has_subgroups, language, study_course)
+            VALUES (?, ?, ?, ?, ?)
             """,
             (
                 normalized.get("name"),
                 normalized.get("student_count"),
                 1 if normalized.get("has_subgroups", 0) else 0,
                 group_language,
+                normalized.get("study_course"),
             ),
         )
         connection.commit()
         return query_one(
             connection,
             """
-            SELECT id, name, student_count, has_subgroups, language
+            SELECT id, name, student_count, has_subgroups, language, study_course
             FROM groups
             WHERE id = ?
             """,
@@ -499,13 +500,13 @@ def update_collection_item(connection, collection, item_id, payload):
         )
 
     if collection == "groups":
-        normalized = normalize_number_fields(payload, ["student_count", "has_subgroups"])
+        normalized = normalize_number_fields(payload, ["student_count", "has_subgroups", "study_course"])
         group_language = normalize_language(normalized.get("language"), "ru")
         db_execute(
             connection,
             """
             UPDATE groups
-            SET name = ?, student_count = ?, has_subgroups = ?, language = ?
+            SET name = ?, student_count = ?, has_subgroups = ?, language = ?, study_course = ?
             WHERE id = ?
             """,
             (
@@ -513,6 +514,7 @@ def update_collection_item(connection, collection, item_id, payload):
                 normalized.get("student_count"),
                 1 if normalized.get("has_subgroups", 0) else 0,
                 group_language,
+                normalized.get("study_course"),
                 item_id,
             ),
         )
@@ -520,7 +522,7 @@ def update_collection_item(connection, collection, item_id, payload):
         return query_one(
             connection,
             """
-            SELECT id, name, student_count, has_subgroups, language
+            SELECT id, name, student_count, has_subgroups, language, study_course
             FROM groups
             WHERE id = ?
             """,

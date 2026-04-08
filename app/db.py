@@ -204,13 +204,15 @@ def seed_from_store(connection, store):
         db_execute(
             connection,
             """
-            INSERT INTO groups (name, student_count, has_subgroups)
-            VALUES (?, ?, ?)
+            INSERT INTO groups (name, student_count, has_subgroups, language, study_course)
+            VALUES (?, ?, ?, ?, ?)
             """,
             (
                 group.get("name"),
                 group.get("student_count"),
                 group.get("has_subgroups", 0),
+                group.get("language", "ru"),
+                group.get("study_course"),
             ),
         )
 
@@ -357,7 +359,8 @@ def sqlite_schema():
             name TEXT NOT NULL UNIQUE,
             student_count INTEGER NOT NULL,
             has_subgroups INTEGER DEFAULT 0,
-            language TEXT DEFAULT 'ru'
+            language TEXT DEFAULT 'ru',
+            study_course INTEGER
         )
         """,
         """
@@ -506,7 +509,8 @@ def postgres_schema():
             name TEXT NOT NULL UNIQUE,
             student_count INTEGER NOT NULL,
             has_subgroups INTEGER DEFAULT 0,
-            language TEXT DEFAULT 'ru'
+            language TEXT DEFAULT 'ru',
+            study_course INTEGER
         )
         """,
         """
@@ -785,6 +789,7 @@ def ensure_database():
         ensure_column(connection, "rooms", "computer_count", "INTEGER DEFAULT 0")
         ensure_column(connection, "groups", "has_subgroups", "INTEGER DEFAULT 0")
         ensure_column(connection, "groups", "language", "TEXT DEFAULT 'ru'")
+        ensure_column(connection, "groups", "study_course", "INTEGER")
         ensure_column(connection, "sections", "group_id", "INTEGER")
         ensure_column(connection, "sections", "group_name", "TEXT")
         ensure_column(connection, "sections", "lesson_type", "TEXT DEFAULT 'lecture'")

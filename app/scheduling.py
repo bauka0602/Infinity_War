@@ -1,3 +1,4 @@
+from calendar import monthrange
 from datetime import date, timedelta
 
 from .db import db_execute, db_executemany, query_all
@@ -16,7 +17,8 @@ DAY_NAME_TO_INDEX = {
 
 def monday_for_week(target_year):
     today = date.today()
-    anchor = date(target_year, today.month, today.day)
+    safe_day = min(today.day, monthrange(target_year, today.month)[1])
+    anchor = date(target_year, today.month, safe_day)
     return anchor - timedelta(days=anchor.weekday())
 
 
@@ -172,14 +174,15 @@ def build_schedule(connection, semester, year, algorithm):
             c.requires_computers,
             g.student_count,
             g.has_subgroups,
-            g.language AS group_language
+            g.language AS group_language,
+            g.study_course
         FROM sections s
         JOIN courses c ON c.id = s.course_id
         JOIN groups g ON g.id = s.group_id
-        WHERE c.semester = ? AND c.year = ?
+        WHERE c.semester = ?
         ORDER BY g.student_count DESC, s.classes_count DESC, s.id
         """,
-        (semester, year),
+        (semester,),
     )
     teachers = query_all(
         connection,
@@ -201,7 +204,7 @@ def build_schedule(connection, semester, year, algorithm):
 
     missing_parts = []
     if not sections:
-        missing_parts.append(f"секции для {semester} семестра {year} года")
+        missing_parts.append(f"секции для {semester} семестра")
     if not teachers:
         missing_parts.append("преподаватели")
     if not rooms:
@@ -237,6 +240,18 @@ def build_schedule(connection, semester, year, algorithm):
         } or {"ru", "kk"}
 
     for section in sections:
+        if not section.get("study_course"):
+            raise ApiError(
+                400,
+                "bad_request",
+                f"Для группы '{section['group_name']}' не указан курс обучения.",
+            )
+        if int(section.get("study_course")) != int(section.get("year") or 0):
+            raise ApiError(
+                400,
+                "bad_request",
+                f"Дисциплина '{section['course_name']}' предназначена для {section['year']} курса, а группа '{section['group_name']}' указана как {section['study_course']} курс.",
+            )
         group_language = str(section.get("group_language") or "ru").strip().lower()
         teacher_languages = teacher_language_map.get(section["instructor_id"], {"ru", "kk"})
         if group_language not in teacher_languages:

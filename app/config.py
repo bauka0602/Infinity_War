@@ -1,5 +1,6 @@
 import os
 import threading
+from importlib.util import find_spec
 from pathlib import Path
 
 
@@ -35,10 +36,21 @@ load_env_file(BASE_DIR / ".env")
 DB_FILE = Path(os.getenv("SQLITE_DB_FILE", DATA_DIR / "timetable.db"))
 LEGACY_JSON_FILE = DATA_DIR / "store.json"
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
-DB_ENGINE = (
+REQUESTED_DB_ENGINE = (
     "postgres"
     if DATABASE_URL.startswith(("postgres://", "postgresql://"))
     else "sqlite"
+)
+POSTGRES_DRIVER_AVAILABLE = find_spec("psycopg") is not None
+DB_ENGINE = (
+    "postgres"
+    if REQUESTED_DB_ENGINE == "postgres" and POSTGRES_DRIVER_AVAILABLE
+    else "sqlite"
+)
+DB_FALLBACK_REASON = (
+    "DATABASE_URL points to PostgreSQL, but psycopg is not installed. Falling back to SQLite."
+    if REQUESTED_DB_ENGINE == "postgres" and not POSTGRES_DRIVER_AVAILABLE
+    else ""
 )
 HOST = os.getenv("BACKEND_HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT") or os.getenv("BACKEND_PORT", "8000"))

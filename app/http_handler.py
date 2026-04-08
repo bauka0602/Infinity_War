@@ -1,4 +1,5 @@
 import json
+import logging
 import sqlite3
 from datetime import date
 from http.server import BaseHTTPRequestHandler
@@ -31,6 +32,8 @@ from .preference_service import (
     list_teacher_preference_requests,
     update_teacher_preference_status,
 )
+
+LOGGER = logging.getLogger(__name__)
 
 
 def resolve_allowed_origin(request_origin):
@@ -180,7 +183,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                             query_all(
                                 connection,
                                 """
-                                SELECT id, name, student_count, has_subgroups, language
+                                SELECT id, name, student_count, has_subgroups, language, study_course
                                 FROM groups
                                 ORDER BY name, id
                                 """,
@@ -235,15 +238,17 @@ class ApiHandler(BaseHTTPRequestHandler):
             if exc.details:
                 payload["details"] = exc.details
             self.send_json(exc.status, payload)
-        except ValueError:
-            self.send_json(400, {"error": "Некорректный запрос", "errorCode": "bad_request"})
         except json.JSONDecodeError:
             self.send_json(400, {"error": "Некорректный JSON", "errorCode": "invalid_json"})
-        except (sqlite3.IntegrityError, Exception) as exc:
-            is_integrity = exc.__class__.__name__ in {"IntegrityError", "UniqueViolation"}
-            if is_integrity:
+        except ValueError:
+            self.send_json(400, {"error": "Некорректный запрос", "errorCode": "bad_request"})
+        except sqlite3.IntegrityError:
+            self.send_json(400, {"error": "Ошибка базы данных", "errorCode": "database_error"})
+        except Exception as exc:
+            if exc.__class__.__name__ == "UniqueViolation":
                 self.send_json(400, {"error": "Ошибка базы данных", "errorCode": "database_error"})
                 return
+            LOGGER.exception("Unhandled API error for %s %s", method, path)
             self.send_json(500, {"error": "Внутренняя ошибка сервера", "errorCode": "internal_server_error"})
 
     def handle_collection_routes(self, method, api_path, query):
