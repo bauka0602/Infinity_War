@@ -24,11 +24,9 @@ def clear_collection_data(headers, collection):
             if collection == "courses":
                 db_execute(connection, "DELETE FROM schedules")
                 db_execute(connection, "DELETE FROM sections")
-                db_execute(connection, "DELETE FROM notifications")
             elif collection == "groups":
                 db_execute(connection, "DELETE FROM schedules")
                 db_execute(connection, "DELETE FROM sections")
-                db_execute(connection, "DELETE FROM notifications")
                 db_execute(
                     connection,
                     "UPDATE students SET group_id = NULL, group_name = '', subgroup = ''",
@@ -36,9 +34,9 @@ def clear_collection_data(headers, collection):
             elif collection in {"teachers", "rooms"}:
                 db_execute(connection, "DELETE FROM schedules")
                 if collection == "teachers":
-                    db_execute(connection, "DELETE FROM notifications")
-            elif collection in {"students", "schedules"}:
-                db_execute(connection, "DELETE FROM notifications")
+                    db_execute(connection, "DELETE FROM notifications WHERE recipient_role = 'teacher'")
+            elif collection == "students":
+                db_execute(connection, "DELETE FROM notifications WHERE recipient_role = 'student'")
             db_execute(connection, f"DELETE FROM {collection}")
             connection.commit()
 
