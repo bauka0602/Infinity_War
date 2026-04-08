@@ -34,6 +34,9 @@ COURSE_HEADERS = {
     "атауы": "name",
     "study_year": "year",
     "year": "year",
+    "course": "year",
+    "study_course": "year",
+    "course_of_study": "year",
     "курс": "year",
     "год": "year",
     "semester": "semester",
@@ -209,7 +212,7 @@ TEMPLATE_HEADERS = {
     "Disciplines": [
         "code",
         "name",
-        "year",
+        "course",
         "semester",
         "programme",
         "department",
@@ -227,7 +230,7 @@ TEMPLATE_ROWS = {
         [
             "CS101",
             "Programming 1",
-            date.today().year,
+            1,
             1,
             "Программная инженерия (6B06101)",
             "Факультет компьютерных систем и профессионального образования (КСиПО-БжЦТ)",
