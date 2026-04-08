@@ -87,7 +87,9 @@ def _run_schedule_generation_job(job_id, semester, year, algorithm):
                         id, section_id, course_id, course_name, teacher_id, teacher_name, room_id, room_number,
                         group_id, group_name, subgroup, day, start_hour, semester, year, algorithm
                     FROM schedules
+                    WHERE semester = ? AND year = ?
                     """,
+                    (semester, year),
                 )
                 generated = build_schedule(connection, semester, year, algorithm)
         Thread(
