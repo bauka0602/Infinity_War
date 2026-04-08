@@ -4,6 +4,24 @@ from .config import TEACHER_EMAIL_DOMAIN
 from .db import db_execute, insert_and_get_id, query_all, query_one
 from .errors import ApiError
 
+LESSON_TYPE_ALIASES = {
+    "lecture": "lecture",
+    "лекция": "lecture",
+    "дәріс": "lecture",
+    "practical": "practical",
+    "practice": "practical",
+    "practical lesson": "practical",
+    "практика": "practical",
+    "практический": "practical",
+    "практикалық": "practical",
+    "lab": "lab",
+    "laboratory": "lab",
+    "лаборатория": "lab",
+    "зертхана": "lab",
+    "seminar": "seminar",
+    "семинар": "seminar",
+}
+
 
 def normalize_number_fields(payload, fields):
     normalized = deepcopy(payload)
@@ -14,6 +32,14 @@ def normalize_number_fields(payload, fields):
             except (TypeError, ValueError):
                 pass
     return normalized
+
+
+def normalize_lesson_type(value):
+    if value in (None, ""):
+        return "lecture"
+    normalized = str(value).strip().lower().replace("_", " ")
+    compact = normalized.replace(" ", "_")
+    return LESSON_TYPE_ALIASES.get(compact, LESSON_TYPE_ALIASES.get(normalized, str(value).strip().lower()))
 
 
 def validate_teacher_email(email):
@@ -268,6 +294,7 @@ def create_collection_item(connection, collection, payload):
 
     if collection == "sections":
         normalized = normalize_number_fields(payload, ["course_id", "group_id", "classes_count", "class_count"])
+        normalized["lesson_type"] = normalize_lesson_type(normalized.get("lesson_type"))
         item_id = insert_and_get_id(
             connection,
             """
@@ -280,7 +307,7 @@ def create_collection_item(connection, collection, payload):
                 normalized.get("group_id"),
                 normalized.get("group_name", ""),
                 normalized.get("classes_count", normalized.get("class_count")),
-                normalized.get("lesson_type", "lecture"),
+                normalized["lesson_type"],
             ),
         )
         connection.commit()
@@ -475,6 +502,7 @@ def update_collection_item(connection, collection, item_id, payload):
 
     if collection == "sections":
         normalized = normalize_number_fields(payload, ["course_id", "group_id", "classes_count", "class_count"])
+        normalized["lesson_type"] = normalize_lesson_type(normalized.get("lesson_type"))
         db_execute(
             connection,
             """
@@ -488,7 +516,7 @@ def update_collection_item(connection, collection, item_id, payload):
                 normalized.get("group_id"),
                 normalized.get("group_name", ""),
                 normalized.get("classes_count", normalized.get("class_count")),
-                normalized.get("lesson_type", "lecture"),
+                normalized["lesson_type"],
                 item_id,
             ),
         )

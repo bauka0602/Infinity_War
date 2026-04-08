@@ -179,6 +179,24 @@ ROOM_TYPE_ALIASES = {
     "семинар": "seminar",
 }
 
+LESSON_TYPE_ALIASES = {
+    "lecture": "lecture",
+    "лекция": "lecture",
+    "дәріс": "lecture",
+    "practical": "practical",
+    "practice": "practical",
+    "practical lesson": "practical",
+    "практика": "practical",
+    "практический": "practical",
+    "практикалық": "practical",
+    "lab": "lab",
+    "laboratory": "lab",
+    "лаборатория": "lab",
+    "зертхана": "lab",
+    "seminar": "seminar",
+    "семинар": "seminar",
+}
+
 TEMPLATE_HEADERS = {
     "Disciplines": [
         "code",
@@ -332,6 +350,14 @@ def _normalize_availability(value):
     normalized = _normalize_header(value).replace("_", " ")
     compact = normalized.replace(" ", "_")
     return AVAILABLE_ALIASES.get(compact, AVAILABLE_ALIASES.get(normalized, 1 if value else 0))
+
+
+def _normalize_lesson_type(value):
+    if value in (None, ""):
+        return "lecture"
+    normalized = _normalize_header(value).replace("_", " ")
+    compact = normalized.replace(" ", "_")
+    return LESSON_TYPE_ALIASES.get(compact, LESSON_TYPE_ALIASES.get(normalized, str(value).strip().lower()))
 
 
 def _read_sheet_rows(sheet, header_aliases):
@@ -601,6 +627,7 @@ def _upsert_group(connection, payload):
 
 def _upsert_section(connection, payload):
     normalized = normalize_number_fields(payload, ["classes_count"])
+    normalized["lesson_type"] = _normalize_lesson_type(normalized.get("lesson_type"))
     course = query_one(
         connection,
         """
@@ -652,7 +679,7 @@ def _upsert_section(connection, payload):
                 group["id"],
                 group["name"],
                 normalized["classes_count"],
-                normalized.get("lesson_type", "lecture") or "lecture",
+                normalized["lesson_type"],
                 existing["id"],
             ),
         )
@@ -670,7 +697,7 @@ def _upsert_section(connection, payload):
             group["id"],
             group["name"],
             normalized["classes_count"],
-            normalized.get("lesson_type", "lecture") or "lecture",
+            normalized["lesson_type"],
         ),
     )
     return "inserted"

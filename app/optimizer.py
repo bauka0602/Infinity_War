@@ -12,7 +12,7 @@ except ImportError:  # pragma: no cover - depends on environment
 
 WEEKDAYS_DEFAULT = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
 HOURS_DEFAULT = list(range(8, 18))
-LESSON_TYPE_ORDER = {"lecture": 1, "practice": 2, "seminar": 2, "lab": 3}
+LESSON_TYPE_ORDER = {"lecture": 1, "practice": 2, "practical": 2, "seminar": 2, "lab": 3}
 
 
 def _unique_preserve_order(values):
@@ -182,8 +182,6 @@ def _normalize_plan_items(payload):
 
         if lesson_type == "lab" and not room_type_required:
             room_type_required = "lab"
-        if lesson_type == "lab":
-            pc_required = True
 
         audience_keys = [f"group:{group_id}" for group_id in group_ids]
         audience_keys.extend(f"subgroup:{subgroup_id}" for subgroup_id in subgroup_ids)
@@ -509,7 +507,9 @@ def optimize_schedule(payload):
         for signature_items in items_by_signature.values():
             lecture_items = [item for item in signature_items if item["lesson_type"] == "lecture"]
             later_items = [
-                item for item in signature_items if item["lesson_type"] in {"practice", "seminar", "lab"}
+                item
+                for item in signature_items
+                if item["lesson_type"] in {"practice", "practical", "seminar", "lab"}
             ]
             if not lecture_items or not later_items:
                 continue
