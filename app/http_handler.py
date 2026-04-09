@@ -6,10 +6,13 @@ from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 
 from .auth_service import (
+    confirm_teacher_claim,
     get_current_profile,
     login_user,
+    request_teacher_claim,
     register_user,
     require_auth_user,
+    search_claimable_teachers,
     update_profile_avatar,
 )
 from .admin_service import clear_all_data, clear_collection_data
@@ -117,6 +120,14 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self.send_json(201, register_user(self.read_json()))
                 return
 
+            if api_path == "/auth/teacher-claim/request" and method == "POST":
+                self.send_json(200, request_teacher_claim(self.read_json()))
+                return
+
+            if api_path == "/auth/teacher-claim/confirm" and method == "POST":
+                self.send_json(200, confirm_teacher_claim(self.read_json()))
+                return
+
             if api_path == "/auth/login" and method == "POST":
                 self.send_json(200, login_user(self.read_json()))
                 return
@@ -189,6 +200,11 @@ class ApiHandler(BaseHTTPRequestHandler):
                                 """,
                             ),
                         )
+                return
+
+            if api_path == "/public/teachers/claim-search" and method == "GET":
+                search_query = parse_qs(parsed.query).get("q", [""])[0]
+                self.send_json(200, search_claimable_teachers(search_query))
                 return
 
             if api_path == "/import/excel" and method == "POST":

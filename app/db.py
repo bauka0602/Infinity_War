@@ -317,6 +317,9 @@ def sqlite_schema():
             email TEXT NOT NULL UNIQUE,
             password TEXT,
             token TEXT,
+            claim_code TEXT,
+            claim_code_expires_at TEXT,
+            claim_requested_at TEXT,
             avatar_data TEXT,
             phone TEXT,
             department TEXT,
@@ -467,6 +470,9 @@ def postgres_schema():
             email TEXT NOT NULL UNIQUE,
             password TEXT,
             token TEXT,
+            claim_code TEXT,
+            claim_code_expires_at TEXT,
+            claim_requested_at TEXT,
             avatar_data TEXT,
             phone TEXT,
             department TEXT,
@@ -775,6 +781,9 @@ def ensure_database():
         ensure_column(connection, "teachers", "weekly_hours_limit", "INTEGER")
         ensure_column(connection, "teachers", "password", "TEXT")
         ensure_column(connection, "teachers", "token", "TEXT")
+        ensure_column(connection, "teachers", "claim_code", "TEXT")
+        ensure_column(connection, "teachers", "claim_code_expires_at", "TEXT")
+        ensure_column(connection, "teachers", "claim_requested_at", "TEXT")
         ensure_column(connection, "teachers", "avatar_data", "TEXT")
         ensure_column(connection, "teachers", "teaching_languages", "TEXT DEFAULT 'ru,kk'")
         ensure_column(connection, "students", "avatar_data", "TEXT")

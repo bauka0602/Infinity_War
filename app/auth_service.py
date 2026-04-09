@@ -1,7 +1,8 @@
 import secrets
+from datetime import datetime, timedelta, timezone
 
 from .config import DB_LOCK, TEACHER_EMAIL_DOMAIN
-from .db import db_execute, get_connection, insert_and_get_id, query_one
+from .db import db_execute, get_connection, insert_and_get_id, query_all, query_one
 from .errors import ApiError
 from .security import hash_password, parse_bearer_token, sanitize_user, verify_password
 
@@ -33,6 +34,28 @@ def normalize_teaching_languages(value):
         if normalized and normalized not in seen:
             seen.append(normalized)
     return seen
+
+
+def _utc_now():
+    return datetime.now(timezone.utc)
+
+
+def _utc_now_iso():
+    return _utc_now().isoformat()
+
+
+def _is_teacher_claimed(teacher):
+    return bool(teacher.get("password") or teacher.get("token"))
+
+
+def _serialize_claimable_teacher(row):
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "email": row["email"],
+        "department": row.get("department", ""),
+        "teachingLanguages": row.get("teaching_languages", "") or "ru,kk",
+    }
 
 def _find_account_by_token(connection, token):
     admin = query_one(
@@ -97,6 +120,20 @@ def _find_teacher_by_email(connection, email):
         WHERE lower(email) = lower(?)
         """,
         (normalized,),
+    )
+
+
+def _find_teacher_by_id(connection, teacher_id):
+    return query_one(
+        connection,
+        """
+        SELECT
+            id, email, password, token, name, phone, department, weekly_hours_limit,
+            avatar_data, teaching_languages, claim_code, claim_code_expires_at, claim_requested_at
+        FROM teachers
+        WHERE id = ?
+        """,
+        (teacher_id,),
     )
 
 
@@ -453,3 +490,164 @@ def login_user(payload):
         )
 
     return sanitize_user(user)
+
+
+def search_claimable_teachers(query_value):
+    search = str(query_value or "").strip().lower()
+    if len(search) < 2:
+        return []
+
+    pattern = f"%{search}%"
+    with DB_LOCK:
+        with get_connection() as connection:
+            rows = query_all(
+                connection,
+                """
+                SELECT id, name, email, department, teaching_languages
+                FROM teachers
+                WHERE COALESCE(password, '') = ''
+                  AND COALESCE(token, '') = ''
+                  AND (
+                    lower(name) LIKE ?
+                    OR lower(email) LIKE ?
+                  )
+                ORDER BY name, id
+                LIMIT 10
+                """,
+                (pattern, pattern),
+            )
+    return [_serialize_claimable_teacher(row) for row in rows]
+
+
+def request_teacher_claim(payload):
+    teacher_id = payload.get("teacherId")
+    email = str(payload.get("email") or "").strip().lower()
+
+    if not teacher_id or not email:
+        raise ApiError(
+            400,
+            "fill_required_fields",
+            "Заполните поля: teacherId, email",
+            {"fields": ["teacherId", "email"]},
+        )
+
+    ensure_teacher_email_allowed(email, "teacher")
+
+    with DB_LOCK:
+        with get_connection() as connection:
+            teacher = _find_teacher_by_id(connection, int(teacher_id))
+            if teacher is None:
+                raise ApiError(404, "record_not_found", "Преподаватель не найден.")
+            if _is_teacher_claimed(teacher):
+                raise ApiError(
+                    400,
+                    "teacher_claim_already_completed",
+                    "Этот аккаунт преподавателя уже активирован.",
+                )
+            if teacher["email"].strip().lower() != email:
+                raise ApiError(
+                    400,
+                    "teacher_claim_email_mismatch",
+                    "Email не совпадает с записью преподавателя.",
+                )
+
+            claim_code = f"{secrets.randbelow(1_000_000):06d}"
+            expires_at = (_utc_now() + timedelta(minutes=10)).isoformat()
+            requested_at = _utc_now_iso()
+            db_execute(
+                connection,
+                """
+                UPDATE teachers
+                SET claim_code = ?, claim_code_expires_at = ?, claim_requested_at = ?
+                WHERE id = ?
+                """,
+                (claim_code, expires_at, requested_at, teacher["id"]),
+            )
+            connection.commit()
+
+    return {
+        "success": True,
+        "teacherId": int(teacher_id),
+        "email": email,
+        "expiresAt": expires_at,
+        "debugCode": claim_code,
+    }
+
+
+def confirm_teacher_claim(payload):
+    teacher_id = payload.get("teacherId")
+    email = str(payload.get("email") or "").strip().lower()
+    code = str(payload.get("code") or "").strip()
+    password = payload.get("password") or ""
+
+    missing = []
+    if not teacher_id:
+        missing.append("teacherId")
+    if not email:
+        missing.append("email")
+    if not code:
+        missing.append("code")
+    if not password:
+        missing.append("password")
+    if missing:
+        raise ApiError(
+            400,
+            "fill_required_fields",
+            f"Заполните поля: {', '.join(missing)}",
+            {"fields": missing},
+        )
+
+    ensure_teacher_email_allowed(email, "teacher")
+
+    with DB_LOCK:
+        with get_connection() as connection:
+            teacher = _find_teacher_by_id(connection, int(teacher_id))
+            if teacher is None:
+                raise ApiError(404, "record_not_found", "Преподаватель не найден.")
+            if _is_teacher_claimed(teacher):
+                raise ApiError(
+                    400,
+                    "teacher_claim_already_completed",
+                    "Этот аккаунт преподавателя уже активирован.",
+                )
+            if teacher["email"].strip().lower() != email:
+                raise ApiError(
+                    400,
+                    "teacher_claim_email_mismatch",
+                    "Email не совпадает с записью преподавателя.",
+                )
+            if not teacher.get("claim_code") or teacher["claim_code"] != code:
+                raise ApiError(
+                    400,
+                    "teacher_claim_code_invalid",
+                    "Код подтверждения неверный.",
+                )
+
+            expires_at_raw = teacher.get("claim_code_expires_at")
+            if not expires_at_raw:
+                raise ApiError(
+                    400,
+                    "teacher_claim_code_expired",
+                    "Срок действия кода истёк. Запросите новый код.",
+                )
+            expires_at = datetime.fromisoformat(expires_at_raw)
+            if expires_at < _utc_now():
+                raise ApiError(
+                    400,
+                    "teacher_claim_code_expired",
+                    "Срок действия кода истёк. Запросите новый код.",
+                )
+
+            token = secrets.token_urlsafe(32)
+            db_execute(
+                connection,
+                """
+                UPDATE teachers
+                SET password = ?, token = ?, claim_code = NULL, claim_code_expires_at = NULL, claim_requested_at = NULL
+                WHERE id = ?
+                """,
+                (hash_password(password), token, teacher["id"]),
+            )
+            connection.commit()
+
+    return {"success": True}
