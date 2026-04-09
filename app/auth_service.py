@@ -36,6 +36,10 @@ def normalize_teaching_languages(value):
     return seen
 
 
+def normalize_phone_search(value):
+    return "".join(ch for ch in str(value or "") if ch.isdigit())
+
+
 def _utc_now():
     return datetime.now(timezone.utc)
 
@@ -49,18 +53,21 @@ def _is_teacher_claimed(teacher):
 
 
 def _serialize_claimable_teacher(row):
-    email = row["email"]
+    email = str(row.get("email") or "").strip()
     local_part, _, domain = email.partition("@")
-    if len(local_part) <= 2:
+    if not email:
+        masked_email = ""
+    elif len(local_part) <= 2:
         masked_local = local_part[:1] + "*"
+        masked_email = f"{masked_local}@{domain}" if domain else masked_local
     else:
         masked_local = local_part[:2] + "*" * max(1, len(local_part) - 2)
+        masked_email = f"{masked_local}@{domain}" if domain else masked_local
     return {
         "id": row["id"],
         "name": row["name"],
-        "email": email,
-        "maskedEmail": f"{masked_local}@{domain}" if domain else masked_local,
-        "hasEmail": bool(email.strip()),
+        "maskedEmail": masked_email,
+        "hasEmail": bool(email),
         "teachingLanguages": row.get("teaching_languages", "") or "ru,kk",
     }
 
@@ -475,24 +482,35 @@ def login_user(payload):
         with get_connection() as connection:
             user = _find_login_account(connection, email, selected_role or None)
 
-    if user is None or not verify_password(user["password"], password):
-        raise ApiError(401, "invalid_credentials", "Неверный email или пароль")
+            if user is None or not verify_password(user["password"], password):
+                raise ApiError(401, "invalid_credentials", "Неверный email или пароль")
 
-    if selected_role and user["role"] != selected_role:
-        raise ApiError(
-            403,
-            "role_mismatch",
-            "Этот аккаунт зарегистрирован с другой ролью",
-        )
+            if selected_role and user["role"] != selected_role:
+                raise ApiError(
+                    403,
+                    "role_mismatch",
+                    "Этот аккаунт зарегистрирован с другой ролью",
+                )
 
-    if user["role"] == "teacher" and not user["email"].lower().endswith(
-        TEACHER_EMAIL_DOMAIN
-    ):
-        raise ApiError(
-            403,
-            "teacher_account_email_domain_required",
-            "У аккаунта преподавателя должен быть email @kazatu.edu.kz",
-        )
+            if user["role"] == "teacher" and not user["email"].lower().endswith(
+                TEACHER_EMAIL_DOMAIN
+            ):
+                raise ApiError(
+                    403,
+                    "teacher_account_email_domain_required",
+                    "У аккаунта преподавателя должен быть email @kazatu.edu.kz",
+                )
+
+            token = secrets.token_urlsafe(32)
+            if user["role"] == "admin":
+                db_execute(connection, "UPDATE users SET token = ? WHERE id = ?", (token, user["id"]))
+            elif user["role"] == "teacher":
+                db_execute(connection, "UPDATE teachers SET token = ? WHERE id = ?", (token, user["id"]))
+            else:
+                db_execute(connection, "UPDATE students SET token = ? WHERE id = ?", (token, user["id"]))
+            connection.commit()
+
+            user["token"] = token
 
     return sanitize_user(user)
 
@@ -518,42 +536,55 @@ def search_claimable_teachers(query_value):
     if len(search) < 2:
         return []
 
-    search_patterns = []
+    search_tokens = []
     for raw_part in [search, *search.split()]:
         token = raw_part.strip()
         if len(token) < 2:
             continue
-        pattern = f"%{token}%"
-        if pattern not in search_patterns:
-            search_patterns.append(pattern)
+        if token not in search_tokens:
+            search_tokens.append(token)
 
-    if not search_patterns:
+    phone_tokens = []
+    for raw_part in [query_value, *str(query_value or "").split()]:
+        token = normalize_phone_search(raw_part)
+        if len(token) < 2:
+            continue
+        if token not in phone_tokens:
+            phone_tokens.append(token)
+
+    if not search_tokens and not phone_tokens:
         return []
-
-    where_parts = ["COALESCE(password, '') = ''", "COALESCE(token, '') = ''"]
-    params = []
-    search_clauses = []
-    for pattern in search_patterns:
-        search_clauses.append(
-            "(lower(name) LIKE ? OR lower(email) LIKE ? OR lower(COALESCE(phone, '')) LIKE ? OR lower(COALESCE(name, '') || ' ' || COALESCE(email, '') || ' ' || COALESCE(phone, '')) LIKE ?)"
-        )
-        params.extend([pattern, pattern, pattern, pattern])
-    where_parts.append(f"({' OR '.join(search_clauses)})")
 
     with DB_LOCK:
         with get_connection() as connection:
             rows = query_all(
                 connection,
-                f"""
+                """
                 SELECT id, name, email, phone, teaching_languages
                 FROM teachers
-                WHERE {' AND '.join(where_parts)}
+                WHERE COALESCE(password, '') = '' AND COALESCE(token, '') = ''
                 ORDER BY name, id
-                LIMIT 10
                 """,
-                tuple(params),
             )
-    return [_serialize_claimable_teacher(row) for row in rows]
+
+    matched_rows = []
+    for row in rows:
+        haystack = " ".join(
+            [
+                str(row.get("name") or "").lower(),
+                str(row.get("email") or "").lower(),
+                str(row.get("phone") or "").lower(),
+            ]
+        )
+        normalized_phone = normalize_phone_search(row.get("phone"))
+        text_match = any(token in haystack for token in search_tokens)
+        phone_match = any(token in normalized_phone for token in phone_tokens)
+        if text_match or phone_match:
+            matched_rows.append(row)
+        if len(matched_rows) >= 10:
+            break
+
+    return [_serialize_claimable_teacher(row) for row in matched_rows]
 
 
 def request_teacher_claim(payload):
@@ -568,9 +599,14 @@ def request_teacher_claim(payload):
             {"fields": ["teacherId"]},
         )
 
+    try:
+        teacher_id = int(teacher_id)
+    except (TypeError, ValueError) as exc:
+        raise ApiError(400, "invalid_id", "ID должен быть числом.") from exc
+
     with DB_LOCK:
         with get_connection() as connection:
-            teacher = _find_teacher_by_id(connection, int(teacher_id))
+            teacher = _find_teacher_by_id(connection, teacher_id)
             if teacher is None:
                 raise ApiError(404, "record_not_found", "Преподаватель не найден.")
             if _is_teacher_claimed(teacher):
@@ -614,7 +650,7 @@ def request_teacher_claim(payload):
 
     return {
         "success": True,
-        "teacherId": int(teacher_id),
+        "teacherId": teacher_id,
         "email": email,
         "expiresAt": expires_at,
         "debugCode": claim_code if EXPOSE_DEV_CLAIM_CODE else None,
@@ -642,9 +678,14 @@ def confirm_teacher_claim(payload):
             {"fields": missing},
         )
 
+    try:
+        teacher_id = int(teacher_id)
+    except (TypeError, ValueError) as exc:
+        raise ApiError(400, "invalid_id", "ID должен быть числом.") from exc
+
     with DB_LOCK:
         with get_connection() as connection:
-            teacher = _find_teacher_by_id(connection, int(teacher_id))
+            teacher = _find_teacher_by_id(connection, teacher_id)
             if teacher is None:
                 raise ApiError(404, "record_not_found", "Преподаватель не найден.")
             if _is_teacher_claimed(teacher):
