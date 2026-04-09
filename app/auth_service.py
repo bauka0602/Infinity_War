@@ -510,32 +510,30 @@ def logout_user(headers):
 
 def search_claimable_teachers(query_value):
     search = str(query_value or "").strip().lower()
-    if len(search) < 3:
+    if len(search) < 2:
         return []
 
-    tokens = [token for token in search.split() if token]
-    if not tokens:
-        return []
-
-    where_parts = [
-        """
-        COALESCE(password, '') = ''
-          AND COALESCE(token, '') = ''
-        """
-    ]
-    params = []
-    for token in tokens:
-        where_parts.append(
-            """
-            (
-              lower(name) LIKE ?
-              OR lower(email) LIKE ?
-              OR lower(COALESCE(name, '') || ' ' || COALESCE(email, '')) LIKE ?
-            )
-            """
-        )
+    search_patterns = []
+    for raw_part in [search, *search.split()]:
+        token = raw_part.strip()
+        if len(token) < 2:
+            continue
         pattern = f"%{token}%"
+        if pattern not in search_patterns:
+            search_patterns.append(pattern)
+
+    if not search_patterns:
+        return []
+
+    where_parts = ["COALESCE(password, '') = ''", "COALESCE(token, '') = ''"]
+    params = []
+    search_clauses = []
+    for pattern in search_patterns:
+        search_clauses.append(
+            "(lower(name) LIKE ? OR lower(email) LIKE ? OR lower(COALESCE(name, '') || ' ' || COALESCE(email, '')) LIKE ?)"
+        )
         params.extend([pattern, pattern, pattern])
+    where_parts.append(f"({' OR '.join(search_clauses)})")
 
     with DB_LOCK:
         with get_connection() as connection:
