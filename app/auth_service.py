@@ -60,6 +60,7 @@ def _serialize_claimable_teacher(row):
         "name": row["name"],
         "email": email,
         "maskedEmail": f"{masked_local}@{domain}" if domain else masked_local,
+        "hasEmail": bool(email.strip()),
         "teachingLanguages": row.get("teaching_languages", "") or "ru,kk",
     }
 
@@ -554,17 +555,15 @@ def search_claimable_teachers(query_value):
 
 def request_teacher_claim(payload):
     teacher_id = payload.get("teacherId")
-    email = str(payload.get("email") or "").strip().lower()
+    provided_email = str(payload.get("email") or "").strip().lower()
 
-    if not teacher_id or not email:
+    if not teacher_id:
         raise ApiError(
             400,
             "fill_required_fields",
-            "Заполните поля: teacherId, email",
-            {"fields": ["teacherId", "email"]},
+            "Заполните поля: teacherId",
+            {"fields": ["teacherId"]},
         )
-
-    ensure_teacher_email_allowed(email, "teacher")
 
     with DB_LOCK:
         with get_connection() as connection:
@@ -577,12 +576,24 @@ def request_teacher_claim(payload):
                     "teacher_claim_already_completed",
                     "Этот аккаунт преподавателя уже активирован.",
                 )
-            if teacher["email"].strip().lower() != email:
-                raise ApiError(
-                    400,
-                    "teacher_claim_email_mismatch",
-                    "Email не совпадает с записью преподавателя.",
+            email = teacher["email"].strip().lower()
+            if not email:
+                if not provided_email:
+                    raise ApiError(
+                        400,
+                        "fill_required_fields",
+                        "Заполните поля: email",
+                        {"fields": ["email"]},
+                    )
+                ensure_teacher_email_allowed(provided_email, "teacher")
+                email = provided_email
+                db_execute(
+                    connection,
+                    "UPDATE teachers SET email = ? WHERE id = ?",
+                    (email, teacher["id"]),
                 )
+            else:
+                ensure_teacher_email_allowed(email, "teacher")
 
             claim_code = f"{secrets.randbelow(1_000_000):06d}"
             expires_at = (_utc_now() + timedelta(minutes=10)).isoformat()
@@ -601,6 +612,7 @@ def request_teacher_claim(payload):
     return {
         "success": True,
         "teacherId": int(teacher_id),
+        "email": email,
         "expiresAt": expires_at,
         "debugCode": claim_code if EXPOSE_DEV_CLAIM_CODE else None,
     }
@@ -608,15 +620,13 @@ def request_teacher_claim(payload):
 
 def confirm_teacher_claim(payload):
     teacher_id = payload.get("teacherId")
-    email = str(payload.get("email") or "").strip().lower()
+    provided_email = str(payload.get("email") or "").strip().lower()
     code = str(payload.get("code") or "").strip()
     password = payload.get("password") or ""
 
     missing = []
     if not teacher_id:
         missing.append("teacherId")
-    if not email:
-        missing.append("email")
     if not code:
         missing.append("code")
     if not password:
@@ -629,8 +639,6 @@ def confirm_teacher_claim(payload):
             {"fields": missing},
         )
 
-    ensure_teacher_email_allowed(email, "teacher")
-
     with DB_LOCK:
         with get_connection() as connection:
             teacher = _find_teacher_by_id(connection, int(teacher_id))
@@ -642,12 +650,24 @@ def confirm_teacher_claim(payload):
                     "teacher_claim_already_completed",
                     "Этот аккаунт преподавателя уже активирован.",
                 )
-            if teacher["email"].strip().lower() != email:
-                raise ApiError(
-                    400,
-                    "teacher_claim_email_mismatch",
-                    "Email не совпадает с записью преподавателя.",
+            email = teacher["email"].strip().lower()
+            if not email:
+                if not provided_email:
+                    raise ApiError(
+                        400,
+                        "fill_required_fields",
+                        "Заполните поля: email",
+                        {"fields": ["email"]},
+                    )
+                ensure_teacher_email_allowed(provided_email, "teacher")
+                email = provided_email
+                db_execute(
+                    connection,
+                    "UPDATE teachers SET email = ? WHERE id = ?",
+                    (email, teacher["id"]),
                 )
+            else:
+                ensure_teacher_email_allowed(email, "teacher")
             if not teacher.get("claim_code") or teacher["claim_code"] != code:
                 raise ApiError(
                     400,
