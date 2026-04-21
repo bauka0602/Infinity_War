@@ -1599,14 +1599,67 @@ def _find_matching_iup_course(connection, course_code, programme, semester):
         SELECT id, instructor_id
         FROM courses
         WHERE lower(code) = lower(?)
-          AND (? = '' OR programme = ? OR programme = '')
+          AND (
+            ? = ''
+            OR lower(programme) = lower(?)
+            OR lower(programme) LIKE lower(?)
+            OR programme = ''
+          )
           AND (? IS NULL OR semester = ?)
         ORDER BY
-          CASE WHEN programme = ? THEN 0 ELSE 1 END,
+          CASE
+            WHEN lower(programme) = lower(?) THEN 0
+            WHEN lower(programme) LIKE lower(?) THEN 1
+            WHEN programme = '' THEN 2
+            ELSE 3
+          END,
           id
         LIMIT 1
         """,
-        (course_code, programme or "", programme or "", semester, semester, programme or ""),
+        (
+            course_code,
+            programme or "",
+            programme or "",
+            f"%{programme}%" if programme else "",
+            semester,
+            semester,
+            programme or "",
+            f"%{programme}%" if programme else "",
+        ),
+    )
+
+
+def _find_matching_iup_course_relaxed(connection, course_code, programme, semester):
+    course = _find_matching_iup_course(connection, course_code, programme, semester)
+    if course:
+        return course
+
+    if semester is not None:
+        course = query_one(
+            connection,
+            """
+            SELECT id, instructor_id
+            FROM courses
+            WHERE lower(code) = lower(?)
+              AND semester = ?
+            ORDER BY id
+            LIMIT 1
+            """,
+            (course_code, semester),
+        )
+        if course:
+            return course
+
+    return query_one(
+        connection,
+        """
+        SELECT id, instructor_id
+        FROM courses
+        WHERE lower(code) = lower(?)
+        ORDER BY id
+        LIMIT 1
+        """,
+        (course_code,),
     )
 
 
@@ -1644,7 +1697,7 @@ def _store_iup_entries(connection, parsed):
         if key in seen_iup_courses:
             continue
         seen_iup_courses.add(key)
-        match = _find_matching_iup_course(
+        match = _find_matching_iup_course_relaxed(
             connection,
             course.get("code", ""),
             metadata.get("programme", ""),
@@ -1705,13 +1758,13 @@ def _store_iup_entries(connection, parsed):
         )
 
         if teacher_id and entry["lessonType"] in IUP_ACTIVE_LESSON_TYPES:
-            course = _find_matching_iup_course(
+            course = _find_matching_iup_course_relaxed(
                 connection,
                 entry["courseCode"],
                 metadata.get("programme", ""),
                 entry.get("semester"),
             )
-            if course and (entry["lessonType"] == "lecture" or not course.get("instructor_id")):
+            if course and course["id"] not in updated_courses:
                 db_execute(
                     connection,
                     """
