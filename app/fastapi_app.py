@@ -30,9 +30,7 @@ from .config import ALLOWED_ORIGINS, DB_ENGINE, DB_LOCK
 from .db import get_connection, query_all, query_one
 from .errors import ApiError
 from .import_service import (
-    generate_import_template,
     generate_schedule_export,
-    import_excel_data,
     import_iup_data,
     import_rop_data,
     parse_iup_preview,
@@ -250,10 +248,6 @@ def create_app():
     def public_teachers_claim_search(q: str = ""):
         return search_claimable_teachers(q)
 
-    @router.post("/import/excel")
-    async def import_excel(request: Request):
-        return import_excel_data(request.headers, await _read_json_body(request))
-
     @router.post("/import/rop/preview")
     async def import_rop_preview(request: Request):
         return parse_rop_preview(request.headers, await _read_json_body(request))
@@ -269,15 +263,6 @@ def create_app():
     @router.post("/import/iup")
     async def import_iup(request: Request):
         return import_iup_data(request.headers, await _read_json_body(request))
-
-    @router.get("/import/template")
-    def import_template(request: Request):
-        template_bytes = generate_import_template(request.headers)
-        return Response(
-            content=template_bytes,
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": 'attachment; filename="timetable-import-template.xlsx"'},
-        )
 
     @router.get("/export/schedule")
     def export_schedule(request: Request):

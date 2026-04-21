@@ -176,7 +176,7 @@ def list_collection(connection, collection, query, user=None):
             connection,
             """
             SELECT
-                id, file_name, student_name, group_name, programme, study_course,
+                id, file_name, group_name, programme, study_course,
                 language, academic_year, academic_period, semester, component,
                 course_code, course_name, credits, lesson_type, teacher_id,
                 teacher_name, hours

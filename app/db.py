@@ -368,7 +368,6 @@ def sqlite_schema():
         CREATE TABLE IF NOT EXISTS iup_entries (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             file_name TEXT NOT NULL,
-            student_name TEXT,
             group_name TEXT,
             programme TEXT,
             study_course INTEGER,
@@ -573,7 +572,6 @@ def postgres_schema():
         CREATE TABLE IF NOT EXISTS iup_entries (
             id SERIAL PRIMARY KEY,
             file_name TEXT NOT NULL,
-            student_name TEXT,
             group_name TEXT,
             programme TEXT,
             study_course INTEGER,
@@ -933,7 +931,6 @@ def ensure_database():
         ensure_column(connection, "course_components", "teacher_id", "INTEGER")
         ensure_column(connection, "course_components", "teacher_name", "TEXT")
         ensure_column(connection, "iup_entries", "file_name", "TEXT")
-        ensure_column(connection, "iup_entries", "student_name", "TEXT")
         ensure_column(connection, "iup_entries", "group_name", "TEXT")
         ensure_column(connection, "iup_entries", "programme", "TEXT")
         ensure_column(connection, "iup_entries", "study_course", "INTEGER")

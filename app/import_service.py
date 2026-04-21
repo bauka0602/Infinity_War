@@ -1263,11 +1263,11 @@ def _is_rop_course_row(row):
     return True
 
 
-def _decode_pdf_payload(payload):
+def _decode_iup_payload(payload):
     return _decode_file_payload(
         payload,
-        (".pdf",),
-        "Поддерживаются только PDF файлы ИУП.",
+        (".pdf", ".xls", ".xlsx"),
+        "Поддерживаются PDF или Excel файлы ИУП формата .pdf, .xls, .xlsx.",
     )
 
 
@@ -1286,6 +1286,17 @@ def _extract_pdf_text(file_bytes):
         return "\n".join(page.get_text("text") for page in document)
     except Exception as exc:
         raise ApiError(400, "bad_request", "Не удалось прочитать PDF ИУП.") from exc
+
+
+def _extract_iup_excel_text(file_name, file_bytes):
+    rows = _load_rop_rows(file_name, file_bytes)
+    lines = []
+    for row in rows:
+        for value in row:
+            text = _cell_text(value)
+            if text:
+                lines.extend(part.strip() for part in text.splitlines() if part.strip())
+    return "\n".join(lines)
 
 
 def _iup_clean_lines(text):
@@ -1333,7 +1344,6 @@ def _infer_iup_group_name(file_name, programme):
 def _extract_iup_metadata(file_name, lines):
     metadata = {
         "fileName": file_name,
-        "studentName": "",
         "groupName": "",
         "programme": "",
         "studyCourse": None,
@@ -1341,9 +1351,7 @@ def _extract_iup_metadata(file_name, lines):
         "academicYear": "",
     }
     for index, line in enumerate(lines):
-        if line.startswith("Обучающийся "):
-            metadata["studentName"] = line.replace("Обучающийся ", "", 1).strip()
-        elif line.startswith("Курс "):
+        if line.startswith("Курс "):
             match = re.search(r"\d+", line)
             metadata["studyCourse"] = int(match.group(0)) if match else None
         elif line.startswith("Язык обучения"):
@@ -1461,8 +1469,16 @@ def _parse_iup_course_block(block):
     }
 
 
-def _parse_iup_pdf(file_name, file_bytes):
-    lines = _iup_clean_lines(_extract_pdf_text(file_bytes))
+def _parse_iup_file(file_name, file_bytes):
+    lower_name = file_name.lower()
+    if lower_name.endswith(".pdf"):
+        raw_text = _extract_pdf_text(file_bytes)
+    elif lower_name.endswith((".xls", ".xlsx")):
+        raw_text = _extract_iup_excel_text(file_name, file_bytes)
+    else:
+        raise ApiError(400, "bad_request", "Поддерживаются PDF или Excel файлы ИУП.")
+
+    lines = _iup_clean_lines(raw_text)
     metadata = _extract_iup_metadata(file_name, lines)
     courses = []
     entries = []
@@ -1592,8 +1608,8 @@ def _store_iup_entries(connection, parsed):
     metadata["groupName"] = _resolve_iup_group_name(connection, metadata.get("groupName", ""))
     db_execute(
         connection,
-        "DELETE FROM iup_entries WHERE file_name = ? AND student_name = ?",
-        (metadata["fileName"], metadata.get("studentName", "")),
+        "DELETE FROM iup_entries WHERE file_name = ? AND group_name = ?",
+        (metadata["fileName"], metadata.get("groupName", "")),
     )
 
     updated_courses = set()
@@ -1616,16 +1632,15 @@ def _store_iup_entries(connection, parsed):
             connection,
             """
             INSERT INTO iup_entries (
-                file_name, student_name, group_name, programme, study_course,
+                file_name, group_name, programme, study_course,
                 language, academic_year, academic_period, semester, component,
                 course_code, course_name, credits, lesson_type, teacher_id,
                 teacher_name, hours
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 metadata["fileName"],
-                metadata.get("studentName", ""),
                 metadata.get("groupName", ""),
                 metadata.get("programme", ""),
                 entry.get("studyYear"),
@@ -1697,8 +1712,8 @@ def parse_iup_preview(headers, payload):
     if user["role"] != "admin":
         raise ApiError(403, "forbidden", "Недостаточно прав")
 
-    file_name, file_bytes = _decode_pdf_payload(payload)
-    parsed = _parse_iup_pdf(file_name, file_bytes)
+    file_name, file_bytes = _decode_iup_payload(payload)
+    parsed = _parse_iup_file(file_name, file_bytes)
     return {
         "metadata": parsed["metadata"],
         "totals": parsed["totals"],
@@ -1721,8 +1736,8 @@ def import_iup_data(headers, payload):
     if user["role"] != "admin":
         raise ApiError(403, "forbidden", "Недостаточно прав")
 
-    file_name, file_bytes = _decode_pdf_payload(payload)
-    parsed = _parse_iup_pdf(file_name, file_bytes)
+    file_name, file_bytes = _decode_iup_payload(payload)
+    parsed = _parse_iup_file(file_name, file_bytes)
     with DB_LOCK:
         with get_connection() as connection:
             stats = _store_iup_entries(connection, parsed)
@@ -1893,107 +1908,6 @@ def import_rop_data(headers, payload):
             "lessonComponents": preview["totals"]["lessonComponents"],
         },
     }
-
-
-def import_excel_data(headers, payload):
-    user = require_auth_user(headers)
-    if user["role"] != "admin":
-        raise ApiError(403, "forbidden", "Недостаточно прав")
-
-    workbook = _load_workbook(_decode_excel_payload(payload))
-    sheet_map = {
-        "courses": COURSE_HEADERS,
-        "teachers": TEACHER_HEADERS,
-        "rooms": ROOM_HEADERS,
-        "groups": GROUP_HEADERS,
-        "sections": SECTION_HEADERS,
-    }
-    recognized_sheets = []
-    parsed_sheets = {}
-    summary = {
-        "courses": {"inserted": 0, "updated": 0},
-        "teachers": {"inserted": 0, "updated": 0},
-        "rooms": {"inserted": 0, "updated": 0},
-        "groups": {"inserted": 0, "updated": 0},
-        "sections": {"inserted": 0, "updated": 0},
-    }
-
-    with DB_LOCK:
-        with get_connection() as connection:
-            for sheet in workbook.worksheets:
-                entity_name = _normalize_sheet_name(sheet.title)
-                if not entity_name:
-                    continue
-
-                recognized_sheets.append(sheet.title)
-                parsed_sheets[entity_name] = _read_sheet_rows(sheet, sheet_map[entity_name])
-
-            # Teachers must be imported before courses so instructor_name can resolve to instructor_id.
-            for entity_name in ("teachers", "courses", "rooms", "groups", "sections"):
-                rows = parsed_sheets.get(entity_name, [])
-                for row_index, row_payload in rows:
-                    _validate_required_fields(entity_name, row_index, row_payload)
-                    if entity_name == "courses":
-                        result = _upsert_course(connection, row_payload)
-                    elif entity_name == "teachers":
-                        result = _upsert_teacher(connection, row_payload)
-                    elif entity_name == "rooms":
-                        result = _upsert_room(connection, row_payload)
-                    elif entity_name == "groups":
-                        result = _upsert_group(connection, row_payload)
-                    else:
-                        result = _upsert_section(connection, row_payload)
-                    summary[entity_name][result] += 1
-
-            if not recognized_sheets:
-                raise ApiError(
-                    400,
-                    "bad_request",
-                    "В Excel не найдены листы Disciplines, Teachers, Rooms, Groups или Sections.",
-                )
-
-            connection.commit()
-
-    total_inserted = sum(item["inserted"] for item in summary.values())
-    total_updated = sum(item["updated"] for item in summary.values())
-    return {
-        "message": "Excel import completed successfully.",
-        "recognizedSheets": recognized_sheets,
-        "summary": summary,
-        "totals": {
-            "inserted": total_inserted,
-            "updated": total_updated,
-        },
-    }
-
-
-def generate_import_template(headers):
-    user = require_auth_user(headers)
-    if user["role"] != "admin":
-        raise ApiError(403, "forbidden", "Недостаточно прав")
-
-    try:
-        from openpyxl import Workbook
-    except ImportError as exc:
-        raise ApiError(
-            500,
-            "internal_server_error",
-            "Excel import dependency is not installed on the server.",
-        ) from exc
-
-    workbook = Workbook()
-    default_sheet = workbook.active
-    workbook.remove(default_sheet)
-
-    for sheet_name, headers_row in TEMPLATE_HEADERS.items():
-        sheet = workbook.create_sheet(title=sheet_name)
-        sheet.append(headers_row)
-        for row in TEMPLATE_ROWS[sheet_name]:
-            sheet.append(row)
-
-    buffer = BytesIO()
-    workbook.save(buffer)
-    return buffer.getvalue()
 
 
 def generate_schedule_export(headers):
