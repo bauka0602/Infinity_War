@@ -33,7 +33,9 @@ from .import_service import (
     generate_import_template,
     generate_schedule_export,
     import_excel_data,
+    import_iup_data,
     import_rop_data,
+    parse_iup_preview,
     parse_rop_preview,
 )
 from .job_store import create_schedule_generation_job, get_schedule_generation_job
@@ -61,6 +63,7 @@ COLLECTION_ALIASES = {
 ALLOWED_COLLECTIONS = {
     "courses",
     "course_components",
+    "iup_entries",
     "teachers",
     "students",
     "rooms",
@@ -97,7 +100,7 @@ async def _read_json_body(request: Request):
 def _require_collection_access(collection, headers, method):
     user = require_auth_user(headers)
 
-    if collection in {"courses", "course_components", "teachers", "students", "rooms", "groups", "sections"} and user["role"] != "admin":
+    if collection in {"courses", "course_components", "iup_entries", "teachers", "students", "rooms", "groups", "sections"} and user["role"] != "admin":
         raise ApiError(403, "forbidden", "Недостаточно прав")
 
     if collection == "schedules" and method in {"POST", "PUT", "DELETE"} and user["role"] != "admin":
@@ -258,6 +261,14 @@ def create_app():
     @router.post("/import/rop")
     async def import_rop(request: Request):
         return import_rop_data(request.headers, await _read_json_body(request))
+
+    @router.post("/import/iup/preview")
+    async def import_iup_preview(request: Request):
+        return parse_iup_preview(request.headers, await _read_json_body(request))
+
+    @router.post("/import/iup")
+    async def import_iup(request: Request):
+        return import_iup_data(request.headers, await _read_json_body(request))
 
     @router.get("/import/template")
     def import_template(request: Request):

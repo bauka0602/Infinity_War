@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import re
 from datetime import date
 from io import BytesIO
@@ -246,6 +247,17 @@ ROOM_TYPE_ALIASES = {
     "seminar": "seminar",
     "семинар": "seminar",
 }
+
+IUP_COMPONENT_CODES = {"ОК", "ВК", "КВ", "ДВО", "УПП"}
+IUP_LESSON_PHRASES = {
+    "Лекции": "lecture",
+    "Практики, Семинары": "practical",
+    "Лабораторные работы": "lab",
+    "Самостоятельная работа студента и преподавателя": "srop",
+    "Учебная практика": "practice",
+    "Производственная практика": "practice",
+}
+IUP_ACTIVE_LESSON_TYPES = {"lecture", "practical", "lab", "practice"}
 
 LESSON_TYPE_ALIASES = {
     "lecture": "lecture",
@@ -1249,6 +1261,478 @@ def _is_rop_course_row(row):
     if first_cell.startswith(("итого", "средняя", "барлығы", "оқу жоспары", "орташа")):
         return False
     return True
+
+
+def _decode_pdf_payload(payload):
+    return _decode_file_payload(
+        payload,
+        (".pdf",),
+        "Поддерживаются только PDF файлы ИУП.",
+    )
+
+
+def _extract_pdf_text(file_bytes):
+    try:
+        import fitz
+    except ImportError as exc:
+        raise ApiError(
+            500,
+            "iup_pdf_dependency_missing",
+            "Для импорта PDF ИУП нужно установить pymupdf.",
+        ) from exc
+
+    try:
+        document = fitz.open(stream=file_bytes, filetype="pdf")
+        return "\n".join(page.get_text("text") for page in document)
+    except Exception as exc:
+        raise ApiError(400, "bad_request", "Не удалось прочитать PDF ИУП.") from exc
+
+
+def _iup_clean_lines(text):
+    return [
+        line.replace("\xa0", " ").strip()
+        for line in text.splitlines()
+        if line.replace("\xa0", " ").strip()
+    ]
+
+
+def _join_wrapped_text(lines):
+    result = " ".join(lines)
+    result = re.sub(r"-\s+", "", result)
+    return re.sub(r"\s+", " ", result).strip()
+
+
+def _normalise_iup_programme(value):
+    text = str(value or "").strip()
+    if "бизнес" in text.lower():
+        return "Бизнес-информатика"
+    if "компьютер" in text.lower():
+        return "Компьютерная инженерия"
+    return text
+
+
+def _normalise_iup_language(value):
+    text = str(value or "").strip().lower()
+    if text.startswith(("каз", "қаз")):
+        return "kk"
+    if text.startswith(("рус", "орыс")):
+        return "ru"
+    return "ru"
+
+
+def _infer_iup_group_name(file_name, programme):
+    match = re.search(r"(\d{2})[-_](\d{2})", file_name)
+    if not match:
+        return ""
+    base_name = f"05-057-{match.group(1)}-{match.group(2)}"
+    if "сопр" in str(programme or "").lower() or "сопр" in file_name.lower():
+        return f"{base_name} СОПР"
+    return base_name
+
+
+def _extract_iup_metadata(file_name, lines):
+    metadata = {
+        "fileName": file_name,
+        "studentName": "",
+        "groupName": "",
+        "programme": "",
+        "studyCourse": None,
+        "language": "ru",
+        "academicYear": "",
+    }
+    for index, line in enumerate(lines):
+        if line.startswith("Обучающийся "):
+            metadata["studentName"] = line.replace("Обучающийся ", "", 1).strip()
+        elif line.startswith("Курс "):
+            match = re.search(r"\d+", line)
+            metadata["studyCourse"] = int(match.group(0)) if match else None
+        elif line.startswith("Язык обучения"):
+            metadata["language"] = _normalise_iup_language(line.replace("Язык обучения", "", 1))
+        elif (
+            not metadata["academicYear"]
+            and "учебный год" in line.lower()
+            and re.search(r"20\d{2}\s*[-–]\s*20\d{2}", line)
+        ):
+            match = re.search(r"(20\d{2})\s*[-–]\s*(20\d{2})", line)
+            metadata["academicYear"] = f"{match.group(1)}-{match.group(2)}"
+        elif "(6B" in line or "(7M" in line:
+            if "информатика" in line.lower() or "инженерия" in line.lower():
+                metadata["programme"] = _normalise_iup_programme(re.sub(r"\s*\([^)]*\)", "", line))
+
+    metadata["groupName"] = _infer_iup_group_name(file_name, metadata["programme"])
+    return metadata
+
+
+def _iup_lesson_at(lines, index):
+    for size in range(1, 4):
+        phrase = " ".join(lines[index : index + size])
+        lesson_type = IUP_LESSON_PHRASES.get(phrase)
+        if lesson_type:
+            return lesson_type, size, phrase
+    return None, 0, ""
+
+
+def _is_iup_course_start(lines, index):
+    return (
+        index + 1 < len(lines)
+        and re.fullmatch(r"\d{1,3}", lines[index] or "")
+        and lines[index + 1] in IUP_COMPONENT_CODES
+    )
+
+
+def _split_iup_code_and_name(values):
+    code_lines = []
+    cursor = 0
+    while cursor < len(values):
+        line = values[cursor]
+        if re.search(r"\d", line):
+            code_lines.append(line)
+            cursor += 1
+            continue
+        if (
+            not code_lines
+            and re.fullmatch(r"[A-Za-z]{2,12}", line)
+            and cursor + 1 < len(values)
+            and re.fullmatch(r"\d{4}", values[cursor + 1])
+        ):
+            code_lines.append(line)
+            cursor += 1
+            continue
+        break
+    return _join_wrapped_text(code_lines), _join_wrapped_text(values[cursor:])
+
+
+def _parse_iup_course_block(block):
+    if len(block) < 5:
+        return None
+    course_index = int(block[0])
+    component = block[1]
+    credits_index = None
+    for index in range(2, len(block) - 1):
+        if re.fullmatch(r"\d{1,2}", block[index]) and _iup_lesson_at(block, index + 1)[0]:
+            credits_index = index
+            break
+    if credits_index is None:
+        return None
+
+    course_code, course_name = _split_iup_code_and_name(block[2:credits_index])
+    if not course_code or not course_name:
+        return None
+
+    lesson_items = []
+    cursor = credits_index + 1
+    while cursor < len(block):
+        lesson_type, size, phrase = _iup_lesson_at(block, cursor)
+        if not lesson_type:
+            cursor += 1
+            continue
+        cursor += size
+        teacher_lines = []
+        hours = None
+        while cursor < len(block):
+            hours_match = re.match(r"^(\d+)\b", block[cursor])
+            if hours_match:
+                hours = int(hours_match.group(1))
+                cursor += 1
+                break
+            if _iup_lesson_at(block, cursor)[0]:
+                break
+            teacher_lines.append(block[cursor])
+            cursor += 1
+
+        teacher_name = _join_wrapped_text(teacher_lines)
+        if teacher_name and hours is not None:
+            lesson_items.append(
+                {
+                    "lessonType": lesson_type,
+                    "lessonLabel": phrase,
+                    "teacherName": teacher_name,
+                    "hours": hours,
+                }
+            )
+
+    return {
+        "index": course_index,
+        "component": component,
+        "code": course_code,
+        "name": course_name,
+        "credits": int(block[credits_index]),
+        "lessonItems": lesson_items,
+    }
+
+
+def _parse_iup_pdf(file_name, file_bytes):
+    lines = _iup_clean_lines(_extract_pdf_text(file_bytes))
+    metadata = _extract_iup_metadata(file_name, lines)
+    courses = []
+    entries = []
+    current_study_year = metadata.get("studyCourse")
+    current_academic_period = None
+    index = 0
+
+    while index < len(lines):
+        course_year_match = re.match(r"^(\d+)\s+Курс обучения", lines[index])
+        if course_year_match:
+            current_study_year = int(course_year_match.group(1))
+
+        period_match = re.match(r"^(\d+)\s+Академический период", lines[index])
+        if period_match:
+            current_academic_period = int(period_match.group(1))
+
+        if not _is_iup_course_start(lines, index):
+            index += 1
+            continue
+
+        next_index = index + 2
+        while next_index < len(lines) and not _is_iup_course_start(lines, next_index):
+            next_index += 1
+
+        course = _parse_iup_course_block(lines[index:next_index])
+        if course:
+            course["studyYear"] = current_study_year
+            course["academicPeriod"] = current_academic_period
+            course["semester"] = current_academic_period
+            courses.append(course)
+            for lesson in course["lessonItems"]:
+                entries.append(
+                    {
+                        **metadata,
+                        "studyYear": current_study_year,
+                        "academicPeriod": current_academic_period,
+                        "semester": current_academic_period,
+                        "component": course["component"],
+                        "courseCode": course["code"],
+                        "courseName": course["name"],
+                        "credits": course["credits"],
+                        **lesson,
+                    }
+                )
+
+        index = next_index
+
+    if not courses:
+        raise ApiError(400, "bad_request", "В ИУП не найдены дисциплины.")
+
+    return {
+        "metadata": metadata,
+        "courses": courses,
+        "entries": entries,
+        "totals": {
+            "courses": len(courses),
+            "lessonEntries": len(entries),
+            "teachers": len({entry["teacherName"] for entry in entries if entry.get("teacherName")}),
+        },
+    }
+
+
+def _teacher_email_from_name(name):
+    digest = hashlib.sha1(name.strip().lower().encode("utf-8")).hexdigest()[:12]
+    return f"iup-{digest}@imported.local"
+
+
+def _upsert_iup_teacher(connection, teacher_name, language):
+    existing = query_one(
+        connection,
+        "SELECT id, name FROM teachers WHERE lower(name) = lower(?)",
+        (teacher_name,),
+    )
+    if existing:
+        return existing["id"], "existing"
+
+    teacher_id = insert_and_get_id(
+        connection,
+        """
+        INSERT INTO teachers (name, email, department, teaching_languages)
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            teacher_name,
+            _teacher_email_from_name(teacher_name),
+            "Институт бизнеса и цифровых технологий",
+            language or "ru,kk",
+        ),
+    )
+    return teacher_id, "inserted"
+
+
+def _resolve_iup_group_name(connection, group_name):
+    if not group_name:
+        return ""
+    exact = query_one(connection, "SELECT name FROM groups WHERE name = ?", (group_name,))
+    if exact:
+        return exact["name"]
+    prefixed = query_one(
+        connection,
+        "SELECT name FROM groups WHERE name LIKE ? ORDER BY length(name), name LIMIT 1",
+        (f"{group_name}%",),
+    )
+    return prefixed["name"] if prefixed else group_name
+
+
+def _find_matching_iup_course(connection, course_code, programme, semester):
+    return query_one(
+        connection,
+        """
+        SELECT id, instructor_id
+        FROM courses
+        WHERE lower(code) = lower(?)
+          AND (? = '' OR programme = ? OR programme = '')
+          AND (? IS NULL OR semester = ?)
+        ORDER BY
+          CASE WHEN programme = ? THEN 0 ELSE 1 END,
+          id
+        LIMIT 1
+        """,
+        (course_code, programme or "", programme or "", semester, semester, programme or ""),
+    )
+
+
+def _store_iup_entries(connection, parsed):
+    metadata = parsed["metadata"]
+    metadata["groupName"] = _resolve_iup_group_name(connection, metadata.get("groupName", ""))
+    db_execute(
+        connection,
+        "DELETE FROM iup_entries WHERE file_name = ? AND student_name = ?",
+        (metadata["fileName"], metadata.get("studentName", "")),
+    )
+
+    updated_courses = set()
+    updated_components = set()
+    teacher_cache = {}
+
+    for entry in parsed["entries"]:
+        teacher_name = entry.get("teacherName", "")
+        teacher_id = None
+        if teacher_name:
+            if teacher_name not in teacher_cache:
+                teacher_cache[teacher_name] = _upsert_iup_teacher(
+                    connection,
+                    teacher_name,
+                    metadata.get("language", "ru"),
+                )
+            teacher_id, status = teacher_cache[teacher_name]
+
+        insert_and_get_id(
+            connection,
+            """
+            INSERT INTO iup_entries (
+                file_name, student_name, group_name, programme, study_course,
+                language, academic_year, academic_period, semester, component,
+                course_code, course_name, credits, lesson_type, teacher_id,
+                teacher_name, hours
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                metadata["fileName"],
+                metadata.get("studentName", ""),
+                metadata.get("groupName", ""),
+                metadata.get("programme", ""),
+                entry.get("studyYear"),
+                metadata.get("language", "ru"),
+                metadata.get("academicYear", ""),
+                entry.get("academicPeriod"),
+                entry.get("semester"),
+                entry.get("component", ""),
+                entry["courseCode"],
+                entry["courseName"],
+                entry.get("credits"),
+                entry["lessonType"],
+                teacher_id,
+                teacher_name,
+                entry.get("hours"),
+            ),
+        )
+
+        if teacher_id and entry["lessonType"] in IUP_ACTIVE_LESSON_TYPES:
+            course = _find_matching_iup_course(
+                connection,
+                entry["courseCode"],
+                metadata.get("programme", ""),
+                entry.get("semester"),
+            )
+            if course and (entry["lessonType"] == "lecture" or not course.get("instructor_id")):
+                db_execute(
+                    connection,
+                    """
+                    UPDATE courses
+                    SET instructor_id = ?, instructor_name = ?
+                    WHERE id = ?
+                    """,
+                    (teacher_id, teacher_name, course["id"]),
+                )
+                updated_courses.add(course["id"])
+
+            db_execute(
+                connection,
+                """
+                UPDATE course_components
+                SET teacher_id = ?, teacher_name = ?
+                WHERE lower(course_code) = lower(?)
+                  AND lesson_type = ?
+                  AND (? IS NULL OR academic_period = ?)
+                """,
+                (
+                    teacher_id,
+                    teacher_name,
+                    entry["courseCode"],
+                    entry["lessonType"],
+                    entry.get("academicPeriod"),
+                    entry.get("academicPeriod"),
+                ),
+            )
+            updated_components.add((entry["courseCode"], entry["lessonType"], entry.get("academicPeriod")))
+
+    return {
+        "iupEntries": len(parsed["entries"]),
+        "teachersInserted": sum(1 for _teacher_id, status in teacher_cache.values() if status == "inserted"),
+        "teachersExisting": sum(1 for _teacher_id, status in teacher_cache.values() if status == "existing"),
+        "coursesUpdated": len(updated_courses),
+        "componentsUpdated": len(updated_components),
+    }
+
+
+def parse_iup_preview(headers, payload):
+    user = require_auth_user(headers)
+    if user["role"] != "admin":
+        raise ApiError(403, "forbidden", "Недостаточно прав")
+
+    file_name, file_bytes = _decode_pdf_payload(payload)
+    parsed = _parse_iup_pdf(file_name, file_bytes)
+    return {
+        "metadata": parsed["metadata"],
+        "totals": parsed["totals"],
+        "courses": [
+            {
+                "code": course["code"],
+                "name": course["name"],
+                "component": course["component"],
+                "credits": course["credits"],
+                "academicPeriod": course.get("academicPeriod"),
+            }
+            for course in parsed["courses"]
+        ],
+        "entries": parsed["entries"][:50],
+    }
+
+
+def import_iup_data(headers, payload):
+    user = require_auth_user(headers)
+    if user["role"] != "admin":
+        raise ApiError(403, "forbidden", "Недостаточно прав")
+
+    file_name, file_bytes = _decode_pdf_payload(payload)
+    parsed = _parse_iup_pdf(file_name, file_bytes)
+    with DB_LOCK:
+        with get_connection() as connection:
+            stats = _store_iup_entries(connection, parsed)
+            connection.commit()
+    return {
+        "success": True,
+        "metadata": parsed["metadata"],
+        "totals": parsed["totals"],
+        "stats": stats,
+    }
 
 
 def parse_rop_preview(headers, payload):

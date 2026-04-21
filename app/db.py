@@ -359,7 +359,31 @@ def sqlite_schema():
             lesson_type TEXT NOT NULL,
             hours INTEGER NOT NULL,
             weekly_classes INTEGER NOT NULL,
-            requires_computers INTEGER DEFAULT 0
+            requires_computers INTEGER DEFAULT 0,
+            teacher_id INTEGER,
+            teacher_name TEXT
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS iup_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_name TEXT NOT NULL,
+            student_name TEXT,
+            group_name TEXT,
+            programme TEXT,
+            study_course INTEGER,
+            language TEXT,
+            academic_year TEXT,
+            academic_period INTEGER,
+            semester INTEGER,
+            component TEXT,
+            course_code TEXT NOT NULL,
+            course_name TEXT NOT NULL,
+            credits INTEGER,
+            lesson_type TEXT NOT NULL,
+            teacher_id INTEGER,
+            teacher_name TEXT,
+            hours INTEGER
         )
         """,
         """
@@ -540,7 +564,31 @@ def postgres_schema():
             lesson_type TEXT NOT NULL,
             hours INTEGER NOT NULL,
             weekly_classes INTEGER NOT NULL,
-            requires_computers INTEGER DEFAULT 0
+            requires_computers INTEGER DEFAULT 0,
+            teacher_id INTEGER,
+            teacher_name TEXT
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS iup_entries (
+            id SERIAL PRIMARY KEY,
+            file_name TEXT NOT NULL,
+            student_name TEXT,
+            group_name TEXT,
+            programme TEXT,
+            study_course INTEGER,
+            language TEXT,
+            academic_year TEXT,
+            academic_period INTEGER,
+            semester INTEGER,
+            component TEXT,
+            course_code TEXT NOT NULL,
+            course_name TEXT NOT NULL,
+            credits INTEGER,
+            lesson_type TEXT NOT NULL,
+            teacher_id INTEGER,
+            teacher_name TEXT,
+            hours INTEGER
         )
         """,
         """
@@ -882,6 +930,25 @@ def ensure_database():
         ensure_column(connection, "sections", "lesson_type", "TEXT DEFAULT 'lecture'")
         ensure_column(connection, "sections", "subgroup_mode", "TEXT DEFAULT 'auto'")
         ensure_column(connection, "sections", "subgroup_count", "INTEGER DEFAULT 1")
+        ensure_column(connection, "course_components", "teacher_id", "INTEGER")
+        ensure_column(connection, "course_components", "teacher_name", "TEXT")
+        ensure_column(connection, "iup_entries", "file_name", "TEXT")
+        ensure_column(connection, "iup_entries", "student_name", "TEXT")
+        ensure_column(connection, "iup_entries", "group_name", "TEXT")
+        ensure_column(connection, "iup_entries", "programme", "TEXT")
+        ensure_column(connection, "iup_entries", "study_course", "INTEGER")
+        ensure_column(connection, "iup_entries", "language", "TEXT")
+        ensure_column(connection, "iup_entries", "academic_year", "TEXT")
+        ensure_column(connection, "iup_entries", "academic_period", "INTEGER")
+        ensure_column(connection, "iup_entries", "semester", "INTEGER")
+        ensure_column(connection, "iup_entries", "component", "TEXT")
+        ensure_column(connection, "iup_entries", "course_code", "TEXT")
+        ensure_column(connection, "iup_entries", "course_name", "TEXT")
+        ensure_column(connection, "iup_entries", "credits", "INTEGER")
+        ensure_column(connection, "iup_entries", "lesson_type", "TEXT")
+        ensure_column(connection, "iup_entries", "teacher_id", "INTEGER")
+        ensure_column(connection, "iup_entries", "teacher_name", "TEXT")
+        ensure_column(connection, "iup_entries", "hours", "INTEGER")
         db_execute(
             connection,
             """
@@ -925,7 +992,7 @@ def ensure_database():
 
         counts = {
             table: query_scalar(connection, f"SELECT COUNT(*) FROM {table}")
-            for table in ("users", "courses", "teachers", "students", "rooms", "groups", "schedules", "sections")
+            for table in ("users", "courses", "teachers", "students", "rooms", "groups", "schedules", "sections", "iup_entries")
         }
 
         if sum(counts.values()) == 0:

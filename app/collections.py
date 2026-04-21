@@ -163,12 +163,26 @@ def list_collection(connection, collection, query, user=None):
             SELECT
                 id, course_id, course_code, course_name, programme, study_year,
                 academic_period, semester, lesson_type, hours, weekly_classes,
-                requires_computers
+                requires_computers, teacher_id, teacher_name
             FROM course_components
             {where_sql}
             ORDER BY academic_period, course_name, lesson_type, id
             """,
             tuple(params),
+        )
+
+    if collection == "iup_entries":
+        return query_all(
+            connection,
+            """
+            SELECT
+                id, file_name, student_name, group_name, programme, study_course,
+                language, academic_year, academic_period, semester, component,
+                course_code, course_name, credits, lesson_type, teacher_id,
+                teacher_name, hours
+            FROM iup_entries
+            ORDER BY file_name, academic_period, course_name, lesson_type, id
+            """,
         )
 
     if collection == "teachers":
