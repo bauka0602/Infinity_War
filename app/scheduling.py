@@ -13,6 +13,7 @@ DAY_NAME_TO_INDEX = {
     "thursday": 3,
     "friday": 4,
 }
+PC_REQUIRED_LESSON_TYPES = {"practical", "lab"}
 
 
 def monday_for_week(target_year):
@@ -44,7 +45,7 @@ def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
             "preferredSlots": teacher_preferences.get(section["instructor_id"], []),
             "forbiddenSlots": [],
             "lessonType": lesson_type,
-            "pcRequired": bool(section.get("requires_computers")),
+            "pcRequired": lesson_type in PC_REQUIRED_LESSON_TYPES,
         }
 
         if lesson_type == "lecture":
@@ -102,7 +103,7 @@ def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
                 "roomTypeRequired": "lecture",
                 "subgroupIds": [],
                 "streamId": f"lecture-{course_id}-{instructor_id}",
-                "pcRequired": bool(first_section.get("requires_computers")),
+                "pcRequired": False,
             }
         )
 

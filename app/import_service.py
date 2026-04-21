@@ -1,4 +1,5 @@
 import base64
+import re
 from datetime import date
 from io import BytesIO
 
@@ -314,6 +315,34 @@ AVAILABLE_ALIASES = {
     "жоқ": 0,
 }
 
+ROP_PERIOD_COLUMN_GROUPS = (
+    {
+        "academic_period_column": 10,
+        "total": 10,
+        "lecture": 11,
+        "practical": 12,
+        "lab": 13,
+        "studio": 14,
+        "practice": 15,
+        "srop": 16,
+        "sro": 17,
+    },
+    {
+        "academic_period_column": 18,
+        "total": 18,
+        "lecture": 19,
+        "practical": 20,
+        "lab": 21,
+        "studio": 22,
+        "practice": 23,
+        "srop": 24,
+        "sro": 25,
+    },
+)
+
+ROP_LESSON_TYPES = ("lecture", "practical", "lab", "studio")
+ROP_PC_REQUIRED_LESSON_TYPES = {"practical", "lab"}
+
 
 def _load_workbook(file_bytes):
     try:
@@ -335,7 +364,7 @@ def _load_workbook(file_bytes):
         ) from exc
 
 
-def _decode_excel_payload(payload):
+def _decode_file_payload(payload, allowed_extensions, format_message):
     file_name = (payload.get("fileName") or "").strip()
     file_content = payload.get("fileContent")
 
@@ -347,26 +376,69 @@ def _decode_excel_payload(payload):
             {"fields": ["fileName", "fileContent"]},
         )
 
-    if not file_name.lower().endswith(".xlsx"):
+    if not file_name.lower().endswith(tuple(allowed_extensions)):
         raise ApiError(
             400,
             "bad_request",
-            "Поддерживаются только Excel файлы формата .xlsx.",
+            format_message,
         )
 
     if "," in file_content:
         file_content = file_content.split(",", 1)[1]
 
     try:
-        return base64.b64decode(file_content)
+        return file_name, base64.b64decode(file_content)
     except Exception as exc:
         raise ApiError(400, "bad_request", "Некорректное содержимое файла.") from exc
+
+
+def _decode_excel_payload(payload):
+    _file_name, file_bytes = _decode_file_payload(
+        payload,
+        (".xlsx",),
+        "Поддерживаются только Excel файлы формата .xlsx.",
+    )
+    return file_bytes
 
 
 def _normalize_header(value):
     if value is None:
         return ""
     return str(value).strip().lower().replace("\n", " ").replace("-", "_")
+
+
+def _normalize_cell(value):
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        return value.strip()
+    return value
+
+
+def _cell_text(value):
+    value = _normalize_cell(value)
+    return str(value).strip() if value not in (None, "") else ""
+
+
+def _number_or_none(value):
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value) if float(value).is_integer() else float(value)
+    normalized = str(value).replace(",", ".").strip()
+    if not normalized:
+        return None
+    try:
+        parsed = float(normalized)
+    except ValueError:
+        return None
+    return int(parsed) if parsed.is_integer() else parsed
+
+
+def _safe_row_value(row, index):
+    return row[index] if index < len(row) else ""
 
 
 def _normalize_sheet_name(sheet_name):
@@ -547,6 +619,78 @@ def _upsert_course(connection, payload):
             normalized.get("programme", normalized.get("programme_name", "")) or "",
             requires_computers,
         ),
+    )
+    return "inserted"
+
+
+def _upsert_rop_course(connection, course, offering):
+    existing = query_one(
+        connection,
+        """
+        SELECT id
+        FROM courses
+        WHERE lower(code) = lower(?) AND semester = ? AND year = ? AND lower(programme) = lower(?)
+        """,
+        (
+            course["code"],
+            offering["academicPeriod"],
+            course.get("studyYear"),
+            course.get("programme") or "",
+        ),
+    )
+    description = (
+        f"Imported from ROP. Component: {course.get('component') or '-'}; "
+        f"cycle: {course.get('cycle') or '-'}; academic period: {offering['academicPeriod']}."
+    )
+    params = (
+        course["name"],
+        course["code"],
+        course.get("credits"),
+        offering.get("totalHours"),
+        description,
+        course.get("studyYear"),
+        offering["academicPeriod"],
+        "",
+        None,
+        "",
+        course.get("programme") or "",
+        0,
+    )
+
+    if existing:
+        db_execute(
+            connection,
+            """
+            UPDATE courses
+            SET
+                name = ?,
+                code = ?,
+                credits = ?,
+                hours = ?,
+                description = ?,
+                year = ?,
+                semester = ?,
+                department = ?,
+                instructor_id = ?,
+                instructor_name = ?,
+                programme = ?,
+                requires_computers = ?
+            WHERE id = ?
+            """,
+            (*params, existing["id"]),
+        )
+        return "updated"
+
+    insert_and_get_id(
+        connection,
+        """
+        INSERT INTO courses (
+            name, code, credits, hours, description,
+            year, semester, department, instructor_id, instructor_name, programme, requires_computers
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        params,
     )
     return "inserted"
 
@@ -801,6 +945,291 @@ def _upsert_section(connection, payload):
         ),
     )
     return "inserted"
+
+
+def _load_rop_rows(file_name, file_bytes):
+    lower_name = file_name.lower()
+    if lower_name.endswith(".xls"):
+        try:
+            import xlrd
+        except ImportError as exc:
+            raise ApiError(
+                500,
+                "internal_server_error",
+                "Excel .xls import dependency is not installed on the server.",
+            ) from exc
+
+        try:
+            workbook = xlrd.open_workbook(file_contents=file_bytes)
+        except Exception as exc:
+            raise ApiError(400, "bad_request", "Не удалось прочитать РОП Excel файл.") from exc
+        if not workbook.nsheets:
+            raise ApiError(400, "bad_request", "В РОП Excel файле нет листов.")
+        sheet = workbook.sheet_by_index(0)
+        return [
+            [_normalize_cell(sheet.cell_value(row_index, column_index)) for column_index in range(sheet.ncols)]
+            for row_index in range(sheet.nrows)
+        ]
+
+    try:
+        from openpyxl import load_workbook
+    except ImportError as exc:
+        raise ApiError(
+            500,
+            "internal_server_error",
+            "Excel import dependency is not installed on the server.",
+        ) from exc
+
+    try:
+        workbook = load_workbook(filename=BytesIO(file_bytes), data_only=True)
+    except Exception as exc:
+        raise ApiError(400, "bad_request", "Не удалось прочитать РОП Excel файл.") from exc
+    sheet = workbook.worksheets[0]
+    return [[_normalize_cell(cell) for cell in row] for row in sheet.iter_rows(values_only=True)]
+
+
+def _extract_quoted_text(text):
+    match = re.search(r"[“\"]([^“”\"]+)[”\"]", text)
+    return match.group(1).strip() if match else ""
+
+
+def _extract_academic_year(rows):
+    for row in rows[:20]:
+        text = " ".join(_cell_text(value) for value in row if _cell_text(value))
+        match = re.search(r"(20\d{2})\s*[-–]\s*(20\d{2})", text)
+        if match:
+            return f"{match.group(1)}-{match.group(2)}"
+    return ""
+
+
+def _extract_entry_year(rows):
+    for row in rows[:20]:
+        text = " ".join(_cell_text(value) for value in row if _cell_text(value))
+        if "Год поступления" in text or "Оқуға түскен жылы" in text:
+            return text.split(":", 1)[-1].strip()
+    return ""
+
+
+def _extract_programme_name(rows):
+    for row in rows[:20]:
+        text = " ".join(_cell_text(value) for value in row if _cell_text(value))
+        quoted = _extract_quoted_text(text)
+        if quoted and (
+            "образовательной программы" in text.lower()
+            or "білім беру бағдарламасының" in text.lower()
+        ):
+            return quoted
+    return ""
+
+
+def _extract_language(file_name, rows):
+    lower_name = file_name.lower()
+    if "каз" in lower_name or "_kk" in lower_name or "қаз" in lower_name:
+        return "kk"
+    if "рус" in lower_name or "_ru" in lower_name:
+        return "ru"
+    for row in rows[:20]:
+        text = " ".join(_cell_text(value) for value in row if _cell_text(value))
+        if any(marker in text for marker in ("ЖҰМЫС ОҚУ ЖОСПАРЫ", "Оқуға түскен жылы")):
+            return "kk"
+    return "ru"
+
+
+def _extract_study_year(file_name, academic_periods):
+    match = re.search(r"[_\-\s](\d)(?:[_\-\s]|$)", file_name)
+    if match:
+        return int(match.group(1))
+    for academic_period in academic_periods:
+        period_number = _extract_period_number(academic_period)
+        if period_number:
+            return int((period_number + 1) / 2)
+    return None
+
+
+def _extract_period_number(value):
+    match = re.search(r"\d+", _cell_text(value))
+    return int(match.group(0)) if match else None
+
+
+def _semester_in_year(academic_period):
+    if not academic_period:
+        return None
+    return 1 if academic_period % 2 == 1 else 2
+
+
+def _weekly_classes_from_hours(hours):
+    numeric_hours = _number_or_none(hours)
+    if not numeric_hours:
+        return 0
+    return max(1, int(round(float(numeric_hours) / 15)))
+
+
+def _find_rop_table_header_row(rows):
+    for index, row in enumerate(rows):
+        normalized_values = {_normalize_header(value) for value in row}
+        if (
+            "код дисциплины" in normalized_values
+            or "пәннің коды" in normalized_values
+            or "пәннің_коды" in normalized_values
+        ):
+            return index
+    raise ApiError(400, "bad_request", "В РОП не найдена таблица дисциплин.")
+
+
+def _is_rop_course_row(row):
+    first_cell = _cell_text(_safe_row_value(row, 0)).lower()
+    code = _cell_text(_safe_row_value(row, 5))
+    name = _cell_text(_safe_row_value(row, 6))
+    if not code or not name:
+        return False
+    if first_cell.startswith(("итого", "средняя", "барлығы", "оқу жоспары", "орташа")):
+        return False
+    return True
+
+
+def parse_rop_preview(headers, payload):
+    user = require_auth_user(headers)
+    if user["role"] != "admin":
+        raise ApiError(403, "forbidden", "Недостаточно прав")
+
+    file_name, file_bytes = _decode_file_payload(
+        payload,
+        (".xls", ".xlsx"),
+        "Поддерживаются Excel файлы РОП формата .xls или .xlsx.",
+    )
+    rows = _load_rop_rows(file_name, file_bytes)
+    header_row_index = _find_rop_table_header_row(rows)
+    academic_period_row = rows[header_row_index + 1] if header_row_index + 1 < len(rows) else []
+    academic_periods = [
+        _extract_period_number(_safe_row_value(academic_period_row, group["academic_period_column"]))
+        for group in ROP_PERIOD_COLUMN_GROUPS
+    ]
+
+    study_year = _extract_study_year(file_name, academic_periods)
+    metadata = {
+        "fileName": file_name,
+        "programme": _extract_programme_name(rows),
+        "academicYear": _extract_academic_year(rows),
+        "entryYear": _extract_entry_year(rows),
+        "language": _extract_language(file_name, rows),
+        "studyYear": study_year,
+        "academicPeriods": [period for period in academic_periods if period],
+    }
+
+    courses = []
+    offerings = []
+    lesson_components = []
+    seen_courses = set()
+
+    for row_index, row in enumerate(rows[header_row_index + 3 :], start=header_row_index + 4):
+        if not _is_rop_course_row(row):
+            continue
+
+        course = {
+            "rowNumber": row_index,
+            "moduleNumber": _cell_text(_safe_row_value(row, 0)),
+            "moduleType": _cell_text(_safe_row_value(row, 1)),
+            "moduleName": _cell_text(_safe_row_value(row, 2)),
+            "cycle": _cell_text(_safe_row_value(row, 3)),
+            "component": _cell_text(_safe_row_value(row, 4)),
+            "code": _cell_text(_safe_row_value(row, 5)),
+            "name": _cell_text(_safe_row_value(row, 6)),
+            "credits": _number_or_none(_safe_row_value(row, 7)),
+            "examPeriod": _number_or_none(_safe_row_value(row, 9)),
+            "programme": metadata["programme"],
+            "studyYear": study_year,
+            "language": metadata["language"],
+        }
+        course_key = (course["code"].lower(), course["name"].lower())
+        if course_key not in seen_courses:
+            seen_courses.add(course_key)
+            courses.append(course)
+
+        for group, academic_period in zip(ROP_PERIOD_COLUMN_GROUPS, academic_periods):
+            total_hours = _number_or_none(_safe_row_value(row, group["total"]))
+            if not academic_period or not total_hours:
+                continue
+
+            offering = {
+                "courseCode": course["code"],
+                "courseName": course["name"],
+                "academicPeriod": academic_period,
+                "semester": _semester_in_year(academic_period),
+                "studyYear": study_year,
+                "totalHours": total_hours,
+                "lectureHours": _number_or_none(_safe_row_value(row, group["lecture"])) or 0,
+                "practicalHours": _number_or_none(_safe_row_value(row, group["practical"])) or 0,
+                "labHours": _number_or_none(_safe_row_value(row, group["lab"])) or 0,
+                "studioHours": _number_or_none(_safe_row_value(row, group["studio"])) or 0,
+                "practiceHours": _number_or_none(_safe_row_value(row, group["practice"])) or 0,
+                "sropHours": _number_or_none(_safe_row_value(row, group["srop"])) or 0,
+                "sroHours": _number_or_none(_safe_row_value(row, group["sro"])) or 0,
+            }
+            offerings.append(offering)
+
+            for lesson_type in ROP_LESSON_TYPES:
+                hours = offering[f"{lesson_type}Hours"]
+                if hours:
+                    normalized_lesson_type = "practical" if lesson_type == "studio" else lesson_type
+                    lesson_components.append(
+                        {
+                            "courseCode": course["code"],
+                            "courseName": course["name"],
+                            "academicPeriod": academic_period,
+                            "semester": offering["semester"],
+                            "lessonType": normalized_lesson_type,
+                            "hours": hours,
+                            "weeklyClasses": _weekly_classes_from_hours(hours),
+                            "requiresComputers": normalized_lesson_type in ROP_PC_REQUIRED_LESSON_TYPES,
+                        }
+                    )
+
+    if not courses:
+        raise ApiError(400, "bad_request", "В РОП не найдены дисциплины.")
+
+    return {
+        "message": "ROP preview parsed successfully.",
+        "metadata": metadata,
+        "totals": {
+            "courses": len(courses),
+            "offerings": len(offerings),
+            "lessonComponents": len(lesson_components),
+        },
+        "courses": courses,
+        "offerings": offerings,
+        "lessonComponents": lesson_components,
+    }
+
+
+def import_rop_data(headers, payload):
+    preview = parse_rop_preview(headers, payload)
+    course_by_key = {
+        (course["code"], course["name"]): course for course in preview["courses"]
+    }
+    summary = {"courses": {"inserted": 0, "updated": 0}}
+
+    with DB_LOCK:
+        with get_connection() as connection:
+            for offering in preview["offerings"]:
+                course = course_by_key.get((offering["courseCode"], offering["courseName"]))
+                if not course:
+                    continue
+                result = _upsert_rop_course(connection, course, offering)
+                summary["courses"][result] += 1
+            connection.commit()
+
+    return {
+        "message": "ROP import completed successfully.",
+        "metadata": preview["metadata"],
+        "summary": summary,
+        "totals": {
+            "inserted": summary["courses"]["inserted"],
+            "updated": summary["courses"]["updated"],
+            "courses": preview["totals"]["courses"],
+            "offerings": preview["totals"]["offerings"],
+            "lessonComponents": preview["totals"]["lessonComponents"],
+        },
+    }
 
 
 def import_excel_data(headers, payload):

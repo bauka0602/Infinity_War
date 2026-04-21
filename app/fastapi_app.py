@@ -29,7 +29,13 @@ from .collections import (
 from .config import ALLOWED_ORIGINS, DB_ENGINE, DB_LOCK
 from .db import get_connection, query_all, query_one
 from .errors import ApiError
-from .import_service import generate_import_template, generate_schedule_export, import_excel_data
+from .import_service import (
+    generate_import_template,
+    generate_schedule_export,
+    import_excel_data,
+    import_rop_data,
+    parse_rop_preview,
+)
 from .job_store import create_schedule_generation_job, get_schedule_generation_job
 from .notification_service import (
     create_schedule_change_notifications,
@@ -235,6 +241,14 @@ def create_app():
     @router.post("/import/excel")
     async def import_excel(request: Request):
         return import_excel_data(request.headers, await _read_json_body(request))
+
+    @router.post("/import/rop/preview")
+    async def import_rop_preview(request: Request):
+        return parse_rop_preview(request.headers, await _read_json_body(request))
+
+    @router.post("/import/rop")
+    async def import_rop(request: Request):
+        return import_rop_data(request.headers, await _read_json_body(request))
 
     @router.get("/import/template")
     def import_template(request: Request):

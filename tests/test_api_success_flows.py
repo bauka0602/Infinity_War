@@ -78,6 +78,73 @@ def _build_excel_import_payload():
     return {"fileName": "import-success.xlsx", "fileContent": encoded}
 
 
+def _build_rop_preview_payload():
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Лист1"
+
+    def row_with(values):
+        row = [""] * 26
+        for index, value in values.items():
+            row[index] = value
+        sheet.append(row)
+
+    row_with({0: 'РАБОЧИЙ УЧЕБНЫЙ ПЛАН на 2025-2026 учебные годы'})
+    row_with({0: 'для Модульной образовательной программы “Бизнес-информатика”'})
+    row_with({0: 'Год поступления: 01-09-2024'})
+    row_with({})
+    row_with(
+        {
+            0: "№ модуля",
+            1: "Тип модуля",
+            2: "Наименование модуля",
+            3: "Цикл дисциплины",
+            4: "Компонент дисциплины",
+            5: "Код дисциплины",
+            6: "Наименование дисциплины",
+            7: "Академические кредиты",
+            9: "Экзамены (семестр)*",
+            10: "Распределение часов",
+        }
+    )
+    row_with({10: "3 Академический период", 18: "4 Академический период"})
+    row_with(
+        {
+            10: "Всего",
+            11: "Лекции",
+            12: "Практические",
+            13: "Лабораторные",
+            18: "Всего",
+            19: "Лекции",
+            20: "Практические",
+            21: "Лабораторные",
+        }
+    )
+    row_with(
+        {
+            0: 1,
+            1: "Общие модули",
+            2: "Гуманитарно-социальный",
+            3: "ООД",
+            4: "ОК",
+            5: "Fil 2108",
+            6: "Философия",
+            7: 5,
+            9: 1,
+            10: 150,
+            11: 15,
+            12: 30,
+            16: 20,
+            17: 85,
+        }
+    )
+
+    buffer = BytesIO()
+    workbook.save(buffer)
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return {"fileName": "БИ_2_рус.xlsx", "fileContent": encoded}
+
+
 def test_excel_import_success_flow(client, admin_auth_headers):
     response = client.post(
         "/api/import/excel",
@@ -105,6 +172,61 @@ def test_excel_import_success_flow(client, admin_auth_headers):
     assert sections_response.status_code == 200
     assert len(sections_response.json()) == 1
     assert sections_response.json()[0]["course_name"] == "Algorithms"
+
+
+def test_rop_preview_parses_curriculum_plan(client, admin_auth_headers):
+    response = client.post(
+        "/api/import/rop/preview",
+        headers=admin_auth_headers,
+        json=_build_rop_preview_payload(),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["metadata"]["programme"] == "Бизнес-информатика"
+    assert payload["metadata"]["academicYear"] == "2025-2026"
+    assert payload["metadata"]["entryYear"] == "01-09-2024"
+    assert payload["metadata"]["language"] == "ru"
+    assert payload["metadata"]["studyYear"] == 2
+    assert payload["metadata"]["academicPeriods"] == [3, 4]
+    assert payload["totals"]["courses"] == 1
+    assert payload["totals"]["offerings"] == 1
+    assert payload["totals"]["lessonComponents"] == 2
+    assert payload["courses"][0]["code"] == "Fil 2108"
+    assert payload["offerings"][0]["semester"] == 1
+    assert {item["lessonType"] for item in payload["lessonComponents"]} == {
+        "lecture",
+        "practical",
+    }
+    computer_flags = {
+        item["lessonType"]: item["requiresComputers"]
+        for item in payload["lessonComponents"]
+    }
+    assert computer_flags == {"lecture": False, "practical": True}
+
+
+def test_rop_import_creates_courses_from_curriculum_plan(client, admin_auth_headers):
+    response = client.post(
+        "/api/import/rop",
+        headers=admin_auth_headers,
+        json=_build_rop_preview_payload(),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["courses"] == {"inserted": 1, "updated": 0}
+
+    courses_response = client.get("/api/disciplines", headers=admin_auth_headers)
+    assert courses_response.status_code == 200
+    courses = courses_response.json()
+    assert len(courses) == 1
+    assert courses[0]["code"] == "Fil 2108"
+    assert courses[0]["name"] == "Философия"
+    assert courses[0]["credits"] == 5
+    assert courses[0]["hours"] == 150
+    assert courses[0]["year"] == 2
+    assert courses[0]["semester"] == 3
+    assert courses[0]["programme"] == "Бизнес-информатика"
 
 
 def test_schedule_generation_success_flow_with_export(client, admin_auth_headers):

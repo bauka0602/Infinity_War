@@ -5,3 +5,5 @@ class ApiError(Exception):
         self.code = code
         self.message = message
         self.details = details or {}
+
+
