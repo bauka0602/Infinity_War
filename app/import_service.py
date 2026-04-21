@@ -4,7 +4,13 @@ from datetime import date
 from io import BytesIO
 
 from .auth_service import require_auth_user
-from .collections import normalize_number_fields
+from .collections import (
+    infer_group_entry_year,
+    infer_study_course,
+    normalize_number_fields,
+    normalize_programme,
+    normalize_specialty,
+)
 from .config import DB_LOCK
 from .db import db_execute, get_connection, insert_and_get_id, query_all, query_one
 from .errors import ApiError
@@ -173,6 +179,14 @@ GROUP_HEADERS = {
     "lang": "language",
     "язык": "language",
     "оқыту_тілі": "language",
+    "programme": "programme",
+    "program": "programme",
+    "мамандық": "specialty_code",
+    "specialty": "specialty_code",
+    "specialty_code": "specialty_code",
+    "entry_year": "entry_year",
+    "год_поступления": "entry_year",
+    "түскен_жылы": "entry_year",
     "study_course": "study_course",
     "course": "study_course",
     "group_course": "study_course",
@@ -269,7 +283,7 @@ TEMPLATE_HEADERS = {
         "equipment",
         "computer_count",
     ],
-    "Groups": ["name", "student_count", "study_course", "has_subgroups", "language"],
+    "Groups": ["name", "student_count", "study_course", "has_subgroups", "language", "programme", "specialty_code", "entry_year"],
     "Sections": ["course_code", "group_name", "classes_count", "lesson_type"],
 }
 
@@ -934,9 +948,13 @@ def _normalize_teaching_languages(value):
 
 
 def _upsert_group(connection, payload):
-    normalized = normalize_number_fields(payload, ["student_count", "study_course"])
+    normalized = normalize_number_fields(payload, ["student_count", "study_course", "entry_year"])
     has_subgroups = _normalize_bool(payload.get("has_subgroups"))
     language = _normalize_language(payload.get("language"), "ru")
+    specialty_code = normalize_specialty(normalized.get("specialty_code", normalized.get("specialty", "")))
+    programme = normalized.get("programme") or normalize_programme(specialty_code)
+    entry_year = normalized.get("entry_year") or infer_group_entry_year(normalized.get("name"))
+    study_course = normalized.get("study_course") or infer_study_course(entry_year)
     existing = query_one(
         connection,
         "SELECT id FROM groups WHERE lower(name) = lower(?)",
@@ -947,15 +965,18 @@ def _upsert_group(connection, payload):
             connection,
             """
             UPDATE groups
-            SET name = ?, student_count = ?, study_course = ?, has_subgroups = ?, language = ?
+            SET name = ?, student_count = ?, study_course = ?, has_subgroups = ?, language = ?, programme = ?, specialty_code = ?, entry_year = ?
             WHERE id = ?
             """,
             (
                 normalized["name"],
-                normalized["student_count"],
-                normalized.get("study_course"),
+                normalized.get("student_count") or 0,
+                study_course,
                 has_subgroups,
                 language,
+                programme,
+                specialty_code,
+                entry_year,
                 existing["id"],
             ),
         )
@@ -964,15 +985,18 @@ def _upsert_group(connection, payload):
     insert_and_get_id(
         connection,
         """
-        INSERT INTO groups (name, student_count, study_course, has_subgroups, language)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO groups (name, student_count, study_course, has_subgroups, language, programme, specialty_code, entry_year)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             normalized["name"],
-            normalized["student_count"],
-            normalized.get("study_course"),
+            normalized.get("student_count") or 0,
+            study_course,
             has_subgroups,
             language,
+            programme,
+            specialty_code,
+            entry_year,
         ),
     )
     return "inserted"
@@ -1131,6 +1155,12 @@ def _extract_programme_name(rows):
     return ""
 
 
+def _normalize_rop_programme_name(file_name, programme):
+    if "сопр" in file_name.lower() and programme:
+        return f"{programme} (СОПР)"
+    return programme
+
+
 def _extract_language(file_name, rows):
     lower_name = file_name.lower()
     if "каз" in lower_name or "_kk" in lower_name or "қаз" in lower_name:
@@ -1217,7 +1247,7 @@ def parse_rop_preview(headers, payload):
     study_year = _extract_study_year(file_name, academic_periods)
     metadata = {
         "fileName": file_name,
-        "programme": _extract_programme_name(rows),
+        "programme": _normalize_rop_programme_name(file_name, _extract_programme_name(rows)),
         "academicYear": _extract_academic_year(rows),
         "entryYear": _extract_entry_year(rows),
         "language": _extract_language(file_name, rows),

@@ -1,4 +1,6 @@
+import re
 from copy import deepcopy
+from datetime import date
 
 from .config import TEACHER_EMAIL_DOMAIN
 from .db import db_execute, insert_and_get_id, query_all, query_one
@@ -20,6 +22,14 @@ LESSON_TYPE_ALIASES = {
     "зертхана": "lab",
     "seminar": "seminar",
     "семинар": "seminar",
+}
+
+SPECIALTY_PROGRAMME_ALIASES = {
+    "би": "Бизнес-информатика",
+    "бизи": "Бизнес-информатика",
+    "ки": "Компьютерная инженерия",
+    "ки сопр": "Компьютерная инженерия (СОПР)",
+    "сопр": "Компьютерная инженерия (СОПР)",
 }
 
 
@@ -65,6 +75,35 @@ def normalize_teaching_languages(value):
         if normalized and normalized not in result:
             result.append(normalized)
     return result or ["ru", "kk"]
+
+
+def normalize_specialty(value):
+    normalized = re.sub(r"\s+", " ", str(value or "").strip().lower())
+    return normalized.upper() if normalized else ""
+
+
+def normalize_programme(value):
+    normalized = re.sub(r"\s+", " ", str(value or "").strip().lower())
+    return SPECIALTY_PROGRAMME_ALIASES.get(normalized, str(value or "").strip())
+
+
+def infer_group_entry_year(group_name):
+    match = re.search(r"\b05-057-(\d{2})-", str(group_name or ""))
+    if not match:
+        return None
+    year_suffix = int(match.group(1))
+    return 2000 + year_suffix
+
+
+def current_academic_year_start():
+    today = date.today()
+    return today.year if today.month >= 9 else today.year - 1
+
+
+def infer_study_course(entry_year):
+    if not entry_year:
+        return None
+    return max(1, current_academic_year_start() - int(entry_year) + 1)
 
 
 def list_collection(connection, collection, query, user=None):
@@ -152,7 +191,7 @@ def list_collection(connection, collection, query, user=None):
         return query_all(
             connection,
             """
-            SELECT id, name, student_count, has_subgroups, language, study_course
+            SELECT id, name, student_count, has_subgroups, language, programme, specialty_code, entry_year, study_course
             FROM groups
             ORDER BY id
             """,
@@ -326,27 +365,34 @@ def create_collection_item(connection, collection, payload):
         )
 
     if collection == "groups":
-        normalized = normalize_number_fields(payload, ["student_count", "has_subgroups", "study_course"])
+        normalized = normalize_number_fields(payload, ["student_count", "has_subgroups", "entry_year", "study_course"])
         group_language = normalize_language(normalized.get("language"), "ru")
+        specialty_code = normalize_specialty(normalized.get("specialty_code", normalized.get("specialty", "")))
+        programme = normalized.get("programme") or normalize_programme(specialty_code)
+        entry_year = normalized.get("entry_year") or infer_group_entry_year(normalized.get("name"))
+        study_course = normalized.get("study_course") or infer_study_course(entry_year)
         item_id = insert_and_get_id(
             connection,
             """
-            INSERT INTO groups (name, student_count, has_subgroups, language, study_course)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO groups (name, student_count, has_subgroups, language, programme, specialty_code, entry_year, study_course)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 normalized.get("name"),
-                normalized.get("student_count"),
+                normalized.get("student_count") or 0,
                 1 if normalized.get("has_subgroups", 0) else 0,
                 group_language,
-                normalized.get("study_course"),
+                programme,
+                specialty_code,
+                entry_year,
+                study_course,
             ),
         )
         connection.commit()
         return query_one(
             connection,
             """
-            SELECT id, name, student_count, has_subgroups, language, study_course
+            SELECT id, name, student_count, has_subgroups, language, programme, specialty_code, entry_year, study_course
             FROM groups
             WHERE id = ?
             """,
@@ -549,21 +595,28 @@ def update_collection_item(connection, collection, item_id, payload):
         )
 
     if collection == "groups":
-        normalized = normalize_number_fields(payload, ["student_count", "has_subgroups", "study_course"])
+        normalized = normalize_number_fields(payload, ["student_count", "has_subgroups", "entry_year", "study_course"])
         group_language = normalize_language(normalized.get("language"), "ru")
+        specialty_code = normalize_specialty(normalized.get("specialty_code", normalized.get("specialty", "")))
+        programme = normalized.get("programme") or normalize_programme(specialty_code)
+        entry_year = normalized.get("entry_year") or infer_group_entry_year(normalized.get("name"))
+        study_course = normalized.get("study_course") or infer_study_course(entry_year)
         db_execute(
             connection,
             """
             UPDATE groups
-            SET name = ?, student_count = ?, has_subgroups = ?, language = ?, study_course = ?
+            SET name = ?, student_count = ?, has_subgroups = ?, language = ?, programme = ?, specialty_code = ?, entry_year = ?, study_course = ?
             WHERE id = ?
             """,
             (
                 normalized.get("name"),
-                normalized.get("student_count"),
+                normalized.get("student_count") or 0,
                 1 if normalized.get("has_subgroups", 0) else 0,
                 group_language,
-                normalized.get("study_course"),
+                programme,
+                specialty_code,
+                entry_year,
+                study_course,
                 item_id,
             ),
         )
@@ -571,7 +624,7 @@ def update_collection_item(connection, collection, item_id, payload):
         return query_one(
             connection,
             """
-            SELECT id, name, student_count, has_subgroups, language, study_course
+            SELECT id, name, student_count, has_subgroups, language, programme, specialty_code, entry_year, study_course
             FROM groups
             WHERE id = ?
             """,

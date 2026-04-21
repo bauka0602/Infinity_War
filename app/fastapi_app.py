@@ -237,7 +237,7 @@ def create_app():
                 return query_all(
                     connection,
                     """
-                    SELECT id, name, student_count, has_subgroups, language, study_course
+                    SELECT id, name, student_count, has_subgroups, language, programme, specialty_code, entry_year, study_course
                     FROM groups
                     ORDER BY name, id
                     """,
