@@ -66,6 +66,10 @@ def normalize_subgroup_mode(value, lesson_type="lecture"):
     return normalized if normalized in {"none", "auto", "forced"} else "auto"
 
 
+def section_requires_computers(lesson_type):
+    return 1 if lesson_type in {"practical", "lab"} else 0
+
+
 def validate_teacher_email(email):
     normalized_email = (email or "").strip().lower()
     if not normalized_email.endswith(TEACHER_EMAIL_DOMAIN):
@@ -229,7 +233,7 @@ def list_collection(connection, collection, query, user=None):
         return query_all(
             connection,
             """
-            SELECT id, course_id, course_name, group_id, group_name, classes_count, lesson_type, subgroup_mode, subgroup_count
+            SELECT id, course_id, course_name, group_id, group_name, classes_count, lesson_type, subgroup_mode, subgroup_count, requires_computers
             FROM sections
             ORDER BY id
             """,
@@ -432,11 +436,12 @@ def create_collection_item(connection, collection, payload):
         normalized["lesson_type"] = normalize_lesson_type(normalized.get("lesson_type"))
         normalized["subgroup_mode"] = normalize_subgroup_mode(normalized.get("subgroup_mode"), normalized["lesson_type"])
         normalized["subgroup_count"] = positive_int(normalized.get("subgroup_count"), 1)
+        requires_computers = section_requires_computers(normalized["lesson_type"])
         item_id = insert_and_get_id(
             connection,
             """
-            INSERT INTO sections (course_id, course_name, group_id, group_name, classes_count, lesson_type, subgroup_mode, subgroup_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO sections (course_id, course_name, group_id, group_name, classes_count, lesson_type, subgroup_mode, subgroup_count, requires_computers)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 normalized.get("course_id"),
@@ -447,13 +452,14 @@ def create_collection_item(connection, collection, payload):
                 normalized["lesson_type"],
                 normalized["subgroup_mode"],
                 normalized["subgroup_count"],
+                requires_computers,
             ),
         )
         connection.commit()
         return query_one(
             connection,
             """
-            SELECT id, course_id, course_name, group_id, group_name, classes_count, lesson_type, subgroup_mode, subgroup_count
+            SELECT id, course_id, course_name, group_id, group_name, classes_count, lesson_type, subgroup_mode, subgroup_count, requires_computers
             FROM sections
             WHERE id = ?
             """,
@@ -668,11 +674,12 @@ def update_collection_item(connection, collection, item_id, payload):
         normalized["lesson_type"] = normalize_lesson_type(normalized.get("lesson_type"))
         normalized["subgroup_mode"] = normalize_subgroup_mode(normalized.get("subgroup_mode"), normalized["lesson_type"])
         normalized["subgroup_count"] = positive_int(normalized.get("subgroup_count"), 1)
+        requires_computers = section_requires_computers(normalized["lesson_type"])
         db_execute(
             connection,
             """
             UPDATE sections
-            SET course_id = ?, course_name = ?, group_id = ?, group_name = ?, classes_count = ?, lesson_type = ?, subgroup_mode = ?, subgroup_count = ?
+            SET course_id = ?, course_name = ?, group_id = ?, group_name = ?, classes_count = ?, lesson_type = ?, subgroup_mode = ?, subgroup_count = ?, requires_computers = ?
             WHERE id = ?
             """,
             (
@@ -684,6 +691,7 @@ def update_collection_item(connection, collection, item_id, payload):
                 normalized["lesson_type"],
                 normalized["subgroup_mode"],
                 normalized["subgroup_count"],
+                requires_computers,
                 item_id,
             ),
         )
@@ -691,7 +699,7 @@ def update_collection_item(connection, collection, item_id, payload):
         return query_one(
             connection,
             """
-            SELECT id, course_id, course_name, group_id, group_name, classes_count, lesson_type, subgroup_mode, subgroup_count
+            SELECT id, course_id, course_name, group_id, group_name, classes_count, lesson_type, subgroup_mode, subgroup_count, requires_computers
             FROM sections
             WHERE id = ?
             """,

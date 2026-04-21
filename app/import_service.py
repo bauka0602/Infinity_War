@@ -559,6 +559,10 @@ def _normalize_subgroup_mode(value, lesson_type="lecture"):
     return normalized if normalized in {"none", "auto", "forced"} else "auto"
 
 
+def _section_requires_computers(lesson_type):
+    return 1 if lesson_type in {"practical", "lab"} else 0
+
+
 def _read_sheet_rows(sheet, header_aliases):
     rows = list(sheet.iter_rows(values_only=True))
     if not rows:
@@ -1038,6 +1042,7 @@ def _upsert_section(connection, payload):
     normalized["lesson_type"] = _normalize_lesson_type(normalized.get("lesson_type"))
     normalized["subgroup_mode"] = _normalize_subgroup_mode(normalized.get("subgroup_mode"), normalized["lesson_type"])
     normalized["subgroup_count"] = _positive_int(normalized.get("subgroup_count"), 1)
+    requires_computers = _section_requires_computers(normalized["lesson_type"])
     course = query_one(
         connection,
         """
@@ -1080,7 +1085,7 @@ def _upsert_section(connection, payload):
             connection,
             """
             UPDATE sections
-            SET course_id = ?, course_name = ?, group_id = ?, group_name = ?, classes_count = ?, lesson_type = ?, subgroup_mode = ?, subgroup_count = ?
+            SET course_id = ?, course_name = ?, group_id = ?, group_name = ?, classes_count = ?, lesson_type = ?, subgroup_mode = ?, subgroup_count = ?, requires_computers = ?
             WHERE id = ?
             """,
             (
@@ -1092,6 +1097,7 @@ def _upsert_section(connection, payload):
                 normalized["lesson_type"],
                 normalized["subgroup_mode"],
                 normalized["subgroup_count"],
+                requires_computers,
                 existing["id"],
             ),
         )
@@ -1100,8 +1106,8 @@ def _upsert_section(connection, payload):
     insert_and_get_id(
         connection,
         """
-        INSERT INTO sections (course_id, course_name, group_id, group_name, classes_count, lesson_type, subgroup_mode, subgroup_count)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO sections (course_id, course_name, group_id, group_name, classes_count, lesson_type, subgroup_mode, subgroup_count, requires_computers)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             course["id"],
@@ -1112,6 +1118,7 @@ def _upsert_section(connection, payload):
             normalized["lesson_type"],
             normalized["subgroup_mode"],
             normalized["subgroup_count"],
+            requires_computers,
         ),
     )
     return "inserted"
@@ -1603,6 +1610,15 @@ def _find_matching_iup_course(connection, course_code, programme, semester):
     )
 
 
+def _course_import_item(code, name, semester=None, programme=None):
+    return {
+        "code": code or "",
+        "name": name or "",
+        "semester": semester,
+        "programme": programme or "",
+    }
+
+
 def _store_iup_entries(connection, parsed):
     metadata = parsed["metadata"]
     metadata["groupName"] = _resolve_iup_group_name(connection, metadata.get("groupName", ""))
@@ -1615,6 +1631,35 @@ def _store_iup_entries(connection, parsed):
     updated_courses = set()
     updated_components = set()
     teacher_cache = {}
+    matched_courses = []
+    missing_courses = []
+    seen_iup_courses = set()
+
+    for course in parsed["courses"]:
+        key = (
+            (course.get("code") or "").lower(),
+            (course.get("name") or "").lower(),
+            course.get("semester"),
+        )
+        if key in seen_iup_courses:
+            continue
+        seen_iup_courses.add(key)
+        match = _find_matching_iup_course(
+            connection,
+            course.get("code", ""),
+            metadata.get("programme", ""),
+            course.get("semester"),
+        )
+        item = _course_import_item(
+            course.get("code", ""),
+            course.get("name", ""),
+            course.get("semester"),
+            metadata.get("programme", ""),
+        )
+        if match:
+            matched_courses.append(item)
+        else:
+            missing_courses.append(item)
 
     for entry in parsed["entries"]:
         teacher_name = entry.get("teacherName", "")
@@ -1704,6 +1749,12 @@ def _store_iup_entries(connection, parsed):
         "teachersExisting": sum(1 for _teacher_id, status in teacher_cache.values() if status == "existing"),
         "coursesUpdated": len(updated_courses),
         "componentsUpdated": len(updated_components),
+        "coursesExisting": len(matched_courses),
+        "coursesMissing": len(missing_courses),
+        "courseLists": {
+            "existing": matched_courses,
+            "missing": missing_courses,
+        },
     }
 
 
@@ -1877,6 +1928,11 @@ def import_rop_data(headers, payload):
         "courses": {"inserted": 0, "updated": 0},
         "courseComponents": {"inserted": 0},
     }
+    course_lists = {
+        "inserted": [],
+        "existing": [],
+    }
+    seen_course_results = set()
 
     with DB_LOCK:
         with get_connection() as connection:
@@ -1886,6 +1942,23 @@ def import_rop_data(headers, payload):
                     continue
                 result, course_id = _upsert_rop_course(connection, course, offering)
                 summary["courses"][result] += 1
+                list_key = (
+                    result,
+                    course["code"].lower(),
+                    course["name"].lower(),
+                    offering["academicPeriod"],
+                    (course.get("programme") or "").lower(),
+                )
+                if list_key not in seen_course_results:
+                    seen_course_results.add(list_key)
+                    course_lists["inserted" if result == "inserted" else "existing"].append(
+                        _course_import_item(
+                            course["code"],
+                            course["name"],
+                            offering["academicPeriod"],
+                            course.get("programme") or "",
+                        )
+                    )
                 summary["courseComponents"]["inserted"] += _replace_rop_course_components(
                     connection,
                     course_id,
@@ -1899,6 +1972,7 @@ def import_rop_data(headers, payload):
         "message": "ROP import completed successfully.",
         "metadata": preview["metadata"],
         "summary": summary,
+        "courseLists": course_lists,
         "totals": {
             "inserted": summary["courses"]["inserted"],
             "updated": summary["courses"]["updated"],

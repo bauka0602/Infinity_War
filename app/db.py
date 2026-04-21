@@ -457,7 +457,8 @@ def sqlite_schema():
             classes_count INTEGER NOT NULL,
             lesson_type TEXT DEFAULT 'lecture',
             subgroup_mode TEXT DEFAULT 'auto',
-            subgroup_count INTEGER DEFAULT 1
+            subgroup_count INTEGER DEFAULT 1,
+            requires_computers INTEGER DEFAULT 0
         )
         """,
         """
@@ -661,7 +662,8 @@ def postgres_schema():
             classes_count INTEGER NOT NULL,
             lesson_type TEXT DEFAULT 'lecture',
             subgroup_mode TEXT DEFAULT 'auto',
-            subgroup_count INTEGER DEFAULT 1
+            subgroup_count INTEGER DEFAULT 1,
+            requires_computers INTEGER DEFAULT 0
         )
         """,
         """
@@ -928,6 +930,17 @@ def ensure_database():
         ensure_column(connection, "sections", "lesson_type", "TEXT DEFAULT 'lecture'")
         ensure_column(connection, "sections", "subgroup_mode", "TEXT DEFAULT 'auto'")
         ensure_column(connection, "sections", "subgroup_count", "INTEGER DEFAULT 1")
+        ensure_column(connection, "sections", "requires_computers", "INTEGER DEFAULT 0")
+        db_execute(
+            connection,
+            """
+            UPDATE sections
+            SET requires_computers = CASE
+                WHEN lesson_type IN ('practical', 'lab') THEN 1
+                ELSE 0
+            END
+            """,
+        )
         ensure_column(connection, "course_components", "teacher_id", "INTEGER")
         ensure_column(connection, "course_components", "teacher_name", "TEXT")
         ensure_column(connection, "iup_entries", "file_name", "TEXT")

@@ -107,6 +107,7 @@ def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
     for section in sections:
         base_group_id = section["group_name"] or str(section["group_id"])
         lesson_type = (section.get("lesson_type") or "lecture").strip().lower()
+        pc_required = bool(section.get("requires_computers")) or lesson_type in PC_REQUIRED_LESSON_TYPES
         base_item = {
             "courseId": section["course_id"],
             "courseName": section["course_name"],
@@ -121,7 +122,7 @@ def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
             "preferredSlots": teacher_preferences.get(section["instructor_id"], []),
             "forbiddenSlots": [],
             "lessonType": lesson_type,
-            "pcRequired": lesson_type in PC_REQUIRED_LESSON_TYPES,
+            "pcRequired": pc_required,
         }
 
         if lesson_type == "lecture":
@@ -249,12 +250,12 @@ def build_schedule(connection, semester, year, algorithm):
             s.lesson_type,
             s.subgroup_mode,
             s.subgroup_count,
+            s.requires_computers,
             c.instructor_id,
             c.instructor_name,
             c.department,
             c.semester,
             c.year,
-            c.requires_computers,
             g.student_count,
             g.has_subgroups,
             g.language AS group_language,
