@@ -210,6 +210,11 @@ SECTION_HEADERS = {
     "type": "lesson_type",
     "тип_занятия": "lesson_type",
     "сабақ_түрі": "lesson_type",
+    "subgroup_mode": "subgroup_mode",
+    "режим_подгрупп": "subgroup_mode",
+    "подгруппы": "subgroup_mode",
+    "subgroup_count": "subgroup_count",
+    "количество_подгрупп": "subgroup_count",
 }
 
 REQUIRED_FIELDS = {
@@ -526,6 +531,20 @@ def _normalize_lesson_type(value):
     normalized = _normalize_header(value).replace("_", " ")
     compact = normalized.replace(" ", "_")
     return LESSON_TYPE_ALIASES.get(compact, LESSON_TYPE_ALIASES.get(normalized, str(value).strip().lower()))
+
+
+def _positive_int(value, default=1):
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_subgroup_mode(value, lesson_type="lecture"):
+    if lesson_type == "lecture":
+        return "none"
+    normalized = str(value or "auto").strip().lower()
+    return normalized if normalized in {"none", "auto", "forced"} else "auto"
 
 
 def _read_sheet_rows(sheet, header_aliases):
@@ -1003,8 +1022,10 @@ def _upsert_group(connection, payload):
 
 
 def _upsert_section(connection, payload):
-    normalized = normalize_number_fields(payload, ["classes_count"])
+    normalized = normalize_number_fields(payload, ["classes_count", "subgroup_count"])
     normalized["lesson_type"] = _normalize_lesson_type(normalized.get("lesson_type"))
+    normalized["subgroup_mode"] = _normalize_subgroup_mode(normalized.get("subgroup_mode"), normalized["lesson_type"])
+    normalized["subgroup_count"] = _positive_int(normalized.get("subgroup_count"), 1)
     course = query_one(
         connection,
         """
@@ -1047,7 +1068,7 @@ def _upsert_section(connection, payload):
             connection,
             """
             UPDATE sections
-            SET course_id = ?, course_name = ?, group_id = ?, group_name = ?, classes_count = ?, lesson_type = ?
+            SET course_id = ?, course_name = ?, group_id = ?, group_name = ?, classes_count = ?, lesson_type = ?, subgroup_mode = ?, subgroup_count = ?
             WHERE id = ?
             """,
             (
@@ -1057,6 +1078,8 @@ def _upsert_section(connection, payload):
                 group["name"],
                 normalized["classes_count"],
                 normalized["lesson_type"],
+                normalized["subgroup_mode"],
+                normalized["subgroup_count"],
                 existing["id"],
             ),
         )
@@ -1065,8 +1088,8 @@ def _upsert_section(connection, payload):
     insert_and_get_id(
         connection,
         """
-        INSERT INTO sections (course_id, course_name, group_id, group_name, classes_count, lesson_type)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO sections (course_id, course_name, group_id, group_name, classes_count, lesson_type, subgroup_mode, subgroup_count)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             course["id"],
@@ -1075,6 +1098,8 @@ def _upsert_section(connection, payload):
             group["name"],
             normalized["classes_count"],
             normalized["lesson_type"],
+            normalized["subgroup_mode"],
+            normalized["subgroup_count"],
         ),
     )
     return "inserted"

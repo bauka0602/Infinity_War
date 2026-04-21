@@ -1,5 +1,6 @@
 from calendar import monthrange
 from datetime import date, timedelta
+from math import ceil
 
 from .db import db_execute, db_executemany, query_all
 from .errors import ApiError
@@ -14,6 +15,7 @@ DAY_NAME_TO_INDEX = {
     "friday": 4,
 }
 PC_REQUIRED_LESSON_TYPES = {"practical", "lab"}
+SUBGROUP_MODES = {"none", "auto", "forced"}
 
 
 def monday_for_week(target_year):
@@ -21,6 +23,80 @@ def monday_for_week(target_year):
     safe_day = min(today.day, monthrange(target_year, today.month)[1])
     anchor = date(target_year, today.month, safe_day)
     return anchor - timedelta(days=anchor.weekday())
+
+
+def _subgroup_label(index):
+    label = ""
+    value = index + 1
+    while value:
+        value, remainder = divmod(value - 1, 26)
+        label = chr(65 + remainder) + label
+    return label
+
+
+def _int_at_least(value, minimum=1, default=None):
+    if default is None:
+        default = minimum
+    try:
+        return max(minimum, int(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_room_type(room):
+    return str(room.get("type") or "").strip().lower()
+
+
+def _room_matches_lesson_type(room, lesson_type):
+    if lesson_type == "lecture":
+        return True
+    return _normalize_room_type(room) == ("lab" if lesson_type == "lab" else "practical")
+
+
+def _room_effective_capacity(room, lesson_type):
+    if not _room_matches_lesson_type(room, lesson_type):
+        return 0
+
+    capacity = _int_at_least(room.get("capacity"), 0, 0)
+    if lesson_type in PC_REQUIRED_LESSON_TYPES:
+        pc_count = _int_at_least(room.get("computer_count") or room.get("pcCount"), 0, 0)
+        if pc_count <= 0:
+            return 0
+        return min(capacity, pc_count) if capacity > 0 else pc_count
+    return capacity
+
+
+def _max_room_capacity_for_lesson(rooms, lesson_type):
+    capacities = [_room_effective_capacity(room, lesson_type) for room in rooms]
+    return max(capacities, default=0)
+
+
+def _resolve_subgroup_count(section, rooms):
+    lesson_type = (section.get("lesson_type") or "lecture").strip().lower()
+    if lesson_type == "lecture":
+        return 1
+
+    mode = str(section.get("subgroup_mode") or "auto").strip().lower()
+    mode = mode if mode in SUBGROUP_MODES else "auto"
+    configured_count = _int_at_least(section.get("subgroup_count"), 1)
+
+    if mode == "none":
+        return 1
+    if mode == "forced":
+        return max(2, configured_count)
+
+    student_count = _int_at_least(section.get("student_count"), 0, 0)
+    max_capacity = _max_room_capacity_for_lesson(rooms, lesson_type)
+    if student_count <= 0 or max_capacity <= 0 or student_count <= max_capacity:
+        return 1
+    return max(2, ceil(student_count / max_capacity))
+
+
+def _subgroup_size(student_count, subgroup_count, index):
+    if subgroup_count <= 1:
+        return student_count
+    base_size, remainder = divmod(max(0, student_count), subgroup_count)
+    return max(1, base_size + (1 if index < remainder else 0))
 
 
 def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
@@ -55,9 +131,24 @@ def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
                 int(section.get("classes_count") or 0),
             )
             grouped_lectures.setdefault(signature, []).append(section)
-        elif section.get("has_subgroups"):
-            subgroup_size = max(1, int((section.get("student_count") or 0) / 2))
-            for subgroup in ("A", "B"):
+        else:
+            subgroup_count = _resolve_subgroup_count(section, rooms)
+            if subgroup_count <= 1:
+                standalone_items.append(
+                    {
+                        **base_item,
+                        "id": f"section_{section['id']}",
+                        "lessonType": lesson_type,
+                        "roomTypeRequired": "lab" if lesson_type == "lab" else "practical",
+                        "streamId": f"{section['course_id']}-{section['group_id']}",
+                        "subgroupIds": [],
+                    }
+                )
+                continue
+
+            student_count = _int_at_least(section.get("student_count"), 0, 0)
+            for index in range(subgroup_count):
+                subgroup = _subgroup_label(index)
                 standalone_items.append(
                     {
                         **base_item,
@@ -66,20 +157,9 @@ def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
                         "roomTypeRequired": "lab" if lesson_type == "lab" else "practical",
                         "streamId": f"{section['course_id']}-{section['group_id']}",
                         "subgroupIds": [f"{base_group_id}-{subgroup}"],
-                        "studentCount": subgroup_size,
+                        "studentCount": _subgroup_size(student_count, subgroup_count, index),
                     }
                 )
-        else:
-            standalone_items.append(
-                {
-                    **base_item,
-                    "id": f"section_{section['id']}",
-                    "lessonType": lesson_type,
-                    "roomTypeRequired": "lab" if lesson_type == "lab" else "practical",
-                    "streamId": f"{section['course_id']}-{section['group_id']}",
-                    "subgroupIds": [],
-                }
-            )
 
     for (course_id, instructor_id, classes_count), lecture_sections in grouped_lectures.items():
         first_section = lecture_sections[0]
@@ -167,6 +247,8 @@ def build_schedule(connection, semester, year, algorithm):
             s.group_name,
             s.classes_count,
             s.lesson_type,
+            s.subgroup_mode,
+            s.subgroup_count,
             c.instructor_id,
             c.instructor_name,
             c.department,
@@ -290,18 +372,13 @@ def build_schedule(connection, semester, year, algorithm):
                 "subgroup": "",
             }
         ]
-        if section.get("has_subgroups"):
-            section_lookup[f"section_{section['id']}_A"] = {
+        for index in range(_resolve_subgroup_count(section, rooms)):
+            subgroup = _subgroup_label(index)
+            section_lookup[f"section_{section['id']}_{subgroup}"] = {
                 "section_id": section["id"],
                 "group_id": section["group_id"],
                 "group_name": section["group_name"],
-                "subgroup": "A",
-            }
-            section_lookup[f"section_{section['id']}_B"] = {
-                "section_id": section["id"],
-                "group_id": section["group_id"],
-                "group_name": section["group_name"],
-                "subgroup": "B",
+                "subgroup": subgroup,
             }
 
     lecture_groups = {}

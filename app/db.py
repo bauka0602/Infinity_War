@@ -432,7 +432,9 @@ def sqlite_schema():
             group_id INTEGER,
             group_name TEXT,
             classes_count INTEGER NOT NULL,
-            lesson_type TEXT DEFAULT 'lecture'
+            lesson_type TEXT DEFAULT 'lecture',
+            subgroup_mode TEXT DEFAULT 'auto',
+            subgroup_count INTEGER DEFAULT 1
         )
         """,
         """
@@ -611,7 +613,9 @@ def postgres_schema():
             group_id INTEGER,
             group_name TEXT,
             classes_count INTEGER NOT NULL,
-            lesson_type TEXT DEFAULT 'lecture'
+            lesson_type TEXT DEFAULT 'lecture',
+            subgroup_mode TEXT DEFAULT 'auto',
+            subgroup_count INTEGER DEFAULT 1
         )
         """,
         """
@@ -876,6 +880,24 @@ def ensure_database():
         ensure_column(connection, "sections", "group_id", "INTEGER")
         ensure_column(connection, "sections", "group_name", "TEXT")
         ensure_column(connection, "sections", "lesson_type", "TEXT DEFAULT 'lecture'")
+        ensure_column(connection, "sections", "subgroup_mode", "TEXT DEFAULT 'auto'")
+        ensure_column(connection, "sections", "subgroup_count", "INTEGER DEFAULT 1")
+        db_execute(
+            connection,
+            """
+            UPDATE sections
+            SET subgroup_mode = 'none', subgroup_count = 1
+            WHERE lower(coalesce(lesson_type, 'lecture')) = 'lecture'
+            """,
+        )
+        db_execute(
+            connection,
+            """
+            UPDATE sections
+            SET subgroup_mode = 'auto'
+            WHERE subgroup_mode IS NULL OR subgroup_mode = ''
+            """,
+        )
         ensure_column(connection, "schedules", "section_id", "INTEGER")
         ensure_column(connection, "schedules", "group_id", "INTEGER")
         ensure_column(connection, "schedules", "group_name", "TEXT")
