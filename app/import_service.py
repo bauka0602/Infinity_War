@@ -50,12 +50,22 @@ COURSE_HEADERS = {
     "semester": "semester",
     "семестр": "semester",
     "department": "department",
+    "b057": "department",
+    "educational_programme_group": "department",
+    "educational_program_group": "department",
+    "group_of_educational_programmes": "department",
+    "group_of_educational_programs": "department",
+    "gop": "department",
     "faculty": "department",
     "faculty_institute": "department",
     "faculty_or_institute": "department",
     "факультет": "department",
     "факультет_институт": "department",
     "институт": "department",
+    "группа_образовательных_программ": "department",
+    "образовательная_программа": "department",
+    "гоп": "department",
+    "білім_беру_бағдарламаларының_тобы": "department",
     "instructor": "instructor_name",
     "teacher": "instructor_name",
     "teacher_name": "instructor_name",
@@ -64,9 +74,10 @@ COURSE_HEADERS = {
     "оқытушы": "instructor_name",
     "programme": "programme",
     "programme_name": "programme",
+    "название_программы": "programme",
+    "наименование_программы": "programme",
     "program_name": "programme",
     "program": "programme",
-    "образовательная_программа": "programme",
     "бағдарлама": "programme",
     "module_type": "module_type",
     "тип_модуля": "module_type",
@@ -96,6 +107,13 @@ COURSE_HEADERS = {
     "нужны_компьютеры": "requires_computers",
     "требуются_компьютеры": "requires_computers",
     "компьютер_қажет": "requires_computers",
+}
+
+COURSE_EDUCATIONAL_PROGRAMME_GROUP_ALIASES = {
+    "b057": "B057 - Информационные технологии",
+    "b057 информационные технологии": "B057 - Информационные технологии",
+    "b057 - информационные технологии": "B057 - Информационные технологии",
+    "информационные технологии": "B057 - Информационные технологии",
 }
 
 TEACHER_HEADERS = {
@@ -284,7 +302,7 @@ TEMPLATE_HEADERS = {
         "course",
         "semester",
         "programme",
-        "department",
+        "educational_programme_group",
         "instructor_name",
         "description",
         "requires_computers",
@@ -312,7 +330,7 @@ TEMPLATE_ROWS = {
             1,
             1,
             "Программная инженерия (6B06101)",
-            "Факультет компьютерных систем и профессионального образования (КСиПО-БжЦТ)",
+            "B057 - Информационные технологии",
             "Aruzhan Saparova",
             "Introduction to programming",
             "no",
@@ -604,9 +622,17 @@ def _validate_required_fields(entity_name, row_index, payload):
         )
 
 
+def _normalize_course_department(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return COURSE_EDUCATIONAL_PROGRAMME_GROUP_ALIASES.get(_normalize_header(text), text)
+
+
 def _upsert_course(connection, payload):
     normalized = normalize_number_fields(payload, ["credits", "hours", "year", "study_year", "semester"])
     requires_computers = _normalize_bool_flag(normalized.get("requires_computers"))
+    department = _normalize_course_department(normalized.get("department"))
     instructor_name = (normalized.get("instructor_name") or "").strip()
     instructor_id = None
     if instructor_name:
@@ -663,7 +689,7 @@ def _upsert_course(connection, payload):
                 normalized.get("hours"),
                 normalized.get("year", normalized.get("study_year")),
                 normalized.get("semester"),
-                normalized.get("department", "") or "",
+                department,
                 instructor_id,
                 instructor_name,
                 normalized.get("programme", normalized.get("programme_name", "")) or "",
@@ -699,7 +725,7 @@ def _upsert_course(connection, payload):
             normalized.get("description", "") or "",
             normalized.get("year", normalized.get("study_year")),
             normalized.get("semester"),
-            normalized.get("department", "") or "",
+            department,
             instructor_id,
             instructor_name,
             normalized.get("programme", normalized.get("programme_name", "")) or "",
@@ -744,7 +770,7 @@ def _upsert_rop_course(connection, course, offering):
         description,
         course.get("studyYear"),
         offering["academicPeriod"],
-        "",
+        _normalize_course_department(course.get("department") or "B057"),
         None,
         "",
         course.get("programme") or "",
