@@ -344,6 +344,22 @@ def sqlite_schema():
         )
         """,
         """
+        CREATE TABLE IF NOT EXISTS course_components (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            course_id INTEGER NOT NULL,
+            course_code TEXT NOT NULL,
+            course_name TEXT NOT NULL,
+            programme TEXT,
+            study_year INTEGER,
+            academic_period INTEGER,
+            semester INTEGER,
+            lesson_type TEXT NOT NULL,
+            hours INTEGER NOT NULL,
+            weekly_classes INTEGER NOT NULL,
+            requires_computers INTEGER DEFAULT 0
+        )
+        """,
+        """
         CREATE TABLE IF NOT EXISTS students (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
@@ -501,6 +517,22 @@ def postgres_schema():
             department TEXT,
             weekly_hours_limit INTEGER,
             teaching_languages TEXT DEFAULT 'ru,kk'
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS course_components (
+            id SERIAL PRIMARY KEY,
+            course_id INTEGER NOT NULL,
+            course_code TEXT NOT NULL,
+            course_name TEXT NOT NULL,
+            programme TEXT,
+            study_year INTEGER,
+            academic_period INTEGER,
+            semester INTEGER,
+            lesson_type TEXT NOT NULL,
+            hours INTEGER NOT NULL,
+            weekly_classes INTEGER NOT NULL,
+            requires_computers INTEGER DEFAULT 0
         )
         """,
         """

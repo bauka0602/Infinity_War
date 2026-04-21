@@ -738,9 +738,9 @@ def _upsert_rop_course(connection, course, offering):
             """,
             (*params, existing["id"]),
         )
-        return "updated"
+        return "updated", existing["id"]
 
-    insert_and_get_id(
+    course_id = insert_and_get_id(
         connection,
         """
         INSERT INTO courses (
@@ -753,7 +753,55 @@ def _upsert_rop_course(connection, course, offering):
         """,
         params,
     )
-    return "inserted"
+    return "inserted", course_id
+
+
+def _replace_rop_course_components(connection, course_id, course, offering, lesson_components):
+    db_execute(
+        connection,
+        """
+        DELETE FROM course_components
+        WHERE course_id = ? AND academic_period = ?
+        """,
+        (course_id, offering["academicPeriod"]),
+    )
+
+    inserted = 0
+    for component in lesson_components:
+        if (
+            component["courseCode"] != course["code"]
+            or component["courseName"] != course["name"]
+            or component["academicPeriod"] != offering["academicPeriod"]
+        ):
+            continue
+
+        insert_and_get_id(
+            connection,
+            """
+            INSERT INTO course_components (
+                course_id, course_code, course_name, programme, study_year,
+                academic_period, semester, lesson_type, hours, weekly_classes,
+                requires_computers
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                course_id,
+                component["courseCode"],
+                component["courseName"],
+                course.get("programme") or "",
+                course.get("studyYear"),
+                component["academicPeriod"],
+                component["semester"],
+                component["lessonType"],
+                component["hours"],
+                component["weeklyClasses"],
+                1 if component.get("requiresComputers") else 0,
+            ),
+        )
+        inserted += 1
+
+    return inserted
 
 
 def _upsert_teacher(connection, payload):
@@ -1238,6 +1286,8 @@ def parse_rop_preview(headers, payload):
                         {
                             "courseCode": course["code"],
                             "courseName": course["name"],
+                            "programme": metadata["programme"],
+                            "studyYear": study_year,
                             "academicPeriod": academic_period,
                             "semester": offering["semester"],
                             "lessonType": normalized_lesson_type,
@@ -1269,7 +1319,10 @@ def import_rop_data(headers, payload):
     course_by_key = {
         (course["code"], course["name"]): course for course in preview["courses"]
     }
-    summary = {"courses": {"inserted": 0, "updated": 0}}
+    summary = {
+        "courses": {"inserted": 0, "updated": 0},
+        "courseComponents": {"inserted": 0},
+    }
 
     with DB_LOCK:
         with get_connection() as connection:
@@ -1277,8 +1330,15 @@ def import_rop_data(headers, payload):
                 course = course_by_key.get((offering["courseCode"], offering["courseName"]))
                 if not course:
                     continue
-                result = _upsert_rop_course(connection, course, offering)
+                result, course_id = _upsert_rop_course(connection, course, offering)
                 summary["courses"][result] += 1
+                summary["courseComponents"]["inserted"] += _replace_rop_course_components(
+                    connection,
+                    course_id,
+                    course,
+                    offering,
+                    preview["lessonComponents"],
+                )
             connection.commit()
 
     return {
@@ -1288,6 +1348,7 @@ def import_rop_data(headers, payload):
         "totals": {
             "inserted": summary["courses"]["inserted"],
             "updated": summary["courses"]["updated"],
+            "courseComponents": summary["courseComponents"]["inserted"],
             "courses": preview["totals"]["courses"],
             "offerings": preview["totals"]["offerings"],
             "lessonComponents": preview["totals"]["lessonComponents"],

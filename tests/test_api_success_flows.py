@@ -232,6 +232,13 @@ def test_rop_import_creates_courses_from_curriculum_plan(client, admin_auth_head
     assert courses[0]["academic_year"] == "2025-2026"
     assert courses[0]["entry_year"] == "01-09-2024"
 
+    components_response = client.get("/api/course_components", headers=admin_auth_headers)
+    assert components_response.status_code == 200
+    components = components_response.json()
+    assert len(components) == 2
+    assert {item["lesson_type"] for item in components} == {"lecture", "practical"}
+    assert {item["requires_computers"] for item in components} == {0, 1}
+
 
 def test_schedule_generation_success_flow_with_export(client, admin_auth_headers):
     import_response = client.post(

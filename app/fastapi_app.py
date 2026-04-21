@@ -58,7 +58,16 @@ LOGGER = logging.getLogger(__name__)
 COLLECTION_ALIASES = {
     "disciplines": "courses",
 }
-ALLOWED_COLLECTIONS = {"courses", "teachers", "students", "rooms", "groups", "schedules", "sections"}
+ALLOWED_COLLECTIONS = {
+    "courses",
+    "course_components",
+    "teachers",
+    "students",
+    "rooms",
+    "groups",
+    "schedules",
+    "sections",
+}
 
 
 def _json_error(status, message, code, details=None):
@@ -88,7 +97,7 @@ async def _read_json_body(request: Request):
 def _require_collection_access(collection, headers, method):
     user = require_auth_user(headers)
 
-    if collection in {"courses", "teachers", "students", "rooms", "groups", "sections"} and user["role"] != "admin":
+    if collection in {"courses", "course_components", "teachers", "students", "rooms", "groups", "sections"} and user["role"] != "admin":
         raise ApiError(403, "forbidden", "Недостаточно прав")
 
     if collection == "schedules" and method in {"POST", "PUT", "DELETE"} and user["role"] != "admin":

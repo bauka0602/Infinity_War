@@ -92,6 +92,32 @@ def list_collection(connection, collection, query, user=None):
             """,
         )
 
+    if collection == "course_components":
+        clauses = []
+        params = []
+        course_id = query.get("course_id", [None])[0]
+        academic_period = query.get("academic_period", [None])[0]
+        if course_id is not None:
+            clauses.append("course_id = ?")
+            params.append(course_id)
+        if academic_period is not None:
+            clauses.append("academic_period = ?")
+            params.append(academic_period)
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        return query_all(
+            connection,
+            f"""
+            SELECT
+                id, course_id, course_code, course_name, programme, study_year,
+                academic_period, semester, lesson_type, hours, weekly_classes,
+                requires_computers
+            FROM course_components
+            {where_sql}
+            ORDER BY academic_period, course_name, lesson_type, id
+            """,
+            tuple(params),
+        )
+
     if collection == "teachers":
         return query_all(
             connection,
