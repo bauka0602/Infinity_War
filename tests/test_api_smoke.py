@@ -67,6 +67,33 @@ def test_admin_can_create_and_delete_teacher(client, admin_auth_headers):
     assert delete_response.json()["success"] is True
 
 
+def test_admin_can_create_course_with_credits_and_hours(client, admin_auth_headers):
+    create_response = client.post(
+        "/api/disciplines",
+        headers=admin_auth_headers,
+        json={
+            "name": "Databases",
+            "code": "DB201",
+            "credits": 5,
+            "hours": 150,
+            "year": 2,
+            "semester": 3,
+            "department": "CS",
+            "programme": "Business Informatics",
+            "cycle": "БД",
+            "component": "КВ",
+            "requires_computers": 1,
+        },
+    )
+
+    assert create_response.status_code == 201
+    course = create_response.json()
+    assert course["credits"] == 5
+    assert course["hours"] == 150
+    assert course["cycle"] == "БД"
+    assert course["component"] == "КВ"
+
+
 def test_teacher_preference_admin_delete_endpoints(
     client,
     admin_auth_headers,

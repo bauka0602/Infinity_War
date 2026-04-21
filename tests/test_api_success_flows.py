@@ -227,6 +227,10 @@ def test_rop_import_creates_courses_from_curriculum_plan(client, admin_auth_head
     assert courses[0]["year"] == 2
     assert courses[0]["semester"] == 3
     assert courses[0]["programme"] == "Бизнес-информатика"
+    assert courses[0]["cycle"] == "ООД"
+    assert courses[0]["component"] == "ОК"
+    assert courses[0]["academic_year"] == "2025-2026"
+    assert courses[0]["entry_year"] == "01-09-2024"
 
 
 def test_schedule_generation_success_flow_with_export(client, admin_auth_headers):

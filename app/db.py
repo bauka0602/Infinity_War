@@ -145,9 +145,11 @@ def seed_from_store(connection, store):
             """
             INSERT INTO courses (
                 name, code, credits, hours, description,
-                year, semester, department, instructor_id, instructor_name, programme, requires_computers
+                year, semester, department, instructor_id, instructor_name, programme,
+                module_type, module_name, cycle, component, language, academic_year, entry_year,
+                requires_computers
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 course["name"],
@@ -161,6 +163,13 @@ def seed_from_store(connection, store):
                 course.get("instructor_id"),
                 course.get("instructor_name", ""),
                 course.get("programme_name", course.get("programme", "")),
+                course.get("module_type", ""),
+                course.get("module_name", ""),
+                course.get("cycle", ""),
+                course.get("component", ""),
+                course.get("language", ""),
+                course.get("academic_year", ""),
+                course.get("entry_year", ""),
                 1 if course.get("requires_computers") else 0,
             ),
         )
@@ -307,6 +316,13 @@ def sqlite_schema():
             instructor_id INTEGER,
             instructor_name TEXT,
             programme TEXT,
+            module_type TEXT,
+            module_name TEXT,
+            cycle TEXT,
+            component TEXT,
+            language TEXT,
+            academic_year TEXT,
+            entry_year TEXT,
             requires_computers INTEGER DEFAULT 0
         )
         """,
@@ -460,6 +476,13 @@ def postgres_schema():
             instructor_id INTEGER,
             instructor_name TEXT,
             programme TEXT,
+            module_type TEXT,
+            module_name TEXT,
+            cycle TEXT,
+            component TEXT,
+            language TEXT,
+            academic_year TEXT,
+            entry_year TEXT,
             requires_computers INTEGER DEFAULT 0
         )
         """,
@@ -776,6 +799,13 @@ def ensure_database():
         ensure_column(connection, "courses", "instructor_id", "INTEGER")
         ensure_column(connection, "courses", "instructor_name", "TEXT")
         ensure_column(connection, "courses", "programme", "TEXT")
+        ensure_column(connection, "courses", "module_type", "TEXT")
+        ensure_column(connection, "courses", "module_name", "TEXT")
+        ensure_column(connection, "courses", "cycle", "TEXT")
+        ensure_column(connection, "courses", "component", "TEXT")
+        ensure_column(connection, "courses", "language", "TEXT")
+        ensure_column(connection, "courses", "academic_year", "TEXT")
+        ensure_column(connection, "courses", "entry_year", "TEXT")
         ensure_column(connection, "courses", "requires_computers", "INTEGER DEFAULT 0")
         ensure_column(connection, "teachers", "department", "TEXT")
         ensure_column(connection, "teachers", "weekly_hours_limit", "INTEGER")

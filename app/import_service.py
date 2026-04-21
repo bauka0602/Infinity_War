@@ -61,6 +61,23 @@ COURSE_HEADERS = {
     "program": "programme",
     "образовательная_программа": "programme",
     "бағдарлама": "programme",
+    "module_type": "module_type",
+    "тип_модуля": "module_type",
+    "модульдің_түрі": "module_type",
+    "module_name": "module_name",
+    "наименование_модуля": "module_name",
+    "модульдің_атауы": "module_name",
+    "cycle": "cycle",
+    "discipline_cycle": "cycle",
+    "цикл_дисциплины": "cycle",
+    "пәннің_циклы": "cycle",
+    "component": "component",
+    "discipline_component": "component",
+    "компонент_дисциплины": "component",
+    "пәннің_компонент": "component",
+    "language": "language",
+    "academic_year": "academic_year",
+    "entry_year": "entry_year",
     "description": "description",
     "описание": "description",
     "сипаттама": "description",
@@ -539,7 +556,7 @@ def _validate_required_fields(entity_name, row_index, payload):
 
 
 def _upsert_course(connection, payload):
-    normalized = normalize_number_fields(payload, ["year", "study_year", "semester"])
+    normalized = normalize_number_fields(payload, ["credits", "hours", "year", "study_year", "semester"])
     requires_computers = _normalize_bool_flag(normalized.get("requires_computers"))
     instructor_name = (normalized.get("instructor_name") or "").strip()
     instructor_id = None
@@ -571,12 +588,21 @@ def _upsert_course(connection, payload):
                 name = ?,
                 code = ?,
                 description = ?,
+                credits = ?,
+                hours = ?,
                 year = ?,
                 semester = ?,
                 department = ?,
                 instructor_id = ?,
                 instructor_name = ?,
                 programme = ?,
+                module_type = ?,
+                module_name = ?,
+                cycle = ?,
+                component = ?,
+                language = ?,
+                academic_year = ?,
+                entry_year = ?,
                 requires_computers = ?
             WHERE id = ?
             """,
@@ -584,12 +610,21 @@ def _upsert_course(connection, payload):
                 normalized["name"],
                 normalized["code"],
                 normalized.get("description", "") or "",
+                normalized.get("credits"),
+                normalized.get("hours"),
                 normalized.get("year", normalized.get("study_year")),
                 normalized.get("semester"),
                 normalized.get("department", "") or "",
                 instructor_id,
                 instructor_name,
                 normalized.get("programme", normalized.get("programme_name", "")) or "",
+                normalized.get("module_type", "") or "",
+                normalized.get("module_name", "") or "",
+                normalized.get("cycle", "") or "",
+                normalized.get("component", "") or "",
+                normalized.get("language", "") or "",
+                normalized.get("academic_year", "") or "",
+                normalized.get("entry_year", "") or "",
                 requires_computers,
                 existing["id"],
             ),
@@ -601,15 +636,17 @@ def _upsert_course(connection, payload):
         """
         INSERT INTO courses (
             name, code, credits, hours, description,
-            year, semester, department, instructor_id, instructor_name, programme, requires_computers
+            year, semester, department, instructor_id, instructor_name, programme,
+            module_type, module_name, cycle, component, language, academic_year, entry_year,
+            requires_computers
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             normalized["name"],
             normalized["code"],
-            None,
-            None,
+            normalized.get("credits"),
+            normalized.get("hours"),
             normalized.get("description", "") or "",
             normalized.get("year", normalized.get("study_year")),
             normalized.get("semester"),
@@ -617,6 +654,13 @@ def _upsert_course(connection, payload):
             instructor_id,
             instructor_name,
             normalized.get("programme", normalized.get("programme_name", "")) or "",
+            normalized.get("module_type", "") or "",
+            normalized.get("module_name", "") or "",
+            normalized.get("cycle", "") or "",
+            normalized.get("component", "") or "",
+            normalized.get("language", "") or "",
+            normalized.get("academic_year", "") or "",
+            normalized.get("entry_year", "") or "",
             requires_computers,
         ),
     )
@@ -629,10 +673,11 @@ def _upsert_rop_course(connection, course, offering):
         """
         SELECT id
         FROM courses
-        WHERE lower(code) = lower(?) AND semester = ? AND year = ? AND lower(programme) = lower(?)
+        WHERE lower(code) = lower(?) AND lower(name) = lower(?) AND semester = ? AND year = ? AND lower(programme) = lower(?)
         """,
         (
             course["code"],
+            course["name"],
             offering["academicPeriod"],
             course.get("studyYear"),
             course.get("programme") or "",
@@ -654,6 +699,13 @@ def _upsert_rop_course(connection, course, offering):
         None,
         "",
         course.get("programme") or "",
+        course.get("moduleType") or "",
+        course.get("moduleName") or "",
+        course.get("cycle") or "",
+        course.get("component") or "",
+        course.get("language") or "",
+        course.get("academicYear") or "",
+        course.get("entryYear") or "",
         0,
     )
 
@@ -674,6 +726,13 @@ def _upsert_rop_course(connection, course, offering):
                 instructor_id = ?,
                 instructor_name = ?,
                 programme = ?,
+                module_type = ?,
+                module_name = ?,
+                cycle = ?,
+                component = ?,
+                language = ?,
+                academic_year = ?,
+                entry_year = ?,
                 requires_computers = ?
             WHERE id = ?
             """,
@@ -686,9 +745,11 @@ def _upsert_rop_course(connection, course, offering):
         """
         INSERT INTO courses (
             name, code, credits, hours, description,
-            year, semester, department, instructor_id, instructor_name, programme, requires_computers
+            year, semester, department, instructor_id, instructor_name, programme,
+            module_type, module_name, cycle, component, language, academic_year, entry_year,
+            requires_computers
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         params,
     )
@@ -1139,6 +1200,8 @@ def parse_rop_preview(headers, payload):
             "programme": metadata["programme"],
             "studyYear": study_year,
             "language": metadata["language"],
+            "academicYear": metadata["academicYear"],
+            "entryYear": metadata["entryYear"],
         }
         course_key = (course["code"].lower(), course["name"].lower())
         if course_key not in seen_courses:

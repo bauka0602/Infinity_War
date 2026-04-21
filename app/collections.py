@@ -84,7 +84,9 @@ def list_collection(connection, collection, query, user=None):
             """
             SELECT
                 id, name, code, credits, hours, description,
-                year, semester, department, instructor_id, instructor_name, programme, requires_computers
+                year, semester, department, instructor_id, instructor_name, programme,
+                module_type, module_name, cycle, component, language, academic_year, entry_year,
+                requires_computers
             FROM courses
             ORDER BY id
             """,
@@ -186,7 +188,7 @@ def list_collection(connection, collection, query, user=None):
 
 def create_collection_item(connection, collection, payload):
     if collection == "courses":
-        normalized = normalize_number_fields(payload, ["year", "study_year", "semester", "instructor_id", "requires_computers"])
+        normalized = normalize_number_fields(payload, ["credits", "hours", "year", "study_year", "semester", "instructor_id", "requires_computers"])
         course_name = normalized.get("name")
         course_code = normalized.get("code") or course_name
         item_id = insert_and_get_id(
@@ -194,15 +196,17 @@ def create_collection_item(connection, collection, payload):
             """
             INSERT INTO courses (
                 name, code, credits, hours, description,
-                year, semester, department, instructor_id, instructor_name, programme, requires_computers
+                year, semester, department, instructor_id, instructor_name, programme,
+                module_type, module_name, cycle, component, language, academic_year, entry_year,
+                requires_computers
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 course_name,
                 course_code,
-                None,
-                None,
+                normalized.get("credits"),
+                normalized.get("hours"),
                 normalized.get("description", ""),
                 normalized.get("year", normalized.get("study_year")),
                 normalized.get("semester"),
@@ -210,6 +214,13 @@ def create_collection_item(connection, collection, payload):
                 normalized.get("instructor_id"),
                 normalized.get("instructor_name", ""),
                 normalized.get("programme", normalized.get("programme_name", "")),
+                normalized.get("module_type", ""),
+                normalized.get("module_name", ""),
+                normalized.get("cycle", ""),
+                normalized.get("component", ""),
+                normalized.get("language", ""),
+                normalized.get("academic_year", ""),
+                normalized.get("entry_year", ""),
                 1 if normalized.get("requires_computers", 0) else 0,
             ),
         )
@@ -219,7 +230,9 @@ def create_collection_item(connection, collection, payload):
             """
             SELECT
                 id, name, code, credits, hours, description,
-                year, semester, department, instructor_id, instructor_name, programme, requires_computers
+                year, semester, department, instructor_id, instructor_name, programme,
+                module_type, module_name, cycle, component, language, academic_year, entry_year,
+                requires_computers
             FROM courses
             WHERE id = ?
             """,
@@ -393,7 +406,7 @@ def create_collection_item(connection, collection, payload):
 
 def update_collection_item(connection, collection, item_id, payload):
     if collection == "courses":
-        normalized = normalize_number_fields(payload, ["year", "study_year", "semester", "instructor_id", "requires_computers"])
+        normalized = normalize_number_fields(payload, ["credits", "hours", "year", "study_year", "semester", "instructor_id", "requires_computers"])
         course_name = normalized.get("name")
         course_code = normalized.get("code") or course_name
         db_execute(
@@ -403,14 +416,15 @@ def update_collection_item(connection, collection, item_id, payload):
             SET
                 name = ?, code = ?, credits = ?, hours = ?, description = ?,
                 year = ?, semester = ?, department = ?, instructor_id = ?, instructor_name = ?,
-                programme = ?, requires_computers = ?
+                programme = ?, module_type = ?, module_name = ?, cycle = ?, component = ?,
+                language = ?, academic_year = ?, entry_year = ?, requires_computers = ?
             WHERE id = ?
             """,
             (
                 course_name,
                 course_code,
-                None,
-                None,
+                normalized.get("credits"),
+                normalized.get("hours"),
                 normalized.get("description", ""),
                 normalized.get("year", normalized.get("study_year")),
                 normalized.get("semester"),
@@ -418,6 +432,13 @@ def update_collection_item(connection, collection, item_id, payload):
                 normalized.get("instructor_id"),
                 normalized.get("instructor_name", ""),
                 normalized.get("programme", normalized.get("programme_name", "")),
+                normalized.get("module_type", ""),
+                normalized.get("module_name", ""),
+                normalized.get("cycle", ""),
+                normalized.get("component", ""),
+                normalized.get("language", ""),
+                normalized.get("academic_year", ""),
+                normalized.get("entry_year", ""),
                 1 if normalized.get("requires_computers", 0) else 0,
                 item_id,
             ),
@@ -428,7 +449,9 @@ def update_collection_item(connection, collection, item_id, payload):
             """
             SELECT
                 id, name, code, credits, hours, description,
-                year, semester, department, instructor_id, instructor_name, programme, requires_computers
+                year, semester, department, instructor_id, instructor_name, programme,
+                module_type, module_name, cycle, component, language, academic_year, entry_year,
+                requires_computers
             FROM courses
             WHERE id = ?
             """,
