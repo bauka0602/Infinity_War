@@ -1027,6 +1027,20 @@ def ensure_database():
         ensure_column(connection, "schedules", "group_id", "INTEGER")
         ensure_column(connection, "schedules", "group_name", "TEXT")
         ensure_column(connection, "schedules", "subgroup", "TEXT")
+        db_execute(
+            connection,
+            """
+            DELETE FROM schedules
+            WHERE section_id IN (
+                SELECT id
+                FROM sections
+                WHERE lower(coalesce(lesson_type, '')) = 'sro'
+            )
+            """,
+        )
+        db_execute(connection, "DELETE FROM sections WHERE lower(coalesce(lesson_type, '')) = 'sro'")
+        db_execute(connection, "DELETE FROM course_components WHERE lower(coalesce(lesson_type, '')) = 'sro'")
+        db_execute(connection, "DELETE FROM iup_entries WHERE lower(coalesce(lesson_type, '')) = 'sro'")
         ensure_column(connection, "teacher_preference_requests", "note", "TEXT")
         ensure_column(connection, "teacher_preference_requests", "status", "TEXT DEFAULT 'pending'")
         ensure_column(connection, "teacher_preference_requests", "admin_comment", "TEXT")

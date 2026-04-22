@@ -51,7 +51,7 @@ ROP_PERIOD_COLUMN_GROUPS = (
     },
 )
 
-ROP_LESSON_TYPES = ("lecture", "practical", "lab", "studio", "practice", "srop", "sro")
+ROP_LESSON_TYPES = ("lecture", "practical", "lab", "studio", "practice", "srop")
 ROP_PC_REQUIRED_LESSON_TYPES = {"practical", "lab"}
 
 

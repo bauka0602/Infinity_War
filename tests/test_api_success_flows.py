@@ -180,7 +180,7 @@ def test_rop_preview_parses_curriculum_plan(client, admin_auth_headers):
     assert payload["metadata"]["academicPeriods"] == [3, 4]
     assert payload["totals"]["courses"] == 1
     assert payload["totals"]["offerings"] == 1
-    assert payload["totals"]["lessonComponents"] == 5
+    assert payload["totals"]["lessonComponents"] == 4
     assert payload["courses"][0]["code"] == "Fil 2108"
     assert payload["offerings"][0]["semester"] == 1
     assert {item["lessonType"] for item in payload["lessonComponents"]} == {
@@ -188,7 +188,6 @@ def test_rop_preview_parses_curriculum_plan(client, admin_auth_headers):
         "practical",
         "practice",
         "srop",
-        "sro",
     }
     computer_flags = {
         item["lessonType"]: item["requiresComputers"]
@@ -199,7 +198,6 @@ def test_rop_preview_parses_curriculum_plan(client, admin_auth_headers):
         "practical": True,
         "practice": False,
         "srop": False,
-        "sro": False,
     }
 
 
@@ -233,8 +231,8 @@ def test_rop_import_creates_courses_from_curriculum_plan(client, admin_auth_head
     components_response = client.get("/api/course_components", headers=admin_auth_headers)
     assert components_response.status_code == 200
     components = components_response.json()
-    assert len(components) == 5
-    assert {item["lesson_type"] for item in components} == {"lecture", "practical", "practice", "srop", "sro"}
+    assert len(components) == 4
+    assert {item["lesson_type"] for item in components} == {"lecture", "practical", "practice", "srop"}
     assert {item["requires_computers"] for item in components} == {0, 1}
 
 

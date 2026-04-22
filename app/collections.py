@@ -558,6 +558,61 @@ def create_collection_item(connection, collection, payload):
             (item_id,),
         )
 
+    if collection == "course_components":
+        normalized = normalize_number_fields(
+            payload,
+            [
+                "course_id",
+                "study_year",
+                "academic_period",
+                "semester",
+                "hours",
+                "weekly_classes",
+                "requires_computers",
+                "teacher_id",
+            ],
+        )
+        lesson_type = normalize_lesson_type(normalized.get("lesson_type"))
+        item_id = insert_and_get_id(
+            connection,
+            """
+            INSERT INTO course_components (
+                course_id, course_code, course_name, programme, study_year,
+                academic_period, semester, lesson_type, hours, weekly_classes,
+                requires_computers, teacher_id, teacher_name
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                normalized.get("course_id"),
+                normalized.get("course_code", ""),
+                normalized.get("course_name", ""),
+                normalized.get("programme", ""),
+                normalized.get("study_year"),
+                normalized.get("academic_period"),
+                normalized.get("semester"),
+                lesson_type,
+                normalized.get("hours"),
+                normalized.get("weekly_classes"),
+                section_requires_computers(lesson_type),
+                normalized.get("teacher_id"),
+                normalized.get("teacher_name", ""),
+            ),
+        )
+        connection.commit()
+        return query_one(
+            connection,
+            """
+            SELECT
+                id, course_id, course_code, course_name, programme, study_year,
+                academic_period, semester, lesson_type, hours, weekly_classes,
+                requires_computers, teacher_id, teacher_name
+            FROM course_components
+            WHERE id = ?
+            """,
+            (item_id,),
+        )
+
     if collection == "teachers":
         normalized = normalize_number_fields(payload, ["weekly_hours_limit", "max_hours_per_week"])
         validate_teacher_email(normalized.get("email"))
