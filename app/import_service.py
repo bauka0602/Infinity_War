@@ -1061,7 +1061,7 @@ def _store_iup_entries(connection, parsed, create_missing_courses=False):
                 updated_courses.add(course["id"])
 
             if course:
-                db_execute(
+                component_update = db_execute(
                     connection,
                     """
                     UPDATE course_components
@@ -1079,6 +1079,24 @@ def _store_iup_entries(connection, parsed, create_missing_courses=False):
                         entry.get("academicPeriod"),
                     ),
                 )
+                updated_count = max(0, getattr(component_update, "rowcount", 0) or 0)
+                if updated_count == 0 and entry.get("academicPeriod") is not None:
+                    fallback_update = db_execute(
+                        connection,
+                        """
+                        UPDATE course_components
+                        SET teacher_id = ?, teacher_name = ?
+                        WHERE course_id = ?
+                          AND lesson_type = ?
+                        """,
+                        (
+                            teacher_id,
+                            teacher_name,
+                            course["id"],
+                            entry["lessonType"],
+                        ),
+                    )
+                    updated_count = max(0, getattr(fallback_update, "rowcount", 0) or 0)
                 db_execute(
                     connection,
                     """
@@ -1094,7 +1112,8 @@ def _store_iup_entries(connection, parsed, create_missing_courses=False):
                         entry["lessonType"],
                     ),
                 )
-                updated_components.add((entry["courseCode"], entry["lessonType"], entry.get("academicPeriod")))
+                if updated_count:
+                    updated_components.add((entry["courseCode"], entry["lessonType"], entry.get("academicPeriod")))
 
     return {
         "iupEntries": len(parsed["entries"]),
