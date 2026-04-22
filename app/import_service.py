@@ -169,7 +169,7 @@ def _upsert_rop_course(connection, course, offering):
         f"Imported from ROP. Component: {course.get('component') or '-'}; "
         f"cycle: {course.get('cycle') or '-'}; academic period: {offering['academicPeriod']}."
     )
-    params = (
+    update_params = (
         course["name"],
         course["code"],
         course.get("credits"),
@@ -178,8 +178,6 @@ def _upsert_rop_course(connection, course, offering):
         course.get("studyYear"),
         offering["academicPeriod"],
         _normalize_course_department(course.get("department") or "B057"),
-        None,
-        "",
         course.get("programme") or "",
         course.get("moduleType") or "",
         course.get("moduleName") or "",
@@ -189,6 +187,12 @@ def _upsert_rop_course(connection, course, offering):
         course.get("academicYear") or "",
         course.get("entryYear") or "",
         0,
+    )
+    insert_params = (
+        *update_params[:8],
+        None,
+        "",
+        *update_params[8:],
     )
 
     if existing:
@@ -205,8 +209,6 @@ def _upsert_rop_course(connection, course, offering):
                 year = ?,
                 semester = ?,
                 department = ?,
-                instructor_id = ?,
-                instructor_name = ?,
                 programme = ?,
                 module_type = ?,
                 module_name = ?,
@@ -218,7 +220,7 @@ def _upsert_rop_course(connection, course, offering):
                 requires_computers = ?
             WHERE id = ?
             """,
-            (*params, existing["id"]),
+            (*update_params, existing["id"]),
         )
         return "updated", existing["id"]
 
@@ -233,7 +235,7 @@ def _upsert_rop_course(connection, course, offering):
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        params,
+        insert_params,
     )
     return "inserted", course_id
 

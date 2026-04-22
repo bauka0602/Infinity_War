@@ -228,6 +228,56 @@ def test_rop_import_creates_courses_from_curriculum_plan(client, admin_auth_head
     assert {item["requires_computers"] for item in components} == {0, 1}
 
 
+def test_rop_import_preserves_existing_course_instructor(client, admin_auth_headers):
+    teacher_response = client.post(
+        "/api/teachers",
+        headers=admin_auth_headers,
+        json={
+            "name": "Aruzhan Saparova",
+            "email": "aruzhan.saparova@kazatu.edu.kz",
+            "phone": "+7 777 000 00 00",
+            "department": "B057 - Информационные технологии",
+            "teaching_languages": "ru,kk",
+        },
+    )
+    assert teacher_response.status_code == 201
+    teacher = teacher_response.json()
+
+    course_response = client.post(
+        "/api/disciplines",
+        headers=admin_auth_headers,
+        json={
+            "code": "Fil 2108",
+            "name": "Философия",
+            "credits": 4,
+            "hours": 120,
+            "year": 2,
+            "semester": 3,
+            "department": "B057 - Информационные технологии",
+            "programme": "Бизнес-информатика",
+            "instructor_id": teacher["id"],
+            "instructor_name": teacher["name"],
+        },
+    )
+    assert course_response.status_code == 201
+
+    response = client.post(
+        "/api/import/rop",
+        headers=admin_auth_headers,
+        json=_build_rop_preview_payload(),
+    )
+    assert response.status_code == 200
+    assert response.json()["summary"]["courses"] == {"inserted": 0, "updated": 1}
+
+    courses_response = client.get("/api/disciplines", headers=admin_auth_headers)
+    assert courses_response.status_code == 200
+    [course] = courses_response.json()
+    assert course["credits"] == 5
+    assert course["hours"] == 150
+    assert course["instructor_id"] == teacher["id"]
+    assert course["instructor_name"] == teacher["name"]
+
+
 def test_schedule_generation_success_flow_with_export(client, admin_auth_headers):
     _seed_schedule_data(client, admin_auth_headers)
 
