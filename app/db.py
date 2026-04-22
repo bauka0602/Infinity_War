@@ -273,7 +273,6 @@ def seed_from_store(connection, store):
             ),
         )
 
-
 def migrate_legacy_json(connection):
     if not LEGACY_JSON_FILE.exists():
         return False

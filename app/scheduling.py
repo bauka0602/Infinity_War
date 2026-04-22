@@ -16,6 +16,10 @@ DAY_NAME_TO_INDEX = {
 }
 PC_REQUIRED_LESSON_TYPES = {"practical", "lab"}
 SUBGROUP_MODES = {"none", "auto", "forced"}
+SEASON_ACADEMIC_PERIODS = {
+    1: (1, 3, 5, 7),
+    2: (2, 4, 6, 8),
+}
 
 
 def monday_for_week(target_year):
@@ -236,10 +240,16 @@ def _day_to_iso(selected_monday, day_name):
     return (selected_monday + timedelta(days=day_index)).isoformat()
 
 
+def academic_periods_for_schedule_semester(semester):
+    return SEASON_ACADEMIC_PERIODS.get(int(semester), (int(semester),))
+
+
 def build_schedule(connection, semester, year, algorithm):
+    academic_periods = academic_periods_for_schedule_semester(semester)
+    placeholders = ", ".join("?" for _ in academic_periods)
     sections = query_all(
         connection,
-        """
+        f"""
         SELECT
             s.id,
             s.course_id,
@@ -263,10 +273,10 @@ def build_schedule(connection, semester, year, algorithm):
         FROM sections s
         JOIN courses c ON c.id = s.course_id
         JOIN groups g ON g.id = s.group_id
-        WHERE c.semester = ?
+        WHERE c.semester IN ({placeholders})
         ORDER BY g.student_count DESC, s.classes_count DESC, s.id
         """,
-        (semester,),
+        tuple(academic_periods),
     )
     teachers = query_all(
         connection,
@@ -288,7 +298,7 @@ def build_schedule(connection, semester, year, algorithm):
 
     missing_parts = []
     if not sections:
-        missing_parts.append(f"секции для {semester} семестра")
+        missing_parts.append(f"секции для академических периодов {', '.join(str(period) for period in academic_periods)}")
     if not teachers:
         missing_parts.append("преподаватели")
     if not rooms:
@@ -301,6 +311,7 @@ def build_schedule(connection, semester, year, algorithm):
             "Недостаточно данных для генерации расписания.",
             details={
                 "semester": semester,
+                "academicPeriods": list(academic_periods),
                 "year": year,
                 "missing": missing_parts,
             },
