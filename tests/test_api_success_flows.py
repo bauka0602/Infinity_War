@@ -73,6 +73,7 @@ def _build_rop_preview_payload():
             10: 150,
             11: 15,
             12: 30,
+            15: 30,
             16: 20,
             17: 85,
         }
@@ -179,12 +180,13 @@ def test_rop_preview_parses_curriculum_plan(client, admin_auth_headers):
     assert payload["metadata"]["academicPeriods"] == [3, 4]
     assert payload["totals"]["courses"] == 1
     assert payload["totals"]["offerings"] == 1
-    assert payload["totals"]["lessonComponents"] == 4
+    assert payload["totals"]["lessonComponents"] == 5
     assert payload["courses"][0]["code"] == "Fil 2108"
     assert payload["offerings"][0]["semester"] == 1
     assert {item["lessonType"] for item in payload["lessonComponents"]} == {
         "lecture",
         "practical",
+        "practice",
         "srop",
         "sro",
     }
@@ -192,7 +194,13 @@ def test_rop_preview_parses_curriculum_plan(client, admin_auth_headers):
         item["lessonType"]: item["requiresComputers"]
         for item in payload["lessonComponents"]
     }
-    assert computer_flags == {"lecture": False, "practical": True, "srop": False, "sro": False}
+    assert computer_flags == {
+        "lecture": False,
+        "practical": True,
+        "practice": False,
+        "srop": False,
+        "sro": False,
+    }
 
 
 def test_rop_import_creates_courses_from_curriculum_plan(client, admin_auth_headers):
@@ -225,8 +233,8 @@ def test_rop_import_creates_courses_from_curriculum_plan(client, admin_auth_head
     components_response = client.get("/api/course_components", headers=admin_auth_headers)
     assert components_response.status_code == 200
     components = components_response.json()
-    assert len(components) == 4
-    assert {item["lesson_type"] for item in components} == {"lecture", "practical", "srop", "sro"}
+    assert len(components) == 5
+    assert {item["lesson_type"] for item in components} == {"lecture", "practical", "practice", "srop", "sro"}
     assert {item["requires_computers"] for item in components} == {0, 1}
 
 
@@ -435,6 +443,44 @@ def test_generate_sections_from_rop_components_for_matching_groups(client, admin
     assert second_response.status_code == 200
     assert second_response.json()["inserted"] == 0
     assert second_response.json()["updated"] == 2
+
+
+def test_generate_sections_without_filters_uses_all_matching_data(client, admin_auth_headers):
+    rop_response = client.post(
+        "/api/import/rop",
+        headers=admin_auth_headers,
+        json=_build_rop_preview_payload(),
+    )
+    assert rop_response.status_code == 200
+
+    for group_name in ["BI-24-01", "BI-24-02"]:
+        group_response = client.post(
+            "/api/groups",
+            headers=admin_auth_headers,
+            json={
+                "name": group_name,
+                "student_count": 24,
+                "language": "ru",
+                "programme": "Бизнес-информатика",
+                "study_course": 2,
+            },
+        )
+        assert group_response.status_code == 201
+
+    response = client.post("/api/sections/generate", headers=admin_auth_headers, json={})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["inserted"] == 4
+    assert payload["updated"] == 0
+    assert {
+        (section["group_name"], section["lesson_type"])
+        for section in payload["sections"]
+    } == {
+        ("BI-24-01", "lecture"),
+        ("BI-24-01", "practical"),
+        ("BI-24-02", "lecture"),
+        ("BI-24-02", "practical"),
+    }
 
 
 def test_schedule_generation_success_flow_with_export(client, admin_auth_headers):

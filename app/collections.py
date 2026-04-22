@@ -119,36 +119,39 @@ def generate_sections_from_components(connection, payload):
     study_course = payload.get("study_course") or payload.get("year")
     programme = str(payload.get("programme") or "").strip()
 
-    if not semester or not study_course or not programme:
-        raise ApiError(
-            400,
-            "fill_required_fields",
-            "Заполните поля: semester, study_course, programme",
-            {"fields": ["semester", "study_course", "programme"]},
-        )
-
-    semester = int(semester)
-    study_course = int(study_course)
-    schedulable_types = {"lecture", "practical", "lab"}
+    semester = int(semester) if semester else None
+    study_course = int(study_course) if study_course else None
+    all_groups = query_all(
+        connection,
+        """
+        SELECT id, name, programme, study_course
+        FROM groups
+        WHERE programme IS NOT NULL
+          AND programme != ''
+          AND study_course IS NOT NULL
+        ORDER BY study_course, programme, name
+        """,
+    )
     groups = [
         group
-        for group in query_all(
-            connection,
-            """
-            SELECT id, name, programme, study_course
-            FROM groups
-            WHERE study_course = ?
-            ORDER BY name
-            """,
-            (study_course,),
-        )
-        if _same_programme(group.get("programme"), programme)
+        for group in all_groups
+        if (not study_course or int(group.get("study_course") or 0) == study_course)
+        and (not programme or _same_programme(group.get("programme"), programme))
     ]
+    component_clauses = ["cc.lesson_type IN ('lecture', 'practical', 'lab')"]
+    component_params = []
+    if semester:
+        component_clauses.append("cc.academic_period = ?")
+        component_params.append(semester)
+    if study_course:
+        component_clauses.append("c.year = ?")
+        component_params.append(study_course)
+    where_sql = " AND ".join(component_clauses)
     components = [
         component
         for component in query_all(
             connection,
-            """
+            f"""
             SELECT
                 cc.course_id,
                 cc.course_name,
@@ -160,14 +163,12 @@ def generate_sections_from_components(connection, payload):
                 c.semester
             FROM course_components cc
             JOIN courses c ON c.id = cc.course_id
-            WHERE cc.academic_period = ?
-              AND c.year = ?
-              AND cc.lesson_type IN ('lecture', 'practical', 'lab')
-            ORDER BY c.name, cc.lesson_type
+            WHERE {where_sql}
+            ORDER BY c.year, c.programme, c.name, cc.lesson_type
             """,
-            (semester, study_course),
+            tuple(component_params),
         )
-        if _same_programme(component.get("programme"), programme)
+        if (not programme or _same_programme(component.get("programme"), programme))
     ]
 
     if not groups or not components:
@@ -185,8 +186,14 @@ def generate_sections_from_components(connection, payload):
     inserted = 0
     updated = 0
     generated_sections = []
-    for group in groups:
-        for component in components:
+    for component in components:
+        matching_groups = [
+            group
+            for group in groups
+            if _same_programme(group.get("programme"), component.get("programme"))
+            and int(group.get("study_course") or 0) == int(component.get("year") or 0)
+        ]
+        for group in matching_groups:
             lesson_type = normalize_lesson_type(component["lesson_type"])
             classes_count = positive_int(component.get("weekly_classes"), 1)
             subgroup_mode = normalize_subgroup_mode("none" if lesson_type == "lecture" else "auto", lesson_type)

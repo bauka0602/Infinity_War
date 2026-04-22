@@ -24,7 +24,7 @@ IUP_LESSON_PHRASES = {
     "Учебная практика": "practice",
     "Производственная практика": "practice",
 }
-IUP_ACTIVE_LESSON_TYPES = {"lecture", "practical", "lab", "practice"}
+IUP_ACTIVE_LESSON_TYPES = {"lecture", "practical", "lab"}
 
 ROP_PERIOD_COLUMN_GROUPS = (
     {
