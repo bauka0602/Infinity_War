@@ -51,7 +51,7 @@ ROP_PERIOD_COLUMN_GROUPS = (
     },
 )
 
-ROP_LESSON_TYPES = ("lecture", "practical", "lab", "studio")
+ROP_LESSON_TYPES = ("lecture", "practical", "lab", "studio", "practice", "srop", "sro")
 ROP_PC_REQUIRED_LESSON_TYPES = {"practical", "lab"}
 
 
@@ -241,6 +241,19 @@ def _upsert_rop_course(connection, course, offering):
 
 
 def _replace_rop_course_components(connection, course_id, course, offering, lesson_components):
+    existing_teachers = {
+        (row["lesson_type"], row["academic_period"]): (row.get("teacher_id"), row.get("teacher_name", ""))
+        for row in query_all(
+            connection,
+            """
+            SELECT lesson_type, academic_period, teacher_id, teacher_name
+            FROM course_components
+            WHERE course_id = ?
+              AND teacher_id IS NOT NULL
+            """,
+            (course_id,),
+        )
+    }
     db_execute(
         connection,
         """
@@ -259,15 +272,19 @@ def _replace_rop_course_components(connection, course_id, course, offering, less
         ):
             continue
 
+        teacher_id, teacher_name = existing_teachers.get(
+            (component["lessonType"], component["academicPeriod"]),
+            (None, ""),
+        )
         insert_and_get_id(
             connection,
             """
             INSERT INTO course_components (
                 course_id, course_code, course_name, programme, study_year,
                 academic_period, semester, lesson_type, hours, weekly_classes,
-                requires_computers
+                requires_computers, teacher_id, teacher_name
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 course_id,
@@ -281,6 +298,8 @@ def _replace_rop_course_components(connection, course_id, course, offering, less
                 component["hours"],
                 component["weeklyClasses"],
                 1 if component.get("requiresComputers") else 0,
+                teacher_id,
+                teacher_name,
             ),
         )
         inserted += 1
@@ -940,25 +959,41 @@ def _store_iup_entries(connection, parsed):
                 )
                 updated_courses.add(course["id"])
 
-            db_execute(
-                connection,
-                """
-                UPDATE course_components
-                SET teacher_id = ?, teacher_name = ?
-                WHERE lower(course_code) = lower(?)
-                  AND lesson_type = ?
-                  AND (? IS NULL OR academic_period = ?)
-                """,
-                (
-                    teacher_id,
-                    teacher_name,
-                    entry["courseCode"],
-                    entry["lessonType"],
-                    entry.get("academicPeriod"),
-                    entry.get("academicPeriod"),
-                ),
-            )
-            updated_components.add((entry["courseCode"], entry["lessonType"], entry.get("academicPeriod")))
+            if course:
+                db_execute(
+                    connection,
+                    """
+                    UPDATE course_components
+                    SET teacher_id = ?, teacher_name = ?
+                    WHERE course_id = ?
+                      AND lesson_type = ?
+                      AND (? IS NULL OR academic_period = ?)
+                    """,
+                    (
+                        teacher_id,
+                        teacher_name,
+                        course["id"],
+                        entry["lessonType"],
+                        entry.get("academicPeriod"),
+                        entry.get("academicPeriod"),
+                    ),
+                )
+                db_execute(
+                    connection,
+                    """
+                    UPDATE sections
+                    SET teacher_id = ?, teacher_name = ?
+                    WHERE course_id = ?
+                      AND lesson_type = ?
+                    """,
+                    (
+                        teacher_id,
+                        teacher_name,
+                        course["id"],
+                        entry["lessonType"],
+                    ),
+                )
+                updated_components.add((entry["courseCode"], entry["lessonType"], entry.get("academicPeriod")))
 
     return {
         "iupEntries": len(parsed["entries"]),

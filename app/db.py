@@ -458,7 +458,9 @@ def sqlite_schema():
             lesson_type TEXT DEFAULT 'lecture',
             subgroup_mode TEXT DEFAULT 'auto',
             subgroup_count INTEGER DEFAULT 1,
-            requires_computers INTEGER DEFAULT 0
+            requires_computers INTEGER DEFAULT 0,
+            teacher_id INTEGER,
+            teacher_name TEXT
         )
         """,
         """
@@ -663,7 +665,9 @@ def postgres_schema():
             lesson_type TEXT DEFAULT 'lecture',
             subgroup_mode TEXT DEFAULT 'auto',
             subgroup_count INTEGER DEFAULT 1,
-            requires_computers INTEGER DEFAULT 0
+            requires_computers INTEGER DEFAULT 0,
+            teacher_id INTEGER,
+            teacher_name TEXT
         )
         """,
         """
@@ -931,6 +935,8 @@ def ensure_database():
         ensure_column(connection, "sections", "subgroup_mode", "TEXT DEFAULT 'auto'")
         ensure_column(connection, "sections", "subgroup_count", "INTEGER DEFAULT 1")
         ensure_column(connection, "sections", "requires_computers", "INTEGER DEFAULT 0")
+        ensure_column(connection, "sections", "teacher_id", "INTEGER")
+        ensure_column(connection, "sections", "teacher_name", "TEXT")
         db_execute(
             connection,
             """
@@ -939,6 +945,48 @@ def ensure_database():
                 WHEN lesson_type IN ('practical', 'lab') THEN 1
                 ELSE 0
             END
+            """,
+        )
+        db_execute(
+            connection,
+            """
+            UPDATE sections
+            SET
+                teacher_id = COALESCE(
+                    (
+                        SELECT cc.teacher_id
+                        FROM course_components cc
+                        WHERE cc.course_id = sections.course_id
+                          AND cc.lesson_type = sections.lesson_type
+                          AND cc.teacher_id IS NOT NULL
+                        ORDER BY cc.academic_period, cc.id
+                        LIMIT 1
+                    ),
+                    (
+                        SELECT c.instructor_id
+                        FROM courses c
+                        WHERE c.id = sections.course_id
+                    )
+                ),
+                teacher_name = COALESCE(
+                    (
+                        SELECT cc.teacher_name
+                        FROM course_components cc
+                        WHERE cc.course_id = sections.course_id
+                          AND cc.lesson_type = sections.lesson_type
+                          AND cc.teacher_name IS NOT NULL
+                          AND cc.teacher_name != ''
+                        ORDER BY cc.academic_period, cc.id
+                        LIMIT 1
+                    ),
+                    (
+                        SELECT c.instructor_name
+                        FROM courses c
+                        WHERE c.id = sections.course_id
+                    ),
+                    ''
+                )
+            WHERE teacher_id IS NULL OR teacher_name IS NULL OR teacher_name = ''
             """,
         )
         ensure_column(connection, "course_components", "teacher_id", "INTEGER")

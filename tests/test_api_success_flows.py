@@ -179,18 +179,20 @@ def test_rop_preview_parses_curriculum_plan(client, admin_auth_headers):
     assert payload["metadata"]["academicPeriods"] == [3, 4]
     assert payload["totals"]["courses"] == 1
     assert payload["totals"]["offerings"] == 1
-    assert payload["totals"]["lessonComponents"] == 2
+    assert payload["totals"]["lessonComponents"] == 4
     assert payload["courses"][0]["code"] == "Fil 2108"
     assert payload["offerings"][0]["semester"] == 1
     assert {item["lessonType"] for item in payload["lessonComponents"]} == {
         "lecture",
         "practical",
+        "srop",
+        "sro",
     }
     computer_flags = {
         item["lessonType"]: item["requiresComputers"]
         for item in payload["lessonComponents"]
     }
-    assert computer_flags == {"lecture": False, "practical": True}
+    assert computer_flags == {"lecture": False, "practical": True, "srop": False, "sro": False}
 
 
 def test_rop_import_creates_courses_from_curriculum_plan(client, admin_auth_headers):
@@ -223,8 +225,8 @@ def test_rop_import_creates_courses_from_curriculum_plan(client, admin_auth_head
     components_response = client.get("/api/course_components", headers=admin_auth_headers)
     assert components_response.status_code == 200
     components = components_response.json()
-    assert len(components) == 2
-    assert {item["lesson_type"] for item in components} == {"lecture", "practical"}
+    assert len(components) == 4
+    assert {item["lesson_type"] for item in components} == {"lecture", "practical", "srop", "sro"}
     assert {item["requires_computers"] for item in components} == {0, 1}
 
 
@@ -276,6 +278,113 @@ def test_rop_import_preserves_existing_course_instructor(client, admin_auth_head
     assert course["hours"] == 150
     assert course["instructor_id"] == teacher["id"]
     assert course["instructor_name"] == teacher["name"]
+
+
+def test_section_uses_teacher_from_matching_course_component(client, admin_auth_headers, backend_modules):
+    lecture_teacher_response = client.post(
+        "/api/teachers",
+        headers=admin_auth_headers,
+        json={
+            "name": "Lecture Teacher",
+            "email": "lecture.teacher@kazatu.edu.kz",
+            "department": "B057 - Информационные технологии",
+            "teaching_languages": "ru,kk",
+        },
+    )
+    assert lecture_teacher_response.status_code == 201
+    lecture_teacher = lecture_teacher_response.json()
+
+    practical_teacher_response = client.post(
+        "/api/teachers",
+        headers=admin_auth_headers,
+        json={
+            "name": "Practical Teacher",
+            "email": "practical.teacher@kazatu.edu.kz",
+            "department": "B057 - Информационные технологии",
+            "teaching_languages": "ru,kk",
+        },
+    )
+    assert practical_teacher_response.status_code == 201
+    practical_teacher = practical_teacher_response.json()
+
+    course_response = client.post(
+        "/api/disciplines",
+        headers=admin_auth_headers,
+        json={
+            "code": "CS301",
+            "name": "Databases",
+            "credits": 5,
+            "hours": 150,
+            "year": 2,
+            "semester": 1,
+            "department": "B057 - Информационные технологии",
+            "programme": "Бизнес-информатика",
+            "instructor_id": lecture_teacher["id"],
+            "instructor_name": lecture_teacher["name"],
+        },
+    )
+    assert course_response.status_code == 201
+    course = course_response.json()
+
+    _app_module, db_module = backend_modules
+    with db_module.get_connection() as connection:
+        db_module.insert_and_get_id(
+            connection,
+            """
+            INSERT INTO course_components (
+                course_id, course_code, course_name, programme, study_year,
+                academic_period, semester, lesson_type, hours, weekly_classes,
+                requires_computers, teacher_id, teacher_name
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                course["id"],
+                course["code"],
+                course["name"],
+                course["programme"],
+                course["year"],
+                course["semester"],
+                course["semester"],
+                "practical",
+                30,
+                2,
+                1,
+                practical_teacher["id"],
+                practical_teacher["name"],
+            ),
+        )
+        connection.commit()
+
+    group_response = client.post(
+        "/api/groups",
+        headers=admin_auth_headers,
+        json={
+            "name": "BI-24-01",
+            "student_count": 24,
+            "language": "ru",
+            "study_course": 2,
+        },
+    )
+    assert group_response.status_code == 201
+    group = group_response.json()
+
+    section_response = client.post(
+        "/api/sections",
+        headers=admin_auth_headers,
+        json={
+            "course_id": course["id"],
+            "course_name": course["name"],
+            "group_id": group["id"],
+            "group_name": group["name"],
+            "classes_count": 1,
+            "lesson_type": "practical",
+        },
+    )
+    assert section_response.status_code == 201
+    section = section_response.json()
+    assert section["teacher_id"] == practical_teacher["id"]
+    assert section["teacher_name"] == practical_teacher["name"]
 
 
 def test_schedule_generation_success_flow_with_export(client, admin_auth_headers):

@@ -70,6 +70,46 @@ def section_requires_computers(lesson_type):
     return 1 if lesson_type in {"practical", "lab"} else 0
 
 
+def resolve_section_teacher(connection, course_id, lesson_type, payload):
+    teacher_id = payload.get("teacher_id")
+    teacher_name = payload.get("teacher_name", "")
+
+    if teacher_id:
+        teacher = query_one(
+            connection,
+            "SELECT id, name FROM teachers WHERE id = ?",
+            (teacher_id,),
+        )
+        if teacher:
+            return teacher["id"], teacher["name"]
+
+    component_teacher = query_one(
+        connection,
+        """
+        SELECT teacher_id, teacher_name
+        FROM course_components
+        WHERE course_id = ?
+          AND lesson_type = ?
+          AND teacher_id IS NOT NULL
+        ORDER BY academic_period, id
+        LIMIT 1
+        """,
+        (course_id, lesson_type),
+    )
+    if component_teacher:
+        return component_teacher["teacher_id"], component_teacher.get("teacher_name", "")
+
+    course_teacher = query_one(
+        connection,
+        "SELECT instructor_id, instructor_name FROM courses WHERE id = ?",
+        (course_id,),
+    )
+    if course_teacher:
+        return course_teacher.get("instructor_id"), course_teacher.get("instructor_name", "")
+
+    return None, teacher_name
+
+
 def validate_teacher_email(email):
     normalized_email = (email or "").strip().lower()
     if not normalized_email.endswith(TEACHER_EMAIL_DOMAIN):
@@ -233,7 +273,7 @@ def list_collection(connection, collection, query, user=None):
         return query_all(
             connection,
             """
-            SELECT id, course_id, course_name, group_id, group_name, classes_count, lesson_type, subgroup_mode, subgroup_count, requires_computers
+            SELECT id, course_id, course_name, group_id, group_name, classes_count, lesson_type, subgroup_mode, subgroup_count, requires_computers, teacher_id, teacher_name
             FROM sections
             ORDER BY id
             """,
@@ -432,16 +472,22 @@ def create_collection_item(connection, collection, payload):
         )
 
     if collection == "sections":
-        normalized = normalize_number_fields(payload, ["course_id", "group_id", "classes_count", "class_count", "subgroup_count"])
+        normalized = normalize_number_fields(payload, ["course_id", "group_id", "classes_count", "class_count", "subgroup_count", "teacher_id"])
         normalized["lesson_type"] = normalize_lesson_type(normalized.get("lesson_type"))
         normalized["subgroup_mode"] = normalize_subgroup_mode(normalized.get("subgroup_mode"), normalized["lesson_type"])
         normalized["subgroup_count"] = positive_int(normalized.get("subgroup_count"), 1)
         requires_computers = section_requires_computers(normalized["lesson_type"])
+        teacher_id, teacher_name = resolve_section_teacher(
+            connection,
+            normalized.get("course_id"),
+            normalized["lesson_type"],
+            normalized,
+        )
         item_id = insert_and_get_id(
             connection,
             """
-            INSERT INTO sections (course_id, course_name, group_id, group_name, classes_count, lesson_type, subgroup_mode, subgroup_count, requires_computers)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO sections (course_id, course_name, group_id, group_name, classes_count, lesson_type, subgroup_mode, subgroup_count, requires_computers, teacher_id, teacher_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 normalized.get("course_id"),
@@ -453,13 +499,15 @@ def create_collection_item(connection, collection, payload):
                 normalized["subgroup_mode"],
                 normalized["subgroup_count"],
                 requires_computers,
+                teacher_id,
+                teacher_name,
             ),
         )
         connection.commit()
         return query_one(
             connection,
             """
-            SELECT id, course_id, course_name, group_id, group_name, classes_count, lesson_type, subgroup_mode, subgroup_count, requires_computers
+            SELECT id, course_id, course_name, group_id, group_name, classes_count, lesson_type, subgroup_mode, subgroup_count, requires_computers, teacher_id, teacher_name
             FROM sections
             WHERE id = ?
             """,
@@ -670,16 +718,22 @@ def update_collection_item(connection, collection, item_id, payload):
         )
 
     if collection == "sections":
-        normalized = normalize_number_fields(payload, ["course_id", "group_id", "classes_count", "class_count", "subgroup_count"])
+        normalized = normalize_number_fields(payload, ["course_id", "group_id", "classes_count", "class_count", "subgroup_count", "teacher_id"])
         normalized["lesson_type"] = normalize_lesson_type(normalized.get("lesson_type"))
         normalized["subgroup_mode"] = normalize_subgroup_mode(normalized.get("subgroup_mode"), normalized["lesson_type"])
         normalized["subgroup_count"] = positive_int(normalized.get("subgroup_count"), 1)
         requires_computers = section_requires_computers(normalized["lesson_type"])
+        teacher_id, teacher_name = resolve_section_teacher(
+            connection,
+            normalized.get("course_id"),
+            normalized["lesson_type"],
+            normalized,
+        )
         db_execute(
             connection,
             """
             UPDATE sections
-            SET course_id = ?, course_name = ?, group_id = ?, group_name = ?, classes_count = ?, lesson_type = ?, subgroup_mode = ?, subgroup_count = ?, requires_computers = ?
+            SET course_id = ?, course_name = ?, group_id = ?, group_name = ?, classes_count = ?, lesson_type = ?, subgroup_mode = ?, subgroup_count = ?, requires_computers = ?, teacher_id = ?, teacher_name = ?
             WHERE id = ?
             """,
             (
@@ -692,6 +746,8 @@ def update_collection_item(connection, collection, item_id, payload):
                 normalized["subgroup_mode"],
                 normalized["subgroup_count"],
                 requires_computers,
+                teacher_id,
+                teacher_name,
                 item_id,
             ),
         )
@@ -699,7 +755,7 @@ def update_collection_item(connection, collection, item_id, payload):
         return query_one(
             connection,
             """
-            SELECT id, course_id, course_name, group_id, group_name, classes_count, lesson_type, subgroup_mode, subgroup_count, requires_computers
+            SELECT id, course_id, course_name, group_id, group_name, classes_count, lesson_type, subgroup_mode, subgroup_count, requires_computers, teacher_id, teacher_name
             FROM sections
             WHERE id = ?
             """,
@@ -767,6 +823,8 @@ def delete_collection_item(connection, collection, item_id):
     elif collection == "teachers":
         db_execute(connection, "DELETE FROM schedules WHERE teacher_id = ?", (item_id,))
         db_execute(connection, "UPDATE courses SET instructor_id = NULL, instructor_name = '' WHERE instructor_id = ?", (item_id,))
+        db_execute(connection, "UPDATE course_components SET teacher_id = NULL, teacher_name = '' WHERE teacher_id = ?", (item_id,))
+        db_execute(connection, "UPDATE sections SET teacher_id = NULL, teacher_name = '' WHERE teacher_id = ?", (item_id,))
         db_execute(connection, "DELETE FROM notifications WHERE recipient_role = 'teacher' AND recipient_id = ?", (item_id,))
     elif collection == "rooms":
         db_execute(connection, "DELETE FROM schedules WHERE room_id = ?", (item_id,))
