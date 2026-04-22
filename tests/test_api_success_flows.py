@@ -387,6 +387,56 @@ def test_section_uses_teacher_from_matching_course_component(client, admin_auth_
     assert section["teacher_name"] == practical_teacher["name"]
 
 
+def test_generate_sections_from_rop_components_for_matching_groups(client, admin_auth_headers):
+    rop_response = client.post(
+        "/api/import/rop",
+        headers=admin_auth_headers,
+        json=_build_rop_preview_payload(),
+    )
+    assert rop_response.status_code == 200
+
+    group_response = client.post(
+        "/api/groups",
+        headers=admin_auth_headers,
+        json={
+            "name": "BI-24-01",
+            "student_count": 24,
+            "language": "ru",
+            "programme": "Бизнес-информатика",
+            "study_course": 2,
+        },
+    )
+    assert group_response.status_code == 201
+
+    response = client.post(
+        "/api/sections/generate",
+        headers=admin_auth_headers,
+        json={
+            "programme": "Бизнес-информатика",
+            "study_course": 2,
+            "semester": 3,
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["inserted"] == 2
+    assert payload["updated"] == 0
+    assert {section["lesson_type"] for section in payload["sections"]} == {"lecture", "practical"}
+
+    second_response = client.post(
+        "/api/sections/generate",
+        headers=admin_auth_headers,
+        json={
+            "programme": "Бизнес-информатика",
+            "study_course": 2,
+            "semester": 3,
+        },
+    )
+    assert second_response.status_code == 200
+    assert second_response.json()["inserted"] == 0
+    assert second_response.json()["updated"] == 2
+
+
 def test_schedule_generation_success_flow_with_export(client, admin_auth_headers):
     _seed_schedule_data(client, admin_auth_headers)
 

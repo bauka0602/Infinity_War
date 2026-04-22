@@ -23,6 +23,7 @@ from .auth_service import (
 from .collections import (
     create_collection_item,
     delete_collection_item,
+    generate_sections_from_components,
     list_collection,
     update_collection_item,
 )
@@ -299,6 +300,17 @@ def create_app():
         if user["role"] != "admin":
             raise ApiError(403, "forbidden", "Недостаточно прав")
         return get_schedule_generation_job(job_id)
+
+    @router.post("/sections/generate")
+    async def sections_generate(request: Request):
+        user = require_auth_user(request.headers)
+        if user["role"] != "admin":
+            raise ApiError(403, "forbidden", "Недостаточно прав")
+
+        payload = await _read_json_body(request)
+        with DB_LOCK:
+            with get_connection() as connection:
+                return generate_sections_from_components(connection, payload)
 
     @router.get("/{raw_collection}")
     def collection_list(raw_collection: str, request: Request):

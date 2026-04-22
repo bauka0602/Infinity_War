@@ -110,6 +110,173 @@ def resolve_section_teacher(connection, course_id, lesson_type, payload):
     return None, teacher_name
 
 
+def _same_programme(left, right):
+    return str(left or "").strip().lower() == str(right or "").strip().lower()
+
+
+def generate_sections_from_components(connection, payload):
+    semester = payload.get("semester")
+    study_course = payload.get("study_course") or payload.get("year")
+    programme = str(payload.get("programme") or "").strip()
+
+    if not semester or not study_course or not programme:
+        raise ApiError(
+            400,
+            "fill_required_fields",
+            "Заполните поля: semester, study_course, programme",
+            {"fields": ["semester", "study_course", "programme"]},
+        )
+
+    semester = int(semester)
+    study_course = int(study_course)
+    schedulable_types = {"lecture", "practical", "lab"}
+    groups = [
+        group
+        for group in query_all(
+            connection,
+            """
+            SELECT id, name, programme, study_course
+            FROM groups
+            WHERE study_course = ?
+            ORDER BY name
+            """,
+            (study_course,),
+        )
+        if _same_programme(group.get("programme"), programme)
+    ]
+    components = [
+        component
+        for component in query_all(
+            connection,
+            """
+            SELECT
+                cc.course_id,
+                cc.course_name,
+                cc.lesson_type,
+                cc.weekly_classes,
+                cc.requires_computers,
+                c.programme,
+                c.year,
+                c.semester
+            FROM course_components cc
+            JOIN courses c ON c.id = cc.course_id
+            WHERE cc.academic_period = ?
+              AND c.year = ?
+              AND cc.lesson_type IN ('lecture', 'practical', 'lab')
+            ORDER BY c.name, cc.lesson_type
+            """,
+            (semester, study_course),
+        )
+        if _same_programme(component.get("programme"), programme)
+    ]
+
+    if not groups or not components:
+        return {
+            "inserted": 0,
+            "updated": 0,
+            "skipped": 0,
+            "missing": {
+                "groups": len(groups) == 0,
+                "components": len(components) == 0,
+            },
+            "sections": [],
+        }
+
+    inserted = 0
+    updated = 0
+    generated_sections = []
+    for group in groups:
+        for component in components:
+            lesson_type = normalize_lesson_type(component["lesson_type"])
+            classes_count = positive_int(component.get("weekly_classes"), 1)
+            subgroup_mode = normalize_subgroup_mode("none" if lesson_type == "lecture" else "auto", lesson_type)
+            subgroup_count = 1
+            requires_computers = section_requires_computers(lesson_type)
+            teacher_id, teacher_name = resolve_section_teacher(
+                connection,
+                component["course_id"],
+                lesson_type,
+                {},
+            )
+            existing = query_one(
+                connection,
+                """
+                SELECT id
+                FROM sections
+                WHERE course_id = ?
+                  AND group_id = ?
+                  AND lesson_type = ?
+                LIMIT 1
+                """,
+                (component["course_id"], group["id"], lesson_type),
+            )
+            params = (
+                component["course_id"],
+                component["course_name"],
+                group["id"],
+                group["name"],
+                classes_count,
+                lesson_type,
+                subgroup_mode,
+                subgroup_count,
+                requires_computers,
+                teacher_id,
+                teacher_name or "",
+            )
+
+            if existing:
+                db_execute(
+                    connection,
+                    """
+                    UPDATE sections
+                    SET course_id = ?, course_name = ?, group_id = ?, group_name = ?,
+                        classes_count = ?, lesson_type = ?, subgroup_mode = ?, subgroup_count = ?,
+                        requires_computers = ?, teacher_id = ?, teacher_name = ?
+                    WHERE id = ?
+                    """,
+                    (*params, existing["id"]),
+                )
+                section_id = existing["id"]
+                updated += 1
+            else:
+                section_id = insert_and_get_id(
+                    connection,
+                    """
+                    INSERT INTO sections (
+                        course_id, course_name, group_id, group_name, classes_count,
+                        lesson_type, subgroup_mode, subgroup_count, requires_computers,
+                        teacher_id, teacher_name
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    params,
+                )
+                inserted += 1
+
+            generated_sections.append(
+                {
+                    "id": section_id,
+                    "course_id": component["course_id"],
+                    "course_name": component["course_name"],
+                    "group_id": group["id"],
+                    "group_name": group["name"],
+                    "classes_count": classes_count,
+                    "lesson_type": lesson_type,
+                    "teacher_id": teacher_id,
+                    "teacher_name": teacher_name or "",
+                }
+            )
+
+    connection.commit()
+    return {
+        "inserted": inserted,
+        "updated": updated,
+        "skipped": 0,
+        "missing": {"groups": False, "components": False},
+        "sections": generated_sections,
+    }
+
+
 def validate_teacher_email(email):
     normalized_email = (email or "").strip().lower()
     if not normalized_email.endswith(TEACHER_EMAIL_DOMAIN):
