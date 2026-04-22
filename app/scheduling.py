@@ -14,7 +14,7 @@ DAY_NAME_TO_INDEX = {
     "thursday": 3,
     "friday": 4,
 }
-PC_REQUIRED_LESSON_TYPES = {"practical", "lab"}
+PC_REQUIRED_LESSON_TYPES = {"lab"}
 SUBGROUP_MODES = {"none", "auto", "forced"}
 SEASON_ACADEMIC_PERIODS = {
     1: (1, 3, 5, 7),
@@ -51,18 +51,20 @@ def _normalize_room_type(room):
     return str(room.get("type") or "").strip().lower()
 
 
-def _room_matches_lesson_type(room, lesson_type):
+def _room_matches_lesson_type(room, lesson_type, pc_required=False):
     if lesson_type == "lecture":
         return True
+    if lesson_type == "practical" and pc_required:
+        return _normalize_room_type(room) in {"lab", "practical"}
     return _normalize_room_type(room) == ("lab" if lesson_type == "lab" else "practical")
 
 
-def _room_effective_capacity(room, lesson_type):
-    if not _room_matches_lesson_type(room, lesson_type):
+def _room_effective_capacity(room, lesson_type, pc_required=False):
+    if not _room_matches_lesson_type(room, lesson_type, pc_required):
         return 0
 
     capacity = _int_at_least(room.get("capacity"), 0, 0)
-    if lesson_type in PC_REQUIRED_LESSON_TYPES:
+    if pc_required or lesson_type in PC_REQUIRED_LESSON_TYPES:
         pc_count = _int_at_least(room.get("computer_count") or room.get("pcCount"), 0, 0)
         if pc_count <= 0:
             return 0
@@ -70,8 +72,8 @@ def _room_effective_capacity(room, lesson_type):
     return capacity
 
 
-def _max_room_capacity_for_lesson(rooms, lesson_type):
-    capacities = [_room_effective_capacity(room, lesson_type) for room in rooms]
+def _max_room_capacity_for_lesson(rooms, lesson_type, pc_required=False):
+    capacities = [_room_effective_capacity(room, lesson_type, pc_required) for room in rooms]
     return max(capacities, default=0)
 
 
@@ -90,7 +92,8 @@ def _resolve_subgroup_count(section, rooms):
         return max(2, configured_count)
 
     student_count = _int_at_least(section.get("student_count"), 0, 0)
-    max_capacity = _max_room_capacity_for_lesson(rooms, lesson_type)
+    pc_required = bool(section.get("requires_computers")) or lesson_type in PC_REQUIRED_LESSON_TYPES
+    max_capacity = _max_room_capacity_for_lesson(rooms, lesson_type, pc_required)
     if student_count <= 0 or max_capacity <= 0 or student_count <= max_capacity:
         return 1
     return max(2, ceil(student_count / max_capacity))
@@ -101,6 +104,16 @@ def _subgroup_size(student_count, subgroup_count, index):
         return student_count
     base_size, remainder = divmod(max(0, student_count), subgroup_count)
     return max(1, base_size + (1 if index < remainder else 0))
+
+
+def _room_type_required(lesson_type, pc_required=False):
+    if lesson_type == "lecture":
+        return "lecture"
+    if lesson_type == "lab":
+        return "lab"
+    if lesson_type == "practical" and pc_required:
+        return "any"
+    return "practical"
 
 
 def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
@@ -144,7 +157,7 @@ def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
                         **base_item,
                         "id": f"section_{section['id']}",
                         "lessonType": lesson_type,
-                        "roomTypeRequired": "lab" if lesson_type == "lab" else "practical",
+                        "roomTypeRequired": _room_type_required(lesson_type, pc_required),
                         "streamId": f"{section['course_id']}-{section['group_id']}",
                         "subgroupIds": [],
                     }
@@ -159,7 +172,7 @@ def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
                         **base_item,
                         "id": f"section_{section['id']}_{subgroup}",
                         "lessonType": lesson_type,
-                        "roomTypeRequired": "lab" if lesson_type == "lab" else "practical",
+                        "roomTypeRequired": _room_type_required(lesson_type, pc_required),
                         "streamId": f"{section['course_id']}-{section['group_id']}",
                         "subgroupIds": [f"{base_group_id}-{subgroup}"],
                         "studentCount": _subgroup_size(student_count, subgroup_count, index),

@@ -5,6 +5,7 @@ from datetime import date
 from .config import TEACHER_EMAIL_DOMAIN
 from .db import db_execute, insert_and_get_id, query_all, query_one
 from .errors import ApiError
+from .lesson_rules import requires_computers_for_component
 
 LESSON_TYPE_ALIASES = {
     "lecture": "lecture",
@@ -66,8 +67,8 @@ def normalize_subgroup_mode(value, lesson_type="lecture"):
     return normalized if normalized in {"none", "auto", "forced"} else "auto"
 
 
-def section_requires_computers(lesson_type):
-    return 1 if lesson_type in {"practical", "lab"} else 0
+def section_requires_computers(lesson_type, course_code="", course_name="", study_year=None):
+    return 1 if requires_computers_for_component(lesson_type, course_code, course_name, study_year) else 0
 
 
 def resolve_section_teacher(connection, course_id, lesson_type, payload):
@@ -206,7 +207,7 @@ def generate_sections_from_components(connection, payload):
             classes_count = positive_int(component.get("weekly_classes"), 1)
             subgroup_mode = normalize_subgroup_mode("none" if lesson_type == "lecture" else "auto", lesson_type)
             subgroup_count = 1
-            requires_computers = section_requires_computers(lesson_type)
+            requires_computers = 1 if component.get("requires_computers") else 0
             teacher_id, teacher_name = resolve_section_teacher(
                 connection,
                 component["course_id"],
@@ -594,7 +595,12 @@ def create_collection_item(connection, collection, payload):
                 lesson_type,
                 normalized.get("hours"),
                 normalized.get("weekly_classes"),
-                section_requires_computers(lesson_type),
+                section_requires_computers(
+                    lesson_type,
+                    normalized.get("course_code", ""),
+                    normalized.get("course_name", ""),
+                    normalized.get("study_year"),
+                ),
                 normalized.get("teacher_id"),
                 normalized.get("teacher_name", ""),
             ),
@@ -709,11 +715,14 @@ def create_collection_item(connection, collection, payload):
         )
 
     if collection == "sections":
-        normalized = normalize_number_fields(payload, ["course_id", "group_id", "classes_count", "class_count", "subgroup_count", "teacher_id"])
+        normalized = normalize_number_fields(payload, ["course_id", "group_id", "classes_count", "class_count", "subgroup_count", "requires_computers", "teacher_id"])
         normalized["lesson_type"] = normalize_lesson_type(normalized.get("lesson_type"))
         normalized["subgroup_mode"] = normalize_subgroup_mode(normalized.get("subgroup_mode"), normalized["lesson_type"])
         normalized["subgroup_count"] = positive_int(normalized.get("subgroup_count"), 1)
-        requires_computers = section_requires_computers(normalized["lesson_type"])
+        if "requires_computers" in normalized:
+            requires_computers = 1 if normalized.get("requires_computers") else 0
+        else:
+            requires_computers = section_requires_computers(normalized["lesson_type"])
         teacher_id, teacher_name = resolve_section_teacher(
             connection,
             normalized.get("course_id"),
@@ -955,11 +964,14 @@ def update_collection_item(connection, collection, item_id, payload):
         )
 
     if collection == "sections":
-        normalized = normalize_number_fields(payload, ["course_id", "group_id", "classes_count", "class_count", "subgroup_count", "teacher_id"])
+        normalized = normalize_number_fields(payload, ["course_id", "group_id", "classes_count", "class_count", "subgroup_count", "requires_computers", "teacher_id"])
         normalized["lesson_type"] = normalize_lesson_type(normalized.get("lesson_type"))
         normalized["subgroup_mode"] = normalize_subgroup_mode(normalized.get("subgroup_mode"), normalized["lesson_type"])
         normalized["subgroup_count"] = positive_int(normalized.get("subgroup_count"), 1)
-        requires_computers = section_requires_computers(normalized["lesson_type"])
+        if "requires_computers" in normalized:
+            requires_computers = 1 if normalized.get("requires_computers") else 0
+        else:
+            requires_computers = section_requires_computers(normalized["lesson_type"])
         teacher_id, teacher_name = resolve_section_teacher(
             connection,
             normalized.get("course_id"),

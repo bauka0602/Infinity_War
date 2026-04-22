@@ -7,6 +7,7 @@ from .auth_service import require_auth_user
 from .config import DB_LOCK
 from .db import db_execute, get_connection, insert_and_get_id, query_all, query_one
 from .errors import ApiError
+from .lesson_rules import requires_computers_for_component
 
 COURSE_EDUCATIONAL_PROGRAMME_GROUP_ALIASES = {
     "b057": "B057 - Информационные технологии",
@@ -52,7 +53,6 @@ ROP_PERIOD_COLUMN_GROUPS = (
 )
 
 ROP_LESSON_TYPES = ("lecture", "practical", "lab", "studio", "practice", "srop")
-ROP_PC_REQUIRED_LESSON_TYPES = {"practical", "lab"}
 
 
 def _load_workbook(file_bytes):
@@ -971,7 +971,12 @@ def _create_iup_missing_courses(connection, parsed, missing_courses):
                     1,
                     entry.get("academicPeriod"),
                     entry.get("semester"),
-                    1 if entry.get("lessonType") in ROP_PC_REQUIRED_LESSON_TYPES else 0,
+                    1 if requires_computers_for_component(
+                        entry.get("lessonType"),
+                        entry.get("courseCode", ""),
+                        entry.get("courseName", ""),
+                        entry.get("studyYear"),
+                    ) else 0,
                     None,
                     "",
                 ),
@@ -1280,7 +1285,12 @@ def parse_rop_preview(headers, payload):
                             "lessonType": normalized_lesson_type,
                             "hours": hours,
                             "weeklyClasses": _weekly_classes_from_hours(hours),
-                            "requiresComputers": normalized_lesson_type in ROP_PC_REQUIRED_LESSON_TYPES,
+                            "requiresComputers": requires_computers_for_component(
+                                normalized_lesson_type,
+                                course["code"],
+                                course["name"],
+                                study_year,
+                            ),
                         }
                     )
 

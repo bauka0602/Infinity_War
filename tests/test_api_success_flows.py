@@ -4,6 +4,8 @@ from io import BytesIO
 
 from openpyxl import Workbook, load_workbook
 
+from backend.app.lesson_rules import requires_computers_for_component
+
 
 def _wait_for_job_completion(client, headers, job_id, timeout_seconds=5):
     started_at = time.time()
@@ -195,7 +197,7 @@ def test_rop_preview_parses_curriculum_plan(client, admin_auth_headers):
     }
     assert computer_flags == {
         "lecture": False,
-        "practical": True,
+        "practical": False,
         "practice": False,
         "srop": False,
     }
@@ -233,7 +235,14 @@ def test_rop_import_creates_courses_from_curriculum_plan(client, admin_auth_head
     components = components_response.json()
     assert len(components) == 4
     assert {item["lesson_type"] for item in components} == {"lecture", "practical", "practice", "srop"}
-    assert {item["requires_computers"] for item in components} == {0, 1}
+    assert {item["requires_computers"] for item in components} == {0}
+
+
+def test_practical_requires_computers_only_for_it_after_first_year():
+    assert requires_computers_for_component("lab", "Lang 1101", "Английский язык", 1) is True
+    assert requires_computers_for_component("practical", "IKT 1101", "Информационные технологии", 1) is False
+    assert requires_computers_for_component("practical", "BD 2201", "Базы данных", 2) is True
+    assert requires_computers_for_component("practice", "Pr 4301", "Преддипломная практика", 4) is False
 
 
 def test_rop_import_preserves_existing_course_instructor(client, admin_auth_headers):

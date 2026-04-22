@@ -940,10 +940,20 @@ def ensure_database():
             connection,
             """
             UPDATE sections
-            SET requires_computers = CASE
-                WHEN lesson_type IN ('practical', 'lab') THEN 1
-                ELSE 0
-            END
+            SET requires_computers = COALESCE(
+                (
+                    SELECT cc.requires_computers
+                    FROM course_components cc
+                    WHERE cc.course_id = sections.course_id
+                      AND cc.lesson_type = sections.lesson_type
+                    ORDER BY cc.academic_period, cc.id
+                    LIMIT 1
+                ),
+                CASE
+                    WHEN lesson_type = 'lab' THEN 1
+                    ELSE 0
+                END
+            )
             """,
         )
         db_execute(
