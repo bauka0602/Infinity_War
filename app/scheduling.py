@@ -287,6 +287,7 @@ def build_schedule(connection, semester, year, algorithm):
         JOIN courses c ON c.id = s.course_id
         JOIN groups g ON g.id = s.group_id
         WHERE c.semester IN ({placeholders})
+          AND s.lesson_type IN ('lecture', 'practical', 'lab')
         ORDER BY g.student_count DESC, s.classes_count DESC, s.id
         """,
         tuple(academic_periods),

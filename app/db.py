@@ -1043,11 +1043,11 @@ def ensure_database():
             WHERE section_id IN (
                 SELECT id
                 FROM sections
-                WHERE lower(coalesce(lesson_type, '')) = 'sro'
+                WHERE lower(coalesce(lesson_type, '')) IN ('sro', 'srop', 'practice')
             )
             """,
         )
-        db_execute(connection, "DELETE FROM sections WHERE lower(coalesce(lesson_type, '')) = 'sro'")
+        db_execute(connection, "DELETE FROM sections WHERE lower(coalesce(lesson_type, '')) IN ('sro', 'srop', 'practice')")
         db_execute(connection, "DELETE FROM course_components WHERE lower(coalesce(lesson_type, '')) = 'sro'")
         db_execute(connection, "DELETE FROM iup_entries WHERE lower(coalesce(lesson_type, '')) = 'sro'")
         ensure_column(connection, "teacher_preference_requests", "note", "TEXT")
