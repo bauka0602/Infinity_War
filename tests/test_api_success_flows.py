@@ -17,67 +17,6 @@ def _wait_for_job_completion(client, headers, job_id, timeout_seconds=5):
     raise AssertionError(f"Job {job_id} did not finish within {timeout_seconds} seconds")
 
 
-def _build_excel_import_payload():
-    workbook = Workbook()
-    default_sheet = workbook.active
-    workbook.remove(default_sheet)
-
-    teachers = workbook.create_sheet("Teachers")
-    teachers.append(["name", "email", "phone", "department", "teaching_languages"])
-    teachers.append(
-        [
-            "Aruzhan Saparova",
-            "aruzhan.saparova@kazatu.edu.kz",
-            "+7 777 000 00 00",
-            "CS",
-            "ru,kk",
-        ]
-    )
-
-    disciplines = workbook.create_sheet("Disciplines")
-    disciplines.append(
-        [
-            "code",
-            "name",
-            "course",
-            "semester",
-            "programme",
-            "department",
-            "instructor_name",
-            "requires_computers",
-        ]
-    )
-    disciplines.append(
-        [
-            "CS201",
-            "Algorithms",
-            2,
-            1,
-            "Software Engineering",
-            "CS",
-            "Aruzhan Saparova",
-            "no",
-        ]
-    )
-
-    rooms = workbook.create_sheet("Rooms")
-    rooms.append(["number", "capacity", "building", "type", "department", "available"])
-    rooms.append(["401", 40, "Main", "lecture", "CS", "yes"])
-
-    groups = workbook.create_sheet("Groups")
-    groups.append(["name", "student_count", "study_course", "has_subgroups", "language"])
-    groups.append(["SE-24-01", 24, 2, "no", "ru"])
-
-    sections = workbook.create_sheet("Sections")
-    sections.append(["course_code", "group_name", "classes_count", "lesson_type"])
-    sections.append(["CS201", "SE-24-01", 2, "lecture"])
-
-    buffer = BytesIO()
-    workbook.save(buffer)
-    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
-    return {"fileName": "import-success.xlsx", "fileContent": encoded}
-
-
 def _build_rop_preview_payload():
     workbook = Workbook()
     sheet = workbook.active
@@ -145,33 +84,82 @@ def _build_rop_preview_payload():
     return {"fileName": "БИ_2_рус.xlsx", "fileContent": encoded}
 
 
-def test_excel_import_success_flow(client, admin_auth_headers):
-    response = client.post(
-        "/api/import/excel",
-        headers=admin_auth_headers,
-        json=_build_excel_import_payload(),
+def _seed_schedule_data(client, headers):
+    teacher_response = client.post(
+        "/api/teachers",
+        headers=headers,
+        json={
+            "name": "Aruzhan Saparova",
+            "email": "aruzhan.saparova@kazatu.edu.kz",
+            "phone": "+7 777 000 00 00",
+            "department": "CS",
+            "teaching_languages": "ru,kk",
+        },
     )
+    assert teacher_response.status_code == 201
+    teacher = teacher_response.json()
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["message"] == "Excel import completed successfully."
-    assert set(payload["recognizedSheets"]) == {
-        "Teachers",
-        "Disciplines",
-        "Rooms",
-        "Groups",
-        "Sections",
-    }
-    assert payload["totals"] == {"inserted": 5, "updated": 0}
+    course_response = client.post(
+        "/api/disciplines",
+        headers=headers,
+        json={
+            "code": "CS201",
+            "name": "Algorithms",
+            "credits": 5,
+            "hours": 150,
+            "year": 2,
+            "semester": 1,
+            "programme": "Software Engineering",
+            "department": "B057 - Информационные технологии",
+            "instructor_id": teacher["id"],
+            "instructor_name": teacher["name"],
+        },
+    )
+    assert course_response.status_code == 201
+    course = course_response.json()
 
-    teachers_response = client.get("/api/teachers", headers=admin_auth_headers)
-    assert teachers_response.status_code == 200
-    assert any(item["email"] == "aruzhan.saparova@kazatu.edu.kz" for item in teachers_response.json())
+    room_response = client.post(
+        "/api/rooms",
+        headers=headers,
+        json={
+            "number": "401",
+            "capacity": 40,
+            "building": "Main",
+            "type": "lecture",
+            "department": "CS",
+            "available": 1,
+        },
+    )
+    assert room_response.status_code == 201
 
-    sections_response = client.get("/api/sections", headers=admin_auth_headers)
-    assert sections_response.status_code == 200
-    assert len(sections_response.json()) == 1
-    assert sections_response.json()[0]["course_name"] == "Algorithms"
+    group_response = client.post(
+        "/api/groups",
+        headers=headers,
+        json={
+            "name": "SE-24-01",
+            "student_count": 24,
+            "study_course": 2,
+            "has_subgroups": 0,
+            "language": "ru",
+            "programme": "Software Engineering",
+        },
+    )
+    assert group_response.status_code == 201
+    group = group_response.json()
+
+    section_response = client.post(
+        "/api/sections",
+        headers=headers,
+        json={
+            "course_id": course["id"],
+            "course_name": course["name"],
+            "group_id": group["id"],
+            "group_name": group["name"],
+            "classes_count": 2,
+            "lesson_type": "lecture",
+        },
+    )
+    assert section_response.status_code == 201
 
 
 def test_rop_preview_parses_curriculum_plan(client, admin_auth_headers):
@@ -241,12 +229,7 @@ def test_rop_import_creates_courses_from_curriculum_plan(client, admin_auth_head
 
 
 def test_schedule_generation_success_flow_with_export(client, admin_auth_headers):
-    import_response = client.post(
-        "/api/import/excel",
-        headers=admin_auth_headers,
-        json=_build_excel_import_payload(),
-    )
-    assert import_response.status_code == 200
+    _seed_schedule_data(client, admin_auth_headers)
 
     generate_response = client.post(
         "/api/schedules/generate",

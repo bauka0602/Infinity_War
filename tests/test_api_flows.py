@@ -118,13 +118,7 @@ def test_notifications_mark_read_and_delete_all(client, teacher_auth_headers, se
     assert delete_all_response.json()["unreadCount"] == 0
 
 
-def test_import_template_and_schedule_export_endpoints(client, admin_auth_headers):
-    template_response = client.get("/api/import/template", headers=admin_auth_headers)
-    assert template_response.status_code == 200
-    assert template_response.headers["content-type"].startswith(
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-
+def test_schedule_export_fails_without_data(client, admin_auth_headers):
     export_response = client.get("/api/export/schedule", headers=admin_auth_headers)
     assert export_response.status_code == 400
     assert export_response.json()["errorCode"] == "bad_request"
