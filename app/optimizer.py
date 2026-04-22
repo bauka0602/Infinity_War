@@ -191,9 +191,11 @@ def _normalize_plan_items(payload):
         if lesson_type == "lab" and not room_type_required:
             room_type_required = "lab"
 
-        audience_keys = [f"group:{group_id}" for group_id in group_ids]
-        audience_keys.extend(f"subgroup:{subgroup_id}" for subgroup_id in subgroup_ids)
-        if stream_id:
+        if subgroup_ids:
+            audience_keys = [f"subgroup:{subgroup_id}" for subgroup_id in subgroup_ids]
+        else:
+            audience_keys = [f"group:{group_id}" for group_id in group_ids]
+        if stream_id and not subgroup_ids:
             audience_keys.append(f"stream:{stream_id}")
 
         course_key = str(item.get("courseId") or item.get("courseName") or item.get("name") or item_id)
@@ -515,37 +517,38 @@ def optimize_schedule(payload):
 
     precedence_relations = []
     if enforce_lecture_before_lab:
-        items_by_signature = defaultdict(list)
-        for item in items:
-            items_by_signature[item["precedence_signature"]].append(item)
+        lecture_items = [item for item in items if item["lesson_type"] == "lecture"]
+        later_items = [
+            item
+            for item in items
+            if item["lesson_type"] in {"practice", "practical", "seminar", "lab"}
+        ]
 
-        for signature_items in items_by_signature.values():
-            lecture_items = [item for item in signature_items if item["lesson_type"] == "lecture"]
-            later_items = [
-                item
-                for item in signature_items
-                if item["lesson_type"] in {"practice", "practical", "seminar", "lab"}
+        for later_item in later_items:
+            matching_lectures = [
+                lecture_item
+                for lecture_item in lecture_items
+                if lecture_item["course_key"] == later_item["course_key"]
+                and set(lecture_item["group_ids"]) & set(later_item["group_ids"])
             ]
-            if not lecture_items or not later_items:
+            if not matching_lectures:
                 continue
 
             lecture_earliest = model.NewIntVar(0, max_slot_index + 1, "earliest_lecture_group")
             model.AddMinEquality(
                 lecture_earliest,
-                [item_earliest_slot_vars[item["id"]] for item in lecture_items],
+                [item_earliest_slot_vars[item["id"]] for item in matching_lectures],
             )
-
-            for later_item in later_items:
-                model.Add(lecture_earliest < item_earliest_slot_vars[later_item["id"]])
-                precedence_relations.append(
-                    {
-                        "beforeItemId": lecture_items[0]["id"],
-                        "beforeLessonType": "lecture",
-                        "afterItemId": later_item["id"],
-                        "afterLessonType": later_item["lesson_type"],
-                        "courseName": later_item["course_name"],
-                    }
-                )
+            model.Add(lecture_earliest < item_earliest_slot_vars[later_item["id"]])
+            precedence_relations.append(
+                {
+                    "beforeItemId": matching_lectures[0]["id"],
+                    "beforeLessonType": "lecture",
+                    "afterItemId": later_item["id"],
+                    "afterLessonType": later_item["lesson_type"],
+                    "courseName": later_item["course_name"],
+                }
+            )
     subgroup_day_separation_pairs = []
     subgroup_same_day_penalty_vars = []
     teacher_gap_penalty_vars = []

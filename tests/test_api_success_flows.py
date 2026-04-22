@@ -540,3 +540,89 @@ def test_schedule_generation_success_flow_with_export(client, admin_auth_headers
     assert all(row[0] == "Algorithms" for row in rows[1:])
     assert all(row[1] == "SE-24-01" for row in rows[1:])
     assert all(row[4] == "401" for row in rows[1:])
+
+
+def test_manual_schedule_rejects_teacher_conflict(client, admin_auth_headers):
+    _seed_schedule_data(client, admin_auth_headers)
+
+    sections_response = client.get("/api/sections", headers=admin_auth_headers)
+    rooms_response = client.get("/api/rooms", headers=admin_auth_headers)
+    assert sections_response.status_code == 200
+    assert rooms_response.status_code == 200
+    section = sections_response.json()[0]
+    room = rooms_response.json()[0]
+
+    payload = {
+        "section_id": section["id"],
+        "course_id": section["course_id"],
+        "course_name": section["course_name"],
+        "teacher_id": section["teacher_id"],
+        "teacher_name": section["teacher_name"],
+        "room_id": room["id"],
+        "room_number": room["number"],
+        "group_id": section["group_id"],
+        "group_name": section["group_name"],
+        "subgroup": "",
+        "day": "2026-04-20",
+        "start_hour": 9,
+        "semester": 1,
+        "year": 2026,
+        "algorithm": "manual",
+    }
+
+    first_response = client.post("/api/schedules", headers=admin_auth_headers, json=payload)
+    assert first_response.status_code == 201
+
+    second_response = client.post("/api/schedules", headers=admin_auth_headers, json=payload)
+    assert second_response.status_code == 400
+    assert second_response.json()["errorCode"] == "bad_request"
+
+
+def test_optimizer_allows_parallel_different_subgroups():
+    from backend.app.optimizer import optimize_schedule
+
+    result = optimize_schedule(
+        {
+            "timeSlots": [{"id": "monday_8", "day": "Monday", "hour": 8}],
+            "teachers": [
+                {"id": 1, "name": "Teacher A"},
+                {"id": 2, "name": "Teacher B"},
+            ],
+            "rooms": [
+                {"id": 1, "number": "101", "capacity": 20, "type": "lab", "pcCount": 20},
+                {"id": 2, "number": "102", "capacity": 20, "type": "lab", "pcCount": 20},
+            ],
+            "planItems": [
+                {
+                    "id": "lab_a",
+                    "courseId": 1,
+                    "courseName": "Programming",
+                    "teacherId": 1,
+                    "groupIds": ["G1"],
+                    "subgroupIds": ["G1-A"],
+                    "lessonsPerWeek": 1,
+                    "studentCount": 15,
+                    "lessonType": "lab",
+                    "roomTypeRequired": "lab",
+                    "pcRequired": True,
+                },
+                {
+                    "id": "lab_b",
+                    "courseId": 1,
+                    "courseName": "Programming",
+                    "teacherId": 2,
+                    "groupIds": ["G1"],
+                    "subgroupIds": ["G1-B"],
+                    "lessonsPerWeek": 1,
+                    "studentCount": 15,
+                    "lessonType": "lab",
+                    "roomTypeRequired": "lab",
+                    "pcRequired": True,
+                },
+            ],
+        }
+    )
+
+    assert result["status"] in {"OPTIMAL", "FEASIBLE"}
+    assert len(result["schedule"]) == 2
+    assert {item["hour"] for item in result["schedule"]} == {8}

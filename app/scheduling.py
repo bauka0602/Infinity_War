@@ -147,6 +147,8 @@ def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
                 section["course_id"],
                 section["instructor_id"],
                 int(section.get("classes_count") or 0),
+                section.get("group_language") or "",
+                section.get("programme") or "",
             )
             grouped_lectures.setdefault(signature, []).append(section)
         else:
@@ -179,7 +181,7 @@ def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
                     }
                 )
 
-    for (course_id, instructor_id, classes_count), lecture_sections in grouped_lectures.items():
+    for (course_id, instructor_id, classes_count, _group_language, _programme), lecture_sections in grouped_lectures.items():
         first_section = lecture_sections[0]
         plan_items.append(
             {
@@ -277,6 +279,7 @@ def build_schedule(connection, semester, year, algorithm):
             COALESCE(s.teacher_id, c.instructor_id) AS instructor_id,
             COALESCE(NULLIF(s.teacher_name, ''), c.instructor_name, '') AS instructor_name,
             c.department,
+            c.programme,
             c.semester,
             c.year,
             g.student_count,
@@ -416,6 +419,8 @@ def build_schedule(connection, semester, year, algorithm):
             section["course_id"],
             section["instructor_id"],
             int(section.get("classes_count") or 0),
+            section.get("group_language") or "",
+            section.get("programme") or "",
         )
         lecture_groups.setdefault(signature, []).append(section)
     for signature, lecture_sections in lecture_groups.items():

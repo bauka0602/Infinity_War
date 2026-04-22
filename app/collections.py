@@ -1,6 +1,7 @@
 import re
 from copy import deepcopy
 from datetime import date
+from math import ceil
 
 from .config import TEACHER_EMAIL_DOMAIN
 from .db import db_execute, insert_and_get_id, query_all, query_one
@@ -345,6 +346,151 @@ def infer_study_course(entry_year):
     if not entry_year:
         return None
     return max(1, current_academic_year_start() - int(entry_year) + 1)
+
+
+def normalize_subgroup(value):
+    normalized = str(value or "").strip().upper()
+    return normalized if normalized in {"A", "B"} else ""
+
+
+def normalize_room_type(value):
+    return str(value or "").strip().lower()
+
+
+def schedule_room_type_matches(room_type, lesson_type, requires_computers=False):
+    normalized_room_type = normalize_room_type(room_type)
+    normalized_lesson_type = normalize_lesson_type(lesson_type)
+    if normalized_lesson_type == "lecture":
+        return normalized_room_type == "lecture"
+    if normalized_lesson_type == "lab":
+        return normalized_room_type == "lab"
+    if normalized_lesson_type == "practical" and requires_computers:
+        return True
+    return normalized_room_type == "practical"
+
+
+def schedule_student_count_for_room(section, group, subgroup):
+    student_count = int(group.get("student_count") or 0)
+    if not subgroup:
+        return student_count
+
+    subgroup_count = positive_int(section.get("subgroup_count"), 1)
+    if group.get("has_subgroups"):
+        subgroup_count = max(2, subgroup_count)
+    return ceil(student_count / subgroup_count) if student_count else 0
+
+
+def validate_schedule_payload(connection, payload, exclude_schedule_id=None):
+    section_id = payload.get("section_id")
+    room_id = payload.get("room_id")
+    teacher_id = payload.get("teacher_id")
+    day = payload.get("day")
+    start_hour = payload.get("start_hour")
+    subgroup = normalize_subgroup(payload.get("subgroup"))
+
+    if not section_id or not room_id or not teacher_id or not day or start_hour in (None, ""):
+        raise ApiError(400, "fill_required_fields", "Заполните поля расписания")
+
+    section = query_one(
+        connection,
+        """
+        SELECT
+            s.id, s.course_id, s.course_name, s.group_id, s.group_name,
+            s.lesson_type, s.subgroup_mode, s.subgroup_count, s.requires_computers,
+            COALESCE(s.teacher_id, c.instructor_id) AS teacher_id,
+            COALESCE(NULLIF(s.teacher_name, ''), c.instructor_name, '') AS teacher_name,
+            c.year AS course_year,
+            g.student_count, g.has_subgroups, g.study_course
+        FROM sections s
+        JOIN courses c ON c.id = s.course_id
+        JOIN groups g ON g.id = s.group_id
+        WHERE s.id = ?
+        """,
+        (section_id,),
+    )
+    if section is None:
+        raise ApiError(400, "bad_request", "Для расписания не найдена секция")
+
+    room = query_one(
+        connection,
+        """
+        SELECT id, number, capacity, type, available, computer_count
+        FROM rooms
+        WHERE id = ?
+        """,
+        (room_id,),
+    )
+    if room is None or not int(room.get("available") if room.get("available") is not None else 1):
+        raise ApiError(400, "bad_request", "Для расписания не найдена доступная аудитория")
+
+    if int(payload.get("course_id") or section["course_id"]) != int(section["course_id"]):
+        raise ApiError(400, "bad_request", "Дисциплина не совпадает с выбранной секцией")
+    if int(payload.get("group_id") or section["group_id"]) != int(section["group_id"]):
+        raise ApiError(400, "bad_request", "Группа не совпадает с выбранной секцией")
+    if int(teacher_id) != int(section.get("teacher_id") or 0):
+        raise ApiError(400, "bad_request", "Преподаватель не совпадает с выбранной секцией")
+    if section.get("study_course") and int(section.get("study_course")) != int(section.get("course_year") or 0):
+        raise ApiError(400, "bad_request", "Курс группы не совпадает с курсом дисциплины")
+
+    lesson_type = normalize_lesson_type(section.get("lesson_type"))
+    requires_computers = bool(section.get("requires_computers")) or lesson_type == "lab"
+    if not schedule_room_type_matches(room.get("type"), lesson_type, requires_computers):
+        raise ApiError(400, "bad_request", "Аудитория не подходит для типа занятия")
+
+    effective_student_count = schedule_student_count_for_room(section, section, subgroup)
+    room_capacity = int(room.get("capacity") or 0)
+    if room_capacity and effective_student_count and room_capacity < effective_student_count:
+        raise ApiError(400, "bad_request", "Вместимость аудитории меньше количества студентов")
+
+    pc_count = int(room.get("computer_count") or 0)
+    if requires_computers and (pc_count <= 0 or (effective_student_count and pc_count < effective_student_count)):
+        raise ApiError(400, "bad_request", "В аудитории недостаточно компьютеров")
+
+    exclude_clause = "AND id <> ?" if exclude_schedule_id is not None else ""
+    exclude_params = [exclude_schedule_id] if exclude_schedule_id is not None else []
+
+    room_conflict = query_one(
+        connection,
+        f"""
+        SELECT id
+        FROM schedules
+        WHERE room_id = ? AND day = ? AND start_hour = ?
+        {exclude_clause}
+        LIMIT 1
+        """,
+        tuple([room_id, day, start_hour, *exclude_params]),
+    )
+    if room_conflict:
+        raise ApiError(400, "bad_request", "Аудитория уже занята в это время")
+
+    teacher_conflict = query_one(
+        connection,
+        f"""
+        SELECT id
+        FROM schedules
+        WHERE teacher_id = ? AND day = ? AND start_hour = ?
+        {exclude_clause}
+        LIMIT 1
+        """,
+        tuple([teacher_id, day, start_hour, *exclude_params]),
+    )
+    if teacher_conflict:
+        raise ApiError(400, "bad_request", "Преподаватель уже занят в это время")
+
+    group_conflict = query_one(
+        connection,
+        f"""
+        SELECT id
+        FROM schedules
+        WHERE group_id = ? AND day = ? AND start_hour = ?
+          AND (coalesce(subgroup, '') = '' OR ? = '' OR upper(subgroup) = ?)
+        {exclude_clause}
+        LIMIT 1
+        """,
+        tuple([section["group_id"], day, start_hour, subgroup, subgroup, *exclude_params]),
+    )
+    if group_conflict:
+        raise ApiError(400, "bad_request", "Группа или подгруппа уже занята в это время")
 
 
 def list_collection(connection, collection, query, user=None):
@@ -765,6 +911,8 @@ def create_collection_item(connection, collection, payload):
             payload,
             ["section_id", "course_id", "teacher_id", "room_id", "group_id", "start_hour", "semester", "year"],
         )
+        normalized["subgroup"] = normalize_subgroup(normalized.get("subgroup"))
+        validate_schedule_payload(connection, normalized)
         item_id = insert_and_get_id(
             connection,
             """
@@ -1016,6 +1164,8 @@ def update_collection_item(connection, collection, item_id, payload):
             payload,
             ["section_id", "course_id", "teacher_id", "room_id", "group_id", "start_hour", "semester", "year"],
         )
+        normalized["subgroup"] = normalize_subgroup(normalized.get("subgroup"))
+        validate_schedule_payload(connection, normalized, exclude_schedule_id=item_id)
         db_execute(
             connection,
             """
