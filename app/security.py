@@ -1,19 +1,47 @@
 import hashlib
+import hmac
+import secrets
 
 from .config import PASSWORD_PREFIX
 
+PBKDF2_PREFIX = "pbkdf2_sha256$"
+PBKDF2_ITERATIONS = 260_000
+
 
 def hash_password(password):
-    digest = hashlib.sha256(password.encode("utf-8")).hexdigest()
-    return f"{PASSWORD_PREFIX}{digest}"
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt.encode("utf-8"),
+        PBKDF2_ITERATIONS,
+    ).hex()
+    return f"{PBKDF2_PREFIX}{PBKDF2_ITERATIONS}${salt}${digest}"
 
 
 def verify_password(stored_password, plain_password):
     if not stored_password:
         return False
+    if stored_password.startswith(PBKDF2_PREFIX):
+        try:
+            _prefix, iterations, salt, digest = stored_password.split("$", 3)
+            candidate = hashlib.pbkdf2_hmac(
+                "sha256",
+                plain_password.encode("utf-8"),
+                salt.encode("utf-8"),
+                int(iterations),
+            ).hex()
+            return hmac.compare_digest(digest, candidate)
+        except (TypeError, ValueError):
+            return False
     if stored_password.startswith(PASSWORD_PREFIX):
-        return stored_password == hash_password(plain_password)
-    return stored_password == plain_password
+        legacy_digest = hashlib.sha256(plain_password.encode("utf-8")).hexdigest()
+        return hmac.compare_digest(stored_password, f"{PASSWORD_PREFIX}{legacy_digest}")
+    return False
+
+
+def needs_password_rehash(stored_password):
+    return not str(stored_password or "").startswith(PBKDF2_PREFIX)
 
 
 def sanitize_user(row):

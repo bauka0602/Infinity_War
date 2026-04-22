@@ -56,9 +56,12 @@ HOST = os.getenv("BACKEND_HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT") or os.getenv("BACKEND_PORT", "8000"))
 PASSWORD_PREFIX = "sha256$"
 TEACHER_EMAIL_DOMAIN = "@kazatu.edu.kz"
-EXPOSE_DEV_CLAIM_CODE = env_flag("EXPOSE_DEV_CLAIM_CODE", True)
+EXPOSE_DEV_CLAIM_CODE = env_flag("EXPOSE_DEV_CLAIM_CODE", False)
 
-raw_allowed_origins = os.getenv("ALLOWED_ORIGINS", "*")
+raw_allowed_origins = os.getenv(
+    "ALLOWED_ORIGINS",
+    "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173",
+)
 ALLOWED_ORIGINS = [
     origin.strip() for origin in raw_allowed_origins.split(",") if origin.strip()
 ]

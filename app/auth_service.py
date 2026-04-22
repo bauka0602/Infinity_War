@@ -4,7 +4,13 @@ from datetime import datetime, timedelta, timezone
 from .config import DB_LOCK, EXPOSE_DEV_CLAIM_CODE, TEACHER_EMAIL_DOMAIN
 from .db import db_execute, get_connection, insert_and_get_id, query_all, query_one
 from .errors import ApiError
-from .security import hash_password, parse_bearer_token, sanitize_user, verify_password
+from .security import (
+    hash_password,
+    needs_password_rehash,
+    parse_bearer_token,
+    sanitize_user,
+    verify_password,
+)
 
 
 def ensure_teacher_email_allowed(email, role):
@@ -502,15 +508,29 @@ def login_user(payload):
                 )
 
             token = secrets.token_urlsafe(32)
+            password_hash = hash_password(password) if needs_password_rehash(user["password"]) else user["password"]
             if user["role"] == "admin":
-                db_execute(connection, "UPDATE users SET token = ? WHERE id = ?", (token, user["id"]))
+                db_execute(
+                    connection,
+                    "UPDATE users SET token = ?, password = ? WHERE id = ?",
+                    (token, password_hash, user["id"]),
+                )
             elif user["role"] == "teacher":
-                db_execute(connection, "UPDATE teachers SET token = ? WHERE id = ?", (token, user["id"]))
+                db_execute(
+                    connection,
+                    "UPDATE teachers SET token = ?, password = ? WHERE id = ?",
+                    (token, password_hash, user["id"]),
+                )
             else:
-                db_execute(connection, "UPDATE students SET token = ? WHERE id = ?", (token, user["id"]))
+                db_execute(
+                    connection,
+                    "UPDATE students SET token = ?, password = ? WHERE id = ?",
+                    (token, password_hash, user["id"]),
+                )
             connection.commit()
 
             user["token"] = token
+            user["password"] = password_hash
 
     return sanitize_user(user)
 

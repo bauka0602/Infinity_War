@@ -24,9 +24,12 @@ def clear_collection_data(headers, collection):
             if collection == "courses":
                 db_execute(connection, "DELETE FROM schedules")
                 db_execute(connection, "DELETE FROM sections")
+                db_execute(connection, "DELETE FROM course_components")
+                db_execute(connection, "DELETE FROM iup_entries")
             elif collection == "groups":
                 db_execute(connection, "DELETE FROM schedules")
                 db_execute(connection, "DELETE FROM sections")
+                db_execute(connection, "DELETE FROM iup_entries")
                 db_execute(
                     connection,
                     "UPDATE students SET group_id = NULL, group_name = '', subgroup = ''",
@@ -34,6 +37,10 @@ def clear_collection_data(headers, collection):
             elif collection in {"teachers", "rooms"}:
                 db_execute(connection, "DELETE FROM schedules")
                 if collection == "teachers":
+                    db_execute(connection, "UPDATE courses SET instructor_id = NULL, instructor_name = ''")
+                    db_execute(connection, "UPDATE course_components SET teacher_id = NULL, teacher_name = ''")
+                    db_execute(connection, "UPDATE sections SET teacher_id = NULL, teacher_name = ''")
+                    db_execute(connection, "DELETE FROM teacher_preference_requests")
                     db_execute(connection, "DELETE FROM notifications WHERE recipient_role = 'teacher'")
             elif collection == "students":
                 db_execute(connection, "DELETE FROM notifications WHERE recipient_role = 'student'")
@@ -52,6 +59,9 @@ def clear_all_data(headers):
                 "notifications",
                 "schedules",
                 "sections",
+                "teacher_preference_requests",
+                "iup_entries",
+                "course_components",
                 "courses",
                 "teachers",
                 "students",
@@ -63,5 +73,16 @@ def clear_all_data(headers):
 
     return {
         "success": True,
-        "collections": ["courses", "teachers", "students", "rooms", "groups", "schedules", "sections"],
+        "collections": [
+            "courses",
+            "course_components",
+            "iup_entries",
+            "teacher_preference_requests",
+            "teachers",
+            "students",
+            "rooms",
+            "groups",
+            "schedules",
+            "sections",
+        ],
     }

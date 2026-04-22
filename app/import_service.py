@@ -855,18 +855,8 @@ def _course_import_item(code, name, semester=None, programme=None):
     }
 
 
-def _store_iup_entries(connection, parsed):
+def _get_iup_course_lists(connection, parsed):
     metadata = parsed["metadata"]
-    metadata["groupName"] = _resolve_iup_group_name(connection, metadata.get("groupName", ""))
-    db_execute(
-        connection,
-        "DELETE FROM iup_entries WHERE file_name = ? AND group_name = ?",
-        (metadata["fileName"], metadata.get("groupName", "")),
-    )
-
-    updated_courses = set()
-    updated_components = set()
-    teacher_cache = {}
     matched_courses = []
     missing_courses = []
     seen_iup_courses = set()
@@ -896,6 +886,117 @@ def _store_iup_entries(connection, parsed):
             matched_courses.append(item)
         else:
             missing_courses.append(item)
+
+    return matched_courses, missing_courses
+
+
+def _create_iup_missing_courses(connection, parsed, missing_courses):
+    metadata = parsed["metadata"]
+    created = []
+    courses_by_key = {
+        ((course.get("code") or "").lower(), course.get("semester")): course
+        for course in parsed["courses"]
+    }
+
+    for item in missing_courses:
+        course = courses_by_key.get(((item.get("code") or "").lower(), item.get("semester"))) or item
+        course_id = insert_and_get_id(
+            connection,
+            """
+            INSERT INTO courses (
+                name, code, credits, hours, description,
+                year, semester, department, instructor_id, instructor_name, programme,
+                module_type, module_name, cycle, component, language, academic_year, entry_year,
+                requires_computers
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                course.get("name") or item.get("name") or item.get("code") or "Без названия",
+                course.get("code") or item.get("code") or "",
+                course.get("credits"),
+                None,
+                "Imported from IUP as missing course draft.",
+                course.get("studyYear"),
+                course.get("semester") or item.get("semester"),
+                _normalize_course_department(metadata.get("educationalProgrammeGroup") or "B057"),
+                None,
+                "",
+                metadata.get("programme", ""),
+                "",
+                "",
+                "",
+                course.get("component", ""),
+                metadata.get("language", "ru"),
+                metadata.get("academicYear", ""),
+                "",
+                0,
+            ),
+        )
+        created.append(_course_import_item(
+            course.get("code") or item.get("code"),
+            course.get("name") or item.get("name"),
+            course.get("semester") or item.get("semester"),
+            metadata.get("programme", ""),
+        ))
+
+        lesson_entries = [
+            entry
+            for entry in parsed["entries"]
+            if (entry.get("courseCode") or "").lower() == (course.get("code") or item.get("code") or "").lower()
+               and entry.get("lessonType") in IUP_ACTIVE_LESSON_TYPES
+        ]
+        seen_components = set()
+        for entry in lesson_entries:
+            component_key = (entry.get("lessonType"), entry.get("academicPeriod"))
+            if component_key in seen_components:
+                continue
+            seen_components.add(component_key)
+            insert_and_get_id(
+                connection,
+                """
+                INSERT INTO course_components (
+                    course_id, course_code, course_name, lesson_type, hours,
+                    weekly_classes, academic_period, semester, requires_computers,
+                    teacher_id, teacher_name
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    course_id,
+                    entry.get("courseCode", ""),
+                    entry.get("courseName", ""),
+                    entry.get("lessonType"),
+                    entry.get("hours"),
+                    1,
+                    entry.get("academicPeriod"),
+                    entry.get("semester"),
+                    1 if entry.get("lessonType") in ROP_PC_REQUIRED_LESSON_TYPES else 0,
+                    None,
+                    "",
+                ),
+            )
+
+    return created
+
+
+def _store_iup_entries(connection, parsed, create_missing_courses=False):
+    metadata = parsed["metadata"]
+    metadata["groupName"] = _resolve_iup_group_name(connection, metadata.get("groupName", ""))
+    db_execute(
+        connection,
+        "DELETE FROM iup_entries WHERE file_name = ? AND group_name = ?",
+        (metadata["fileName"], metadata.get("groupName", "")),
+    )
+
+    updated_courses = set()
+    updated_components = set()
+    teacher_cache = {}
+    matched_courses, missing_courses = _get_iup_course_lists(connection, parsed)
+    created_courses = []
+    if create_missing_courses and missing_courses:
+        created_courses = _create_iup_missing_courses(connection, parsed, missing_courses)
+        matched_courses, missing_courses = _get_iup_course_lists(connection, parsed)
 
     for entry in parsed["entries"]:
         teacher_name = entry.get("teacherName", "")
@@ -1001,9 +1102,11 @@ def _store_iup_entries(connection, parsed):
         "teachersExisting": sum(1 for _teacher_id, status in teacher_cache.values() if status == "existing"),
         "coursesUpdated": len(updated_courses),
         "componentsUpdated": len(updated_components),
+        "coursesCreated": len(created_courses),
         "coursesExisting": len(matched_courses),
         "coursesMissing": len(missing_courses),
         "courseLists": {
+            "inserted": created_courses,
             "existing": matched_courses,
             "missing": missing_courses,
         },
@@ -1017,6 +1120,9 @@ def parse_iup_preview(headers, payload):
 
     file_name, file_bytes = _decode_iup_payload(payload)
     parsed = _parse_iup_file(file_name, file_bytes)
+    with DB_LOCK:
+        with get_connection() as connection:
+            matched_courses, missing_courses = _get_iup_course_lists(connection, parsed)
     return {
         "metadata": parsed["metadata"],
         "totals": parsed["totals"],
@@ -1031,6 +1137,10 @@ def parse_iup_preview(headers, payload):
             for course in parsed["courses"]
         ],
         "entries": parsed["entries"][:50],
+        "courseLists": {
+            "existing": matched_courses,
+            "missing": missing_courses,
+        },
     }
 
 
@@ -1041,9 +1151,10 @@ def import_iup_data(headers, payload):
 
     file_name, file_bytes = _decode_iup_payload(payload)
     parsed = _parse_iup_file(file_name, file_bytes)
+    create_missing_courses = bool(payload.get("createMissingCourses"))
     with DB_LOCK:
         with get_connection() as connection:
-            stats = _store_iup_entries(connection, parsed)
+            stats = _store_iup_entries(connection, parsed, create_missing_courses)
             connection.commit()
     return {
         "success": True,

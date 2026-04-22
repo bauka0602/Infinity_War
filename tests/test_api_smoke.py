@@ -94,6 +94,82 @@ def test_admin_can_create_course_with_credits_and_hours(client, admin_auth_heade
     assert course["component"] == "КВ"
 
 
+def test_admin_clear_all_removes_course_components(
+    client,
+    admin_auth_headers,
+    backend_modules,
+):
+    _app_module, db_module = backend_modules
+    with db_module.get_connection() as connection:
+        course_id = db_module.insert_and_get_id(
+            connection,
+            """
+            INSERT INTO courses (
+                name, code, credits, hours, description, year, semester,
+                department, instructor_id, instructor_name, programme,
+                module_type, module_name, cycle, component, language,
+                academic_year, entry_year, requires_computers
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "Algorithms",
+                "ALG101",
+                5,
+                150,
+                "",
+                1,
+                1,
+                "B057 - Информационные технологии",
+                None,
+                "",
+                "Бизнес-информатика",
+                "",
+                "",
+                "",
+                "ОК",
+                "ru",
+                "",
+                "",
+                0,
+            ),
+        )
+        db_module.insert_and_get_id(
+            connection,
+            """
+            INSERT INTO course_components (
+                course_id, course_code, course_name, programme, study_year,
+                academic_period, semester, lesson_type, hours, weekly_classes,
+                requires_computers, teacher_id, teacher_name
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                course_id,
+                "ALG101",
+                "Algorithms",
+                "Бизнес-информатика",
+                1,
+                1,
+                1,
+                "lecture",
+                30,
+                1,
+                0,
+                None,
+                "",
+            ),
+        )
+        connection.commit()
+
+    response = client.post("/api/admin/clear-all", headers=admin_auth_headers)
+    assert response.status_code == 200
+
+    with db_module.get_connection() as connection:
+        remaining = db_module.query_one(connection, "SELECT COUNT(*) AS count FROM course_components")
+        assert remaining["count"] == 0
+
+
 def test_teacher_preference_admin_delete_endpoints(
     client,
     admin_auth_headers,

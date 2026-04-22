@@ -111,7 +111,15 @@ def resolve_section_teacher(connection, course_id, lesson_type, payload):
 
 
 def _same_programme(left, right):
-    return str(left or "").strip().lower() == str(right or "").strip().lower()
+    def normalize(value):
+        normalized = str(value or "").strip().lower()
+        normalized = re.sub(r"\s*\([^)]*\)\s*$", "", normalized)
+        normalized = re.sub(r"\s+", " ", normalized)
+        return normalized
+
+    left_normalized = normalize(left)
+    right_normalized = normalize(right)
+    return bool(left_normalized and right_normalized and left_normalized == right_normalized)
 
 
 def generate_sections_from_components(connection, payload):
@@ -988,17 +996,25 @@ def update_collection_item(connection, collection, item_id, payload):
 
 def delete_collection_item(connection, collection, item_id):
     if collection == "courses":
+        course = query_one(connection, "SELECT code FROM courses WHERE id = ?", (item_id,))
         db_execute(connection, "DELETE FROM schedules WHERE course_id = ?", (item_id,))
         db_execute(connection, "DELETE FROM sections WHERE course_id = ?", (item_id,))
+        db_execute(connection, "DELETE FROM course_components WHERE course_id = ?", (item_id,))
+        if course:
+            db_execute(connection, "DELETE FROM iup_entries WHERE lower(course_code) = lower(?)", (course["code"],))
     elif collection == "groups":
+        group = query_one(connection, "SELECT name FROM groups WHERE id = ?", (item_id,))
         db_execute(connection, "DELETE FROM schedules WHERE group_id = ?", (item_id,))
         db_execute(connection, "DELETE FROM sections WHERE group_id = ?", (item_id,))
         db_execute(connection, "UPDATE students SET group_id = NULL, group_name = '', subgroup = '' WHERE group_id = ?", (item_id,))
+        if group:
+            db_execute(connection, "DELETE FROM iup_entries WHERE group_name = ?", (group["name"],))
     elif collection == "teachers":
         db_execute(connection, "DELETE FROM schedules WHERE teacher_id = ?", (item_id,))
         db_execute(connection, "UPDATE courses SET instructor_id = NULL, instructor_name = '' WHERE instructor_id = ?", (item_id,))
         db_execute(connection, "UPDATE course_components SET teacher_id = NULL, teacher_name = '' WHERE teacher_id = ?", (item_id,))
         db_execute(connection, "UPDATE sections SET teacher_id = NULL, teacher_name = '' WHERE teacher_id = ?", (item_id,))
+        db_execute(connection, "DELETE FROM teacher_preference_requests WHERE teacher_id = ?", (item_id,))
         db_execute(connection, "DELETE FROM notifications WHERE recipient_role = 'teacher' AND recipient_id = ?", (item_id,))
     elif collection == "rooms":
         db_execute(connection, "DELETE FROM schedules WHERE room_id = ?", (item_id,))

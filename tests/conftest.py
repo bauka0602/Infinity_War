@@ -13,6 +13,7 @@ MODULE_PREFIXES = ("backend.app", "backend.server")
 def _reload_backend(test_db_path):
     os.environ["DATABASE_URL"] = ""
     os.environ["SQLITE_DB_FILE"] = str(test_db_path)
+    os.environ["EXPOSE_DEV_CLAIM_CODE"] = "true"
 
     for module_name in list(sys.modules):
         if module_name.startswith(MODULE_PREFIXES):
