@@ -400,6 +400,7 @@ def validate_schedule_payload(connection, payload, exclude_schedule_id=None):
             COALESCE(s.teacher_id, c.instructor_id) AS teacher_id,
             COALESCE(NULLIF(s.teacher_name, ''), c.instructor_name, '') AS teacher_name,
             c.year AS course_year,
+            c.programme AS course_programme,
             g.student_count, g.has_subgroups, g.study_course
         FROM sections s
         JOIN courses c ON c.id = s.course_id
@@ -414,7 +415,7 @@ def validate_schedule_payload(connection, payload, exclude_schedule_id=None):
     room = query_one(
         connection,
         """
-        SELECT id, number, capacity, type, available, computer_count
+        SELECT id, number, capacity, type, available, computer_count, programme
         FROM rooms
         WHERE id = ?
         """,
@@ -431,7 +432,6 @@ def validate_schedule_payload(connection, payload, exclude_schedule_id=None):
         raise ApiError(400, "bad_request", "Преподаватель не совпадает с выбранной секцией")
     if section.get("study_course") and int(section.get("study_course")) != int(section.get("course_year") or 0):
         raise ApiError(400, "bad_request", "Курс группы не совпадает с курсом дисциплины")
-
     lesson_type = normalize_lesson_type(section.get("lesson_type"))
     requires_computers = bool(section.get("requires_computers")) or lesson_type == "lab"
     if not schedule_room_type_matches(room.get("type"), lesson_type, requires_computers):
@@ -582,7 +582,16 @@ def list_collection(connection, collection, query, user=None):
         return query_all(
             connection,
             """
-            SELECT id, number, capacity, building, type, equipment, department, available, computer_count
+            SELECT
+                id,
+                number,
+                capacity,
+                building,
+                type,
+                equipment,
+                programme,
+                available,
+                computer_count
             FROM rooms
             ORDER BY id
             """,
@@ -675,7 +684,8 @@ def list_collection(connection, collection, query, user=None):
         f"""
         SELECT
             s.id, s.section_id, s.course_id, s.course_name, s.teacher_id, s.teacher_name, s.room_id, s.room_number,
-            s.group_id, s.group_name, s.subgroup, s.day, s.start_hour, s.semester, s.year, s.algorithm
+            s.group_id, s.group_name, s.subgroup, s.day, s.start_hour, s.semester, s.year, s.algorithm,
+            s.room_programme, s.room_programme_mismatch
         {from_sql}
         {where_sql}
         ORDER BY s.day, s.start_hour, s.id
@@ -832,7 +842,7 @@ def create_collection_item(connection, collection, payload):
         item_id = insert_and_get_id(
             connection,
             """
-            INSERT INTO rooms (number, capacity, building, type, equipment, department, available, computer_count)
+            INSERT INTO rooms (number, capacity, building, type, equipment, programme, available, computer_count)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
@@ -841,7 +851,7 @@ def create_collection_item(connection, collection, payload):
                 normalized.get("building", ""),
                 normalized.get("type", ""),
                 normalized.get("equipment", ""),
-                normalized.get("department", ""),
+                normalized.get("programme", normalized.get("department", "")),
                 1 if normalized.get("available", normalized.get("is_available", 1)) else 0,
                 normalized.get("computer_count", 0),
             ),
@@ -850,7 +860,16 @@ def create_collection_item(connection, collection, payload):
         return query_one(
             connection,
             """
-            SELECT id, number, capacity, building, type, equipment, department, available, computer_count
+            SELECT
+                id,
+                number,
+                capacity,
+                building,
+                type,
+                equipment,
+                programme,
+                available,
+                computer_count
             FROM rooms
             WHERE id = ?
             """,
@@ -945,14 +964,20 @@ def create_collection_item(connection, collection, payload):
         )
         normalized["subgroup"] = normalize_subgroup(normalized.get("subgroup"))
         validate_schedule_payload(connection, normalized)
+        room_programme, room_programme_mismatch = resolve_schedule_room_programme_meta(
+            connection,
+            normalized.get("section_id"),
+            normalized.get("room_id"),
+        )
         item_id = insert_and_get_id(
             connection,
             """
             INSERT INTO schedules (
                 section_id, course_id, course_name, teacher_id, teacher_name, room_id, room_number,
-                group_id, group_name, subgroup, day, start_hour, semester, year, algorithm
+                group_id, group_name, subgroup, day, start_hour, semester, year, algorithm,
+                room_programme, room_programme_mismatch
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 normalized.get("section_id"),
@@ -970,6 +995,8 @@ def create_collection_item(connection, collection, payload):
                 normalized.get("semester"),
                 normalized.get("year"),
                 normalized.get("algorithm"),
+                room_programme,
+                room_programme_mismatch,
             ),
         )
         connection.commit()
@@ -978,7 +1005,8 @@ def create_collection_item(connection, collection, payload):
             """
             SELECT
                 id, section_id, course_id, course_name, teacher_id, teacher_name, room_id, room_number,
-                group_id, group_name, subgroup, day, start_hour, semester, year, algorithm
+                group_id, group_name, subgroup, day, start_hour, semester, year, algorithm,
+                room_programme, room_programme_mismatch
             FROM schedules
             WHERE id = ?
             """,
@@ -986,6 +1014,33 @@ def create_collection_item(connection, collection, payload):
         )
 
     raise ApiError(400, "unsupported_collection", "Unsupported collection")
+
+
+def resolve_schedule_room_programme_meta(connection, section_id, room_id):
+    row = query_one(
+        connection,
+        """
+        SELECT
+            c.programme AS course_programme,
+            r.programme AS room_programme
+        FROM sections s
+        JOIN courses c ON c.id = s.course_id
+        JOIN rooms r ON r.id = ?
+        WHERE s.id = ?
+        """,
+        (room_id, section_id),
+    )
+    if not row:
+        return "", 0
+
+    course_programme = row.get("course_programme") or ""
+    room_programme = row.get("room_programme") or ""
+    mismatch = bool(
+        course_programme
+        and room_programme
+        and not _same_programme(course_programme, room_programme)
+    )
+    return room_programme, 1 if mismatch else 0
 
 
 def update_collection_item(connection, collection, item_id, payload):
@@ -1080,7 +1135,7 @@ def update_collection_item(connection, collection, item_id, payload):
             connection,
             """
             UPDATE rooms
-            SET number = ?, capacity = ?, building = ?, type = ?, equipment = ?, department = ?, available = ?, computer_count = ?
+            SET number = ?, capacity = ?, building = ?, type = ?, equipment = ?, programme = ?, available = ?, computer_count = ?
             WHERE id = ?
             """,
             (
@@ -1089,7 +1144,7 @@ def update_collection_item(connection, collection, item_id, payload):
                 normalized.get("building", ""),
                 normalized.get("type", ""),
                 normalized.get("equipment", ""),
-                normalized.get("department", ""),
+                normalized.get("programme", normalized.get("department", "")),
                 1 if normalized.get("available", normalized.get("is_available", 1)) else 0,
                 normalized.get("computer_count", 0),
                 item_id,
@@ -1099,7 +1154,16 @@ def update_collection_item(connection, collection, item_id, payload):
         return query_one(
             connection,
             """
-            SELECT id, number, capacity, building, type, equipment, department, available, computer_count
+            SELECT
+                id,
+                number,
+                capacity,
+                building,
+                type,
+                equipment,
+                programme,
+                available,
+                computer_count
             FROM rooms
             WHERE id = ?
             """,
@@ -1198,6 +1262,11 @@ def update_collection_item(connection, collection, item_id, payload):
         )
         normalized["subgroup"] = normalize_subgroup(normalized.get("subgroup"))
         validate_schedule_payload(connection, normalized, exclude_schedule_id=item_id)
+        room_programme, room_programme_mismatch = resolve_schedule_room_programme_meta(
+            connection,
+            normalized.get("section_id"),
+            normalized.get("room_id"),
+        )
         db_execute(
             connection,
             """
@@ -1205,7 +1274,8 @@ def update_collection_item(connection, collection, item_id, payload):
             SET
                 section_id = ?, course_id = ?, course_name = ?, teacher_id = ?, teacher_name = ?,
                 room_id = ?, room_number = ?, group_id = ?, group_name = ?, subgroup = ?,
-                day = ?, start_hour = ?, semester = ?, year = ?, algorithm = ?
+                day = ?, start_hour = ?, semester = ?, year = ?, algorithm = ?,
+                room_programme = ?, room_programme_mismatch = ?
             WHERE id = ?
             """,
             (
@@ -1224,6 +1294,8 @@ def update_collection_item(connection, collection, item_id, payload):
                 normalized.get("semester"),
                 normalized.get("year"),
                 normalized.get("algorithm"),
+                room_programme,
+                room_programme_mismatch,
                 item_id,
             ),
         )
@@ -1233,7 +1305,8 @@ def update_collection_item(connection, collection, item_id, payload):
             """
             SELECT
                 id, section_id, course_id, course_name, teacher_id, teacher_name, room_id, room_number,
-                group_id, group_name, subgroup, day, start_hour, semester, year, algorithm
+                group_id, group_name, subgroup, day, start_hour, semester, year, algorithm,
+                room_programme, room_programme_mismatch
             FROM schedules
             WHERE id = ?
             """,

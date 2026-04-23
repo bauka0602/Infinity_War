@@ -125,6 +125,7 @@ def _normalize_rooms(payload):
                 "number": room.get("number") or str(room_id),
                 "capacity": int(room.get("capacity") or 0),
                 "type": _normalize_text(room.get("type")),
+                "programme": _normalize_text(room.get("programme") or room.get("department")),
                 "building": str(room.get("building") or ""),
                 "floor": int(floor_value) if floor_value not in (None, "") else None,
                 "pc_count": int(pc_count_value) if pc_count_value not in (None, "") else 0,
@@ -223,6 +224,7 @@ def _normalize_plan_items(payload):
                 "student_count": int(item.get("studentCount") or 0),
                 "room_type_required": room_type_required,
                 "pc_required": pc_required,
+                "programme": _normalize_text(item.get("programme")),
                 "preferred_days": {str(day) for day in (item.get("preferredDays") or [])},
                 "preferred_hours": {int(hour) for hour in (item.get("preferredHours") or [])},
                 "preferred_slots": preferred_slots,
@@ -265,27 +267,47 @@ def _room_score(room, item, prefer_lower_floors=True):
     return score
 
 
+def _room_matches_item_constraints(room, item, required_type):
+    if room["capacity"] and item["student_count"] and room["capacity"] < item["student_count"]:
+        return False
+
+    if required_type and required_type not in {"any", "all"}:
+        if not room["type"] or room["type"] != required_type:
+            return False
+
+    if item["pc_required"]:
+        if room["pc_count"] <= 0:
+            return False
+        if item["student_count"] and room["pc_count"] < item["student_count"]:
+            return False
+    return True
+
+
 def _find_compatible_room_ids(item, rooms):
     required_type = item["room_type_required"]
+    same_programme = []
+    fallback_other_programme = []
     compatible = []
+    required_programme = item.get("programme") or ""
 
     for room in rooms:
-        if room["capacity"] and item["student_count"] and room["capacity"] < item["student_count"]:
+        if not _room_matches_item_constraints(room, item, required_type):
             continue
 
-        if required_type and required_type not in {"any", "all"}:
-            if not room["type"] or room["type"] != required_type:
-                continue
+        room_programme = room.get("programme") or ""
+        if required_programme:
+            if room_programme and room_programme == required_programme:
+                same_programme.append(room["id"])
+            else:
+                fallback_other_programme.append(room["id"])
+        else:
+            compatible.append(room["id"])
 
-        if item["pc_required"]:
-            if room["pc_count"] <= 0:
-                continue
-            if item["student_count"] and room["pc_count"] < item["student_count"]:
-                continue
-
-        compatible.append(room["id"])
-
-    return compatible
+    if required_programme:
+        if same_programme:
+            return same_programme + fallback_other_programme, False
+        return fallback_other_programme, bool(fallback_other_programme)
+    return compatible, False
 
 
 def _group_allowed_slots(item, slots, teacher):
@@ -348,7 +370,7 @@ def optimize_schedule(payload):
     incompatibilities = []
 
     for item in items:
-        compatible_rooms = _find_compatible_room_ids(item, rooms)
+        compatible_rooms, _used_programme_fallback = _find_compatible_room_ids(item, rooms)
         if not compatible_rooms:
             incompatibilities.append(
                 {
@@ -786,6 +808,11 @@ def optimize_schedule(payload):
 
         coefficient = _slot_score(slot, item) * 10
         coefficient += _room_score(room, item, prefer_lower_floors=prefer_lower_floors)
+        if item.get("programme"):
+            if (room.get("programme") or "") == item["programme"]:
+                coefficient += 40
+            else:
+                coefficient -= 20
         objective_terms.append(coefficient * var)
 
     if subgroup_same_day_penalty_vars:
@@ -818,6 +845,7 @@ def optimize_schedule(payload):
     room_usage = defaultdict(list)
     teacher_usage = defaultdict(list)
     audience_usage = defaultdict(list)
+    programme_fallback_scheduled_items = set()
 
     for (item_id, slot_id, room_id), var in decision_vars.items():
         if solver.Value(var) != 1:
@@ -838,6 +866,12 @@ def optimize_schedule(payload):
             "roomId": room["id"],
             "roomNumber": room["number"],
             "roomType": room["type"],
+            "roomProgramme": room.get("programme") or "",
+            "requestedProgramme": item.get("programme") or "",
+            "roomProgrammeFallbackUsed": bool(
+                item.get("programme")
+                and (room.get("programme") or "") != item.get("programme")
+            ),
             "groups": item["group_ids"],
             "subgroups": item["subgroup_ids"],
             "streamId": item["stream_id"],
@@ -845,6 +879,8 @@ def optimize_schedule(payload):
             "hour": slot["hour"],
         }
         schedule.append(entry)
+        if entry["roomProgrammeFallbackUsed"]:
+            programme_fallback_scheduled_items.add(item_id)
 
         room_usage[room["id"]].append(f"{slot['day']} {slot['hour']}:00")
         teacher_usage[teacher["id"]].append(f"{slot['day']} {slot['hour']}:00")
@@ -867,6 +903,7 @@ def optimize_schedule(payload):
         "maxClassesPerDayForAudience": max_classes_per_day_for_audience,
         "preferSeparateSubgroupsByDay": prefer_separate_subgroups_by_day,
         "subgroupSeparationPairs": len(subgroup_day_separation_pairs),
+        "programmeFallbackItems": sorted(programme_fallback_scheduled_items),
     }
 
     return {

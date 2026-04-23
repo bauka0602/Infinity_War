@@ -194,7 +194,7 @@ def seed_from_store(connection, store):
         db_execute(
             connection,
             """
-            INSERT INTO rooms (number, capacity, building, type, equipment, department, available, computer_count)
+            INSERT INTO rooms (number, capacity, building, type, equipment, programme, available, computer_count)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
@@ -203,7 +203,7 @@ def seed_from_store(connection, store):
                 room.get("building", ""),
                 room.get("type", ""),
                 room.get("equipment", ""),
-                room.get("department", ""),
+                room.get("programme", room.get("department", "")),
                 room.get("is_available", room.get("available", 1)),
                 room.get("computer_count", 0),
             ),
@@ -408,7 +408,7 @@ def sqlite_schema():
             building TEXT,
             type TEXT,
             equipment TEXT,
-            department TEXT,
+            programme TEXT,
             available INTEGER DEFAULT 1,
             computer_count INTEGER DEFAULT 0
         )
@@ -443,7 +443,9 @@ def sqlite_schema():
             start_hour INTEGER NOT NULL,
             semester INTEGER,
             year INTEGER,
-            algorithm TEXT
+            algorithm TEXT,
+            room_programme TEXT,
+            room_programme_mismatch INTEGER DEFAULT 0
         )
         """,
         """
@@ -615,7 +617,7 @@ def postgres_schema():
             building TEXT,
             type TEXT,
             equipment TEXT,
-            department TEXT,
+            programme TEXT,
             available INTEGER DEFAULT 1,
             computer_count INTEGER DEFAULT 0
         )
@@ -650,7 +652,9 @@ def postgres_schema():
             start_hour INTEGER NOT NULL,
             semester INTEGER,
             year INTEGER,
-            algorithm TEXT
+            algorithm TEXT,
+            room_programme TEXT,
+            room_programme_mismatch INTEGER DEFAULT 0
         )
         """,
         """
@@ -882,6 +886,7 @@ def ensure_database():
         rename_column(connection, "teachers", "specialization", "department")
         rename_column(connection, "teachers", "max_hours_per_week", "weekly_hours_limit")
         rename_column(connection, "rooms", "is_available", "available")
+        rename_column(connection, "rooms", "department", "programme")
         rename_column(connection, "sections", "class_count", "classes_count")
         ensure_column(connection, "users", "avatar_data", "TEXT")
         ensure_column(connection, "users", "department", "TEXT")
@@ -919,7 +924,7 @@ def ensure_database():
         ensure_column(connection, "students", "group_name", "TEXT")
         ensure_column(connection, "students", "subgroup", "TEXT")
         ensure_column(connection, "students", "language", "TEXT DEFAULT 'ru'")
-        ensure_column(connection, "rooms", "department", "TEXT")
+        ensure_column(connection, "rooms", "programme", "TEXT")
         ensure_column(connection, "rooms", "available", "INTEGER DEFAULT 1")
         ensure_column(connection, "rooms", "computer_count", "INTEGER DEFAULT 0")
         ensure_column(connection, "groups", "has_subgroups", "INTEGER DEFAULT 0")
@@ -1036,6 +1041,8 @@ def ensure_database():
         ensure_column(connection, "schedules", "group_id", "INTEGER")
         ensure_column(connection, "schedules", "group_name", "TEXT")
         ensure_column(connection, "schedules", "subgroup", "TEXT")
+        ensure_column(connection, "schedules", "room_programme", "TEXT")
+        ensure_column(connection, "schedules", "room_programme_mismatch", "INTEGER DEFAULT 0")
         db_execute(
             connection,
             """

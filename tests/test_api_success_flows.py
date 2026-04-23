@@ -535,6 +535,8 @@ def test_schedule_generation_success_flow_with_export(client, admin_auth_headers
         "semester",
         "year",
         "algorithm",
+        "room_programme",
+        "room_programme_mismatch",
     )
     assert len(rows) == 3
     assert all(row[0] == "Algorithms" for row in rows[1:])

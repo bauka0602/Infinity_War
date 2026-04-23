@@ -69,7 +69,8 @@ def _run_schedule_generation_job(job_id, semester, year, algorithm):
                     """
                     SELECT
                         id, section_id, course_id, course_name, teacher_id, teacher_name, room_id, room_number,
-                        group_id, group_name, subgroup, day, start_hour, semester, year, algorithm
+                        group_id, group_name, subgroup, day, start_hour, semester, year, algorithm,
+                        room_programme, room_programme_mismatch
                     FROM schedules
                     WHERE semester = ? AND year = ?
                     ORDER BY id
@@ -82,7 +83,8 @@ def _run_schedule_generation_job(job_id, semester, year, algorithm):
                     """
                     SELECT
                         id, section_id, course_id, course_name, teacher_id, teacher_name, room_id, room_number,
-                        group_id, group_name, subgroup, day, start_hour, semester, year, algorithm
+                        group_id, group_name, subgroup, day, start_hour, semester, year, algorithm,
+                        room_programme, room_programme_mismatch
                     FROM schedules
                     WHERE semester = ? AND year = ?
                     ORDER BY id

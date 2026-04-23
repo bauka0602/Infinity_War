@@ -1405,7 +1405,9 @@ def generate_schedule_export(headers):
                     start_hour,
                     semester,
                     year,
-                    algorithm
+                    algorithm,
+                    room_programme,
+                    room_programme_mismatch
                 FROM schedules
                 ORDER BY day, start_hour, course_name, group_name, id
                 """,
@@ -1429,6 +1431,8 @@ def generate_schedule_export(headers):
             "semester",
             "year",
             "algorithm",
+            "room_programme",
+            "room_programme_mismatch",
         ]
     )
 
@@ -1445,6 +1449,8 @@ def generate_schedule_export(headers):
                 item.get("semester", ""),
                 item.get("year", ""),
                 item.get("algorithm", ""),
+                item.get("room_programme", ""),
+                item.get("room_programme_mismatch", ""),
             ]
         )
 

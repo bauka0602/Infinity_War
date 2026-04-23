@@ -130,6 +130,7 @@ def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
             "courseName": section["course_name"],
             "teacherId": section["instructor_id"],
             "teacherName": section["instructor_name"],
+            "programme": section.get("programme") or "",
             "groupIds": [base_group_id],
             "lessonsPerWeek": int(section.get("classes_count") or 0),
             "studentCount": int(section.get("student_count") or 0),
@@ -238,6 +239,7 @@ def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
                 "number": room["number"],
                 "capacity": int(room.get("capacity") or 0),
                 "type": room.get("type") or "",
+                "programme": room.get("programme") or "",
                 "building": room.get("building") or "",
                 "floor": None,
                 "pcCount": int(room.get("computer_count") or 0),
@@ -306,7 +308,7 @@ def build_schedule(connection, semester, year, algorithm):
     rooms = query_all(
         connection,
         """
-        SELECT id, number, capacity, available, type, building, department, computer_count
+        SELECT id, number, capacity, available, type, building, programme, computer_count
         FROM rooms
         ORDER BY capacity, id
         """,
@@ -463,6 +465,8 @@ def build_schedule(connection, semester, year, algorithm):
                     semester,
                     year,
                     algorithm or "optimizer",
+                    item.get("roomProgramme") or "",
+                    1 if item.get("roomProgrammeFallbackUsed") else 0,
                 )
             )
 
@@ -479,9 +483,10 @@ def build_schedule(connection, semester, year, algorithm):
         """
         INSERT INTO schedules (
             section_id, course_id, course_name, teacher_id, teacher_name, room_id, room_number,
-            group_id, group_name, subgroup, day, start_hour, semester, year, algorithm
+            group_id, group_name, subgroup, day, start_hour, semester, year, algorithm,
+            room_programme, room_programme_mismatch
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows,
     )
@@ -533,7 +538,8 @@ def build_schedule(connection, semester, year, algorithm):
         """
         SELECT
             id, section_id, course_id, course_name, teacher_id, teacher_name, room_id, room_number,
-            group_id, group_name, subgroup, day, start_hour, semester, year, algorithm
+            group_id, group_name, subgroup, day, start_hour, semester, year, algorithm,
+            room_programme, room_programme_mismatch
         FROM schedules
         WHERE semester = ? AND year = ?
         ORDER BY day, start_hour, id
