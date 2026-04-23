@@ -308,7 +308,6 @@ def build_schedule(connection, semester, year, algorithm):
         """
         SELECT id, number, capacity, available, type, building, department, computer_count
         FROM rooms
-        WHERE available = 1
         ORDER BY capacity, id
         """,
     )
@@ -505,6 +504,28 @@ def build_schedule(connection, semester, year, algorithm):
             """,
             tuple(generated_subgroup_group_ids),
         )
+
+    # Recompute room availability from generated schedule:
+    # room with at least one generated lesson for this semester/year => unavailable (0),
+    # room without lessons => available (1).
+    db_execute(
+        connection,
+        """
+        UPDATE rooms
+        SET available = CASE
+            WHEN EXISTS (
+                SELECT 1
+                FROM schedules s
+                WHERE s.room_id = rooms.id
+                  AND s.semester = ?
+                  AND s.year = ?
+            )
+            THEN 0
+            ELSE 1
+        END
+        """,
+        (semester, year),
+    )
     connection.commit()
 
     return query_all(

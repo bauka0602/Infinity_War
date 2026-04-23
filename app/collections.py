@@ -420,8 +420,8 @@ def validate_schedule_payload(connection, payload, exclude_schedule_id=None):
         """,
         (room_id,),
     )
-    if room is None or not int(room.get("available") if room.get("available") is not None else 1):
-        raise ApiError(400, "bad_request", "Для расписания не найдена доступная аудитория")
+    if room is None:
+        raise ApiError(400, "bad_request", "Для расписания не найдена аудитория")
 
     if int(payload.get("course_id") or section["course_id"]) != int(section["course_id"]):
         raise ApiError(400, "bad_request", "Дисциплина не совпадает с выбранной секцией")
