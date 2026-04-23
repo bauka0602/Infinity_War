@@ -592,9 +592,41 @@ def list_collection(connection, collection, query, user=None):
         return query_all(
             connection,
             """
-            SELECT id, name, student_count, has_subgroups, language, programme, specialty_code, entry_year, study_course
-            FROM groups
-            ORDER BY id
+            SELECT
+                g.id,
+                g.name,
+                g.student_count,
+                g.has_subgroups,
+                g.language,
+                g.programme,
+                g.specialty_code,
+                g.entry_year,
+                g.study_course,
+                CASE
+                    WHEN EXISTS (
+                        SELECT 1
+                        FROM schedules s
+                        WHERE s.group_id = g.id
+                          AND trim(coalesce(s.subgroup, '')) <> ''
+                    )
+                    THEN 1
+                    ELSE 0
+                END AS auto_has_subgroups,
+                COALESCE(
+                    (
+                        SELECT group_concat(subgroup_value, ',')
+                        FROM (
+                            SELECT DISTINCT upper(trim(s.subgroup)) AS subgroup_value
+                            FROM schedules s
+                            WHERE s.group_id = g.id
+                              AND trim(coalesce(s.subgroup, '')) <> ''
+                            ORDER BY subgroup_value
+                        )
+                    ),
+                    ''
+                ) AS generated_subgroups
+            FROM groups g
+            ORDER BY g.id
             """,
         )
 
