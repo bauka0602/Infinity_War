@@ -486,6 +486,25 @@ def build_schedule(connection, semester, year, algorithm):
         """,
         rows,
     )
+
+    generated_subgroup_group_ids = sorted(
+        {
+            int(row[7])
+            for row in rows
+            if str(row[9] or "").strip()
+        }
+    )
+    if generated_subgroup_group_ids:
+        placeholders = ", ".join("?" for _ in generated_subgroup_group_ids)
+        db_execute(
+            connection,
+            f"""
+            UPDATE groups
+            SET has_subgroups = 1
+            WHERE id IN ({placeholders})
+            """,
+            tuple(generated_subgroup_group_ids),
+        )
     connection.commit()
 
     return query_all(
