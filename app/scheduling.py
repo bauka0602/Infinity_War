@@ -15,6 +15,7 @@ DAY_NAME_TO_INDEX = {
     "friday": 4,
 }
 PC_REQUIRED_LESSON_TYPES = {"lab"}
+MIN_COMPUTER_COUNT = 10
 SUBGROUP_MODES = {"none", "auto", "forced"}
 SEASON_ACADEMIC_PERIODS = {
     1: (1, 3, 5, 7),
@@ -52,11 +53,10 @@ def _normalize_room_type(room):
 
 
 def _room_matches_lesson_type(room, lesson_type, pc_required=False):
+    normalized_room_type = _normalize_room_type(room)
     if lesson_type == "lecture":
-        return True
-    if lesson_type == "practical" and pc_required:
-        return _normalize_room_type(room) in {"lab", "practical"}
-    return _normalize_room_type(room) == ("lab" if lesson_type == "lab" else "practical")
+        return normalized_room_type == "lecture"
+    return normalized_room_type == "practical"
 
 
 def _room_effective_capacity(room, lesson_type, pc_required=False):
@@ -66,9 +66,9 @@ def _room_effective_capacity(room, lesson_type, pc_required=False):
     capacity = _int_at_least(room.get("capacity"), 0, 0)
     if pc_required or lesson_type in PC_REQUIRED_LESSON_TYPES:
         pc_count = _int_at_least(room.get("computer_count") or room.get("pcCount"), 0, 0)
-        if pc_count <= 0:
+        if pc_count < MIN_COMPUTER_COUNT:
             return 0
-        return min(capacity, pc_count) if capacity > 0 else pc_count
+        return capacity
     return capacity
 
 
@@ -109,10 +109,6 @@ def _subgroup_size(student_count, subgroup_count, index):
 def _room_type_required(lesson_type, pc_required=False):
     if lesson_type == "lecture":
         return "lecture"
-    if lesson_type == "lab":
-        return "lab"
-    if lesson_type == "practical" and pc_required:
-        return "any"
     return "practical"
 
 

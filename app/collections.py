@@ -33,6 +33,7 @@ SPECIALTY_PROGRAMME_ALIASES = {
     "ки сопр": "Компьютерная инженерия (СОПР)",
     "сопр": "Компьютерная инженерия (СОПР)",
 }
+MIN_COMPUTER_COUNT = 10
 
 
 def normalize_number_fields(payload, fields):
@@ -362,10 +363,6 @@ def schedule_room_type_matches(room_type, lesson_type, requires_computers=False)
     normalized_lesson_type = normalize_lesson_type(lesson_type)
     if normalized_lesson_type == "lecture":
         return normalized_room_type == "lecture"
-    if normalized_lesson_type == "lab":
-        return normalized_room_type == "lab"
-    if normalized_lesson_type == "practical" and requires_computers:
-        return True
     return normalized_room_type == "practical"
 
 
@@ -443,8 +440,12 @@ def validate_schedule_payload(connection, payload, exclude_schedule_id=None):
         raise ApiError(400, "bad_request", "Вместимость аудитории меньше количества студентов")
 
     pc_count = int(room.get("computer_count") or 0)
-    if requires_computers and (pc_count <= 0 or (effective_student_count and pc_count < effective_student_count)):
-        raise ApiError(400, "bad_request", "В аудитории недостаточно компьютеров")
+    if requires_computers and pc_count < MIN_COMPUTER_COUNT:
+        raise ApiError(
+            400,
+            "bad_request",
+            f"Для этого занятия в аудитории должно быть минимум {MIN_COMPUTER_COUNT} компьютеров",
+        )
 
     exclude_clause = "AND id <> ?" if exclude_schedule_id is not None else ""
     exclude_params = [exclude_schedule_id] if exclude_schedule_id is not None else []

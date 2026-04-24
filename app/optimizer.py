@@ -13,6 +13,7 @@ except ImportError:  # pragma: no cover - depends on environment
 WEEKDAYS_DEFAULT = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
 HOURS_DEFAULT = list(range(8, 18))
 LESSON_TYPE_ORDER = {"lecture": 1, "practice": 2, "practical": 2, "seminar": 2, "lab": 3}
+MIN_COMPUTER_COUNT = 10
 
 
 def _unique_preserve_order(values):
@@ -190,7 +191,7 @@ def _normalize_plan_items(payload):
         pc_required = _normalize_bool(item.get("pcRequired"))
 
         if lesson_type == "lab" and not room_type_required:
-            room_type_required = "lab"
+            room_type_required = "practical"
 
         if subgroup_ids:
             audience_keys = [f"subgroup:{subgroup_id}" for subgroup_id in subgroup_ids]
@@ -276,9 +277,7 @@ def _room_matches_item_constraints(room, item, required_type):
             return False
 
     if item["pc_required"]:
-        if room["pc_count"] <= 0:
-            return False
-        if item["student_count"] and room["pc_count"] < item["student_count"]:
+        if room["pc_count"] < MIN_COMPUTER_COUNT:
             return False
     return True
 

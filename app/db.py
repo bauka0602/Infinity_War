@@ -927,6 +927,14 @@ def ensure_database():
         ensure_column(connection, "rooms", "programme", "TEXT")
         ensure_column(connection, "rooms", "available", "INTEGER DEFAULT 1")
         ensure_column(connection, "rooms", "computer_count", "INTEGER DEFAULT 0")
+        db_execute(
+            connection,
+            """
+            UPDATE rooms
+            SET type = 'practical'
+            WHERE lower(COALESCE(type, '')) = 'lab'
+            """,
+        )
         ensure_column(connection, "groups", "has_subgroups", "INTEGER DEFAULT 0")
         ensure_column(connection, "groups", "language", "TEXT DEFAULT 'ru'")
         ensure_column(connection, "groups", "programme", "TEXT")

@@ -2,6 +2,7 @@ import base64
 import time
 from io import BytesIO
 
+import pytest
 from openpyxl import Workbook, load_workbook
 
 from backend.app.lesson_rules import requires_computers_for_component
@@ -591,8 +592,8 @@ def test_optimizer_allows_parallel_different_subgroups():
                 {"id": 2, "name": "Teacher B"},
             ],
             "rooms": [
-                {"id": 1, "number": "101", "capacity": 20, "type": "lab", "pcCount": 20},
-                {"id": 2, "number": "102", "capacity": 20, "type": "lab", "pcCount": 20},
+                {"id": 1, "number": "101", "capacity": 20, "type": "practical", "pcCount": 20},
+                {"id": 2, "number": "102", "capacity": 20, "type": "practical", "pcCount": 20},
             ],
             "planItems": [
                 {
@@ -605,7 +606,7 @@ def test_optimizer_allows_parallel_different_subgroups():
                     "lessonsPerWeek": 1,
                     "studentCount": 15,
                     "lessonType": "lab",
-                    "roomTypeRequired": "lab",
+                    "roomTypeRequired": "practical",
                     "pcRequired": True,
                 },
                 {
@@ -618,7 +619,7 @@ def test_optimizer_allows_parallel_different_subgroups():
                     "lessonsPerWeek": 1,
                     "studentCount": 15,
                     "lessonType": "lab",
-                    "roomTypeRequired": "lab",
+                    "roomTypeRequired": "practical",
                     "pcRequired": True,
                 },
             ],
@@ -628,3 +629,71 @@ def test_optimizer_allows_parallel_different_subgroups():
     assert result["status"] in {"OPTIMAL", "FEASIBLE"}
     assert len(result["schedule"]) == 2
     assert {item["hour"] for item in result["schedule"]} == {8}
+
+
+def test_optimizer_allows_lab_in_practical_room_with_at_least_ten_computers():
+    from backend.app.optimizer import optimize_schedule
+
+    result = optimize_schedule(
+        {
+            "timeSlots": [{"id": "monday_8", "day": "Monday", "hour": 8}],
+            "teachers": [
+                {"id": 1, "name": "Teacher A"},
+            ],
+            "rooms": [
+                {"id": 1, "number": "201", "capacity": 30, "type": "practical", "pcCount": 12},
+            ],
+            "planItems": [
+                {
+                    "id": "lab_main",
+                    "courseId": 1,
+                    "courseName": "Databases",
+                    "teacherId": 1,
+                    "groupIds": ["G1"],
+                    "lessonsPerWeek": 1,
+                    "studentCount": 20,
+                    "lessonType": "lab",
+                    "roomTypeRequired": "practical",
+                    "pcRequired": True,
+                },
+            ],
+        }
+    )
+
+    assert result["status"] in {"OPTIMAL", "FEASIBLE"}
+    assert len(result["schedule"]) == 1
+    assert result["schedule"][0]["roomId"] == 1
+
+
+def test_optimizer_rejects_computer_lesson_when_practical_room_has_less_than_ten_computers():
+    from backend.app.optimizer import optimize_schedule
+    from backend.app.errors import ApiError
+
+    with pytest.raises(ApiError) as exc_info:
+        optimize_schedule(
+            {
+                "timeSlots": [{"id": "monday_8", "day": "Monday", "hour": 8}],
+                "teachers": [
+                    {"id": 1, "name": "Teacher A"},
+                ],
+                "rooms": [
+                    {"id": 1, "number": "202", "capacity": 30, "type": "practical", "pcCount": 9},
+                ],
+                "planItems": [
+                    {
+                        "id": "lab_main",
+                        "courseId": 1,
+                        "courseName": "Databases",
+                        "teacherId": 1,
+                        "groupIds": ["G1"],
+                        "lessonsPerWeek": 1,
+                        "studentCount": 20,
+                        "lessonType": "lab",
+                        "roomTypeRequired": "practical",
+                        "pcRequired": True,
+                    },
+                ],
+            }
+        )
+
+    assert exc_info.value.code == "optimizer_input_infeasible"
