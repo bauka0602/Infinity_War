@@ -6,6 +6,8 @@ from .db import db_execute, db_executemany, query_all
 from .errors import ApiError
 from .optimizer import optimize_schedule
 from .preference_service import get_approved_teacher_preferences
+from .programme_utils import normalize_programme_text
+from .room_availability import recompute_room_availability
 
 DAY_NAME_TO_INDEX = {
     "monday": 0,
@@ -145,7 +147,7 @@ def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
                 section["instructor_id"],
                 int(section.get("classes_count") or 0),
                 section.get("group_language") or "",
-                section.get("programme") or "",
+                normalize_programme_text(section.get("programme") or ""),
             )
             grouped_lectures.setdefault(signature, []).append(section)
         else:
@@ -417,7 +419,7 @@ def build_schedule(connection, semester, year, algorithm):
             section["instructor_id"],
             int(section.get("classes_count") or 0),
             section.get("group_language") or "",
-            section.get("programme") or "",
+            normalize_programme_text(section.get("programme") or ""),
         )
         lecture_groups.setdefault(signature, []).append(section)
     for signature, lecture_sections in lecture_groups.items():
@@ -506,27 +508,7 @@ def build_schedule(connection, semester, year, algorithm):
             tuple(generated_subgroup_group_ids),
         )
 
-    # Recompute room availability from generated schedule:
-    # room with at least one generated lesson for this semester/year => unavailable (0),
-    # room without lessons => available (1).
-    db_execute(
-        connection,
-        """
-        UPDATE rooms
-        SET available = CASE
-            WHEN EXISTS (
-                SELECT 1
-                FROM schedules s
-                WHERE s.room_id = rooms.id
-                  AND s.semester = ?
-                  AND s.year = ?
-            )
-            THEN 0
-            ELSE 1
-        END
-        """,
-        (semester, year),
-    )
+    recompute_room_availability(connection)
     connection.commit()
 
     return query_all(

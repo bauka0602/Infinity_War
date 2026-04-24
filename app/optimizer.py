@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 
 from .errors import ApiError
+from .programme_utils import normalize_programme_text, same_programme
 
 try:
     from ortools.sat.python import cp_model
@@ -126,7 +127,7 @@ def _normalize_rooms(payload):
                 "number": room.get("number") or str(room_id),
                 "capacity": int(room.get("capacity") or 0),
                 "type": _normalize_text(room.get("type")),
-                "programme": _normalize_text(room.get("programme") or room.get("department")),
+                "programme": normalize_programme_text(room.get("programme") or room.get("department")),
                 "building": str(room.get("building") or ""),
                 "floor": int(floor_value) if floor_value not in (None, "") else None,
                 "pc_count": int(pc_count_value) if pc_count_value not in (None, "") else 0,
@@ -225,7 +226,7 @@ def _normalize_plan_items(payload):
                 "student_count": int(item.get("studentCount") or 0),
                 "room_type_required": room_type_required,
                 "pc_required": pc_required,
-                "programme": _normalize_text(item.get("programme")),
+                "programme": normalize_programme_text(item.get("programme")),
                 "preferred_days": {str(day) for day in (item.get("preferredDays") or [])},
                 "preferred_hours": {int(hour) for hour in (item.get("preferredHours") or [])},
                 "preferred_slots": preferred_slots,
@@ -284,7 +285,7 @@ def _room_matches_item_constraints(room, item, required_type):
 
 def _find_compatible_room_ids(item, rooms):
     required_type = item["room_type_required"]
-    same_programme = []
+    same_programme_room_ids = []
     fallback_other_programme = []
     compatible = []
     required_programme = item.get("programme") or ""
@@ -295,16 +296,16 @@ def _find_compatible_room_ids(item, rooms):
 
         room_programme = room.get("programme") or ""
         if required_programme:
-            if room_programme and room_programme == required_programme:
-                same_programme.append(room["id"])
+            if room_programme and same_programme(room_programme, required_programme):
+                same_programme_room_ids.append(room["id"])
             else:
                 fallback_other_programme.append(room["id"])
         else:
             compatible.append(room["id"])
 
     if required_programme:
-        if same_programme:
-            return same_programme + fallback_other_programme, False
+        if same_programme_room_ids:
+            return same_programme_room_ids + fallback_other_programme, False
         return fallback_other_programme, bool(fallback_other_programme)
     return compatible, False
 

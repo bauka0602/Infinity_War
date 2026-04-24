@@ -8,7 +8,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
-from .admin_service import clear_all_data, clear_collection_data
+from .admin_service import clear_all_data, clear_collection_data, clear_schedule_data
 from .auth_service import (
     confirm_teacher_claim,
     get_current_profile,
@@ -298,8 +298,8 @@ def create_app():
         return import_iup_data(request.headers, await _read_json_body(request))
 
     @router.get("/export/schedule")
-    def export_schedule(request: Request):
-        export_bytes = generate_schedule_export(request.headers)
+    def export_schedule(request: Request, semester: int | None = None, year: int | None = None):
+        export_bytes = generate_schedule_export(request.headers, semester=semester, year=year)
         return Response(
             content=export_bytes,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -313,6 +313,17 @@ def create_app():
     @router.post("/admin/clear/{collection}")
     def admin_clear_collection(collection: str, request: Request):
         return clear_collection_data(request.headers, collection)
+
+    @router.post("/schedules/reset")
+    async def schedules_reset(request: Request):
+        payload = await _read_json_body(request)
+        semester = payload.get("semester")
+        year = payload.get("year")
+        return clear_schedule_data(
+            request.headers,
+            semester=int(semester) if semester not in (None, "") else None,
+            year=int(year) if year not in (None, "") else None,
+        )
 
     @router.post("/schedules/generate", status_code=202)
     async def schedule_generate(request: Request):

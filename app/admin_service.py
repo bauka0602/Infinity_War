@@ -2,8 +2,9 @@ from .auth_service import require_auth_user
 from .config import DB_LOCK
 from .db import db_execute, get_connection
 from .errors import ApiError
+from .room_availability import recompute_room_availability
 
-CLEARABLE_COLLECTIONS = {"courses", "teachers", "students", "rooms", "groups", "schedules", "sections"}
+CLEARABLE_COLLECTIONS = {"courses", "teachers", "students", "rooms", "groups", "sections"}
 
 
 def _require_admin(headers):
@@ -15,6 +16,13 @@ def _require_admin(headers):
 
 def clear_collection_data(headers, collection):
     _require_admin(headers)
+
+    if collection == "schedules":
+        raise ApiError(
+            400,
+            "bad_request",
+            "Для расписания используйте сброс по выбранному семестру и году.",
+        )
 
     if collection not in CLEARABLE_COLLECTIONS:
         raise ApiError(400, "bad_request", "Неподдерживаемая коллекция")
@@ -45,6 +53,8 @@ def clear_collection_data(headers, collection):
             elif collection == "students":
                 db_execute(connection, "DELETE FROM notifications WHERE recipient_role = 'student'")
             db_execute(connection, f"DELETE FROM {collection}")
+            if collection in {"courses", "teachers", "groups", "schedules", "sections"}:
+                recompute_room_availability(connection)
             connection.commit()
 
     return {"success": True, "collection": collection}
@@ -85,4 +95,33 @@ def clear_all_data(headers):
             "schedules",
             "sections",
         ],
+    }
+
+
+def clear_schedule_data(headers, semester=None, year=None):
+    _require_admin(headers)
+
+    with DB_LOCK:
+        with get_connection() as connection:
+            if semester is None and year is None:
+                db_execute(connection, "DELETE FROM schedules")
+            else:
+                clauses = []
+                params = []
+                if semester is not None:
+                    clauses.append("semester = ?")
+                    params.append(semester)
+                if year is not None:
+                    clauses.append("year = ?")
+                    params.append(year)
+                where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+                db_execute(connection, f"DELETE FROM schedules {where_sql}", tuple(params))
+            recompute_room_availability(connection)
+            connection.commit()
+
+    return {
+        "success": True,
+        "collection": "schedules",
+        "semester": semester,
+        "year": year,
     }

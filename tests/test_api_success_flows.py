@@ -581,6 +581,107 @@ def test_manual_schedule_rejects_teacher_conflict(client, admin_auth_headers):
     assert second_response.json()["errorCode"] == "bad_request"
 
 
+def test_manual_schedule_recomputes_room_availability_and_scoped_reset_clears_it(client, admin_auth_headers):
+    _seed_schedule_data(client, admin_auth_headers)
+
+    sections_response = client.get("/api/sections", headers=admin_auth_headers)
+    rooms_response = client.get("/api/rooms", headers=admin_auth_headers)
+    assert sections_response.status_code == 200
+    assert rooms_response.status_code == 200
+    section = sections_response.json()[0]
+    room = rooms_response.json()[0]
+
+    payload = {
+        "section_id": section["id"],
+        "course_id": section["course_id"],
+        "course_name": section["course_name"],
+        "teacher_id": section["teacher_id"],
+        "teacher_name": section["teacher_name"],
+        "room_id": room["id"],
+        "room_number": room["number"],
+        "group_id": section["group_id"],
+        "group_name": section["group_name"],
+        "subgroup": "",
+        "day": "2026-04-20",
+        "start_hour": 9,
+        "semester": 1,
+        "year": 2026,
+        "algorithm": "manual",
+    }
+
+    create_response = client.post("/api/schedules", headers=admin_auth_headers, json=payload)
+    assert create_response.status_code == 201
+
+    rooms_after_create = client.get("/api/rooms", headers=admin_auth_headers)
+    assert rooms_after_create.status_code == 200
+    assert rooms_after_create.json()[0]["available"] == 0
+
+    reset_response = client.post(
+        "/api/schedules/reset",
+        headers=admin_auth_headers,
+        json={"semester": 1, "year": 2026},
+    )
+    assert reset_response.status_code == 200
+
+    rooms_after_reset = client.get("/api/rooms", headers=admin_auth_headers)
+    assert rooms_after_reset.status_code == 200
+    assert rooms_after_reset.json()[0]["available"] == 1
+
+
+def test_schedule_export_supports_semester_and_year_scope(client, admin_auth_headers):
+    _seed_schedule_data(client, admin_auth_headers)
+
+    sections_response = client.get("/api/sections", headers=admin_auth_headers)
+    rooms_response = client.get("/api/rooms", headers=admin_auth_headers)
+    assert sections_response.status_code == 200
+    assert rooms_response.status_code == 200
+    section = sections_response.json()[0]
+    room = rooms_response.json()[0]
+
+    first_payload = {
+        "section_id": section["id"],
+        "course_id": section["course_id"],
+        "course_name": section["course_name"],
+        "teacher_id": section["teacher_id"],
+        "teacher_name": section["teacher_name"],
+        "room_id": room["id"],
+        "room_number": room["number"],
+        "group_id": section["group_id"],
+        "group_name": section["group_name"],
+        "subgroup": "",
+        "day": "2026-04-20",
+        "start_hour": 9,
+        "semester": 1,
+        "year": 2026,
+        "algorithm": "manual",
+    }
+    second_payload = {
+        **first_payload,
+        "day": "2026-04-21",
+        "start_hour": 10,
+        "semester": 2,
+        "year": 2027,
+    }
+
+    assert client.post("/api/schedules", headers=admin_auth_headers, json=first_payload).status_code == 201
+    assert client.post("/api/schedules", headers=admin_auth_headers, json=second_payload).status_code == 201
+
+    export_response = client.get(
+        "/api/export/schedule?semester=1&year=2026",
+        headers=admin_auth_headers,
+    )
+    assert export_response.status_code == 200
+
+    workbook = load_workbook(filename=BytesIO(export_response.content), data_only=True)
+    sheet = workbook["Schedule"]
+    rows = list(sheet.iter_rows(values_only=True))
+
+    assert len(rows) == 2
+    assert rows[1][0] == "Algorithms"
+    assert rows[1][7] == 1
+    assert rows[1][8] == 2026
+
+
 def test_optimizer_allows_parallel_different_subgroups():
     from backend.app.optimizer import optimize_schedule
 

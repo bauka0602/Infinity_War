@@ -1376,7 +1376,7 @@ def import_rop_data(headers, payload):
     }
 
 
-def generate_schedule_export(headers):
+def generate_schedule_export(headers, semester=None, year=None):
     user = require_auth_user(headers)
     if user["role"] != "admin":
         raise ApiError(403, "forbidden", "Недостаточно прав")
@@ -1392,9 +1392,18 @@ def generate_schedule_export(headers):
 
     with DB_LOCK:
         with get_connection() as connection:
+            clauses = []
+            params = []
+            if semester is not None:
+                clauses.append("semester = ?")
+                params.append(semester)
+            if year is not None:
+                clauses.append("year = ?")
+                params.append(year)
+            where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
             schedules = query_all(
                 connection,
-                """
+                f"""
                 SELECT
                     course_name,
                     group_name,
@@ -1409,8 +1418,10 @@ def generate_schedule_export(headers):
                     room_programme,
                     room_programme_mismatch
                 FROM schedules
+                {where_sql}
                 ORDER BY day, start_hour, course_name, group_name, id
                 """,
+                tuple(params),
             )
 
     if not schedules:
