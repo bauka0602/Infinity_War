@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from .db import db_execute, query_all
 
 
@@ -16,6 +18,16 @@ def recompute_room_availability(connection):
     )
 
 
+def normalize_room_block_day(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        return datetime.fromisoformat(raw).strftime("%A")
+    except ValueError:
+        return raw
+
+
 def get_room_blocked_slots(connection, semester=None, year=None):
     clauses = []
     params = []
@@ -29,7 +41,7 @@ def get_room_blocked_slots(connection, semester=None, year=None):
     rows = query_all(
         connection,
         f"""
-        SELECT room_id, day, start_hour
+        SELECT room_id, day, start_hour, end_hour
         FROM room_blocks
         {where_sql}
         ORDER BY room_id, day, start_hour
@@ -39,9 +51,16 @@ def get_room_blocked_slots(connection, semester=None, year=None):
     blocked_by_room = {}
     for row in rows:
         room_id = row.get("room_id")
-        day = str(row.get("day") or "").strip()
-        hour = row.get("start_hour")
-        if not room_id or not day or hour in (None, ""):
+        day = normalize_room_block_day(row.get("day"))
+        start_hour = row.get("start_hour")
+        end_hour = row.get("end_hour")
+        if not room_id or not day or start_hour in (None, ""):
             continue
-        blocked_by_room.setdefault(room_id, set()).add((day, int(hour)))
+        start_value = int(start_hour)
+        end_value = int(end_hour) if end_hour not in (None, "") else start_value + 1
+        if end_value <= start_value:
+            end_value = start_value + 1
+        room_slots = blocked_by_room.setdefault(room_id, set())
+        for hour in range(start_value, end_value):
+            room_slots.add((day, hour))
     return blocked_by_room

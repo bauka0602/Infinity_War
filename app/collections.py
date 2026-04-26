@@ -5,11 +5,20 @@ from math import ceil
 
 from .config import TEACHER_EMAIL_DOMAIN
 from .db import db_execute, insert_and_get_id, query_all, query_one
-from .education_programmes import resolve_education_group_value, room_matches_home_programmes
+from .education_programmes import (
+    get_home_room_programmes,
+    resolve_education_group_value,
+    room_matches_home_programmes,
+)
 from .errors import ApiError
 from .lesson_rules import requires_computers_for_component
+from .notification_service import create_schedule_change_notifications
 from .programme_utils import same_programme
-from .room_availability import get_room_blocked_slots, recompute_room_availability
+from .room_availability import (
+    get_room_blocked_slots,
+    normalize_room_block_day,
+    recompute_room_availability,
+)
 from .teacher_utils import build_teacher_name_signature, normalize_teacher_name
 
 LESSON_TYPE_ALIASES = {
@@ -56,6 +65,23 @@ def positive_int(value, default=1):
         return max(1, int(value))
     except (TypeError, ValueError):
         return default
+
+
+def normalize_room_block_interval(payload):
+    normalized = normalize_number_fields(payload, ["room_id", "start_hour", "end_hour", "semester", "year"])
+    day = str(normalized.get("day") or "").strip()
+    start_hour = normalized.get("start_hour")
+    end_hour = normalized.get("end_hour")
+    if not normalized.get("room_id") or not day or start_hour in (None, ""):
+        raise ApiError(400, "fill_required_fields", "Заполните поля: room_id, day, start_hour")
+    if end_hour in (None, ""):
+        end_hour = int(start_hour) + 1
+    if int(end_hour) <= int(start_hour):
+        raise ApiError(400, "bad_request", "В блокировке аудитории end_hour должен быть больше start_hour")
+    normalized["day"] = day
+    normalized["start_hour"] = int(start_hour)
+    normalized["end_hour"] = int(end_hour)
+    return normalized
 
 
 def normalize_lesson_type(value):
@@ -439,6 +465,198 @@ def schedule_student_count_for_room(section, group, subgroup):
     return ceil(student_count / subgroup_count) if student_count else 0
 
 
+def _room_candidate_score(room, schedule_row):
+    home_programmes = get_home_room_programmes(
+        schedule_row.get("group_programme"),
+        schedule_row.get("specialty_code"),
+    )
+    room_programme = room.get("programme") or ""
+    score = 0
+    if home_programmes and room_programme:
+        if any(same_programme(room_programme, home_programme) for home_programme in home_programmes):
+            score += 100
+        else:
+            score -= 20
+    if room.get("capacity") and schedule_row.get("effective_student_count"):
+        score -= abs(int(room.get("capacity") or 0) - int(schedule_row.get("effective_student_count") or 0))
+    return score
+
+
+def _find_alternative_room_for_schedule(connection, schedule_row, blocked_slots_by_room=None, excluded_room_ids=None):
+    blocked_slots_by_room = blocked_slots_by_room or {}
+    excluded_room_ids = set(excluded_room_ids or [])
+    rooms = query_all(
+        connection,
+        """
+        SELECT id, number, capacity, type, available, computer_count, programme
+        FROM rooms
+        WHERE coalesce(available, 1) = 1
+        ORDER BY id
+        """,
+    )
+    normalized_day = normalize_room_block_day(schedule_row.get("day"))
+    lesson_type = normalize_lesson_type(schedule_row.get("lesson_type"))
+    requires_computers = bool(schedule_row.get("requires_computers")) or lesson_type == "lab"
+    candidates = []
+    for room in rooms:
+        if room["id"] == schedule_row.get("room_id") or room["id"] in excluded_room_ids:
+            continue
+        if not schedule_room_type_matches(room.get("type"), lesson_type, requires_computers):
+            continue
+        if int(room.get("capacity") or 0) < int(schedule_row.get("effective_student_count") or 0):
+            continue
+        if requires_computers and int(room.get("computer_count") or 0) < MIN_COMPUTER_COUNT:
+            continue
+        if query_one(
+            connection,
+            """
+            SELECT id
+            FROM schedules
+            WHERE room_id = ? AND day = ? AND start_hour = ? AND id <> ?
+            LIMIT 1
+            """,
+            (room["id"], schedule_row.get("day"), schedule_row.get("start_hour"), schedule_row["id"]),
+        ):
+            continue
+        if (normalized_day, int(schedule_row.get("start_hour") or 0)) in blocked_slots_by_room.get(room["id"], set()):
+            continue
+        candidates.append(room)
+    if not candidates:
+        return None
+    candidates.sort(key=lambda room: _room_candidate_score(room, schedule_row), reverse=True)
+    return candidates[0]
+
+
+def _relocate_conflicting_room_schedules(connection, room_block, exclude_block_id=None):
+    blocked_slots_by_room = get_room_blocked_slots(connection, room_block.get("semester"), room_block.get("year"))
+    conflicting_schedules = [
+        row
+        for row in query_all(
+            connection,
+            """
+            SELECT
+                sc.id,
+                sc.section_id,
+                sc.course_id,
+                sc.course_name,
+                sc.teacher_id,
+                sc.teacher_name,
+                sc.room_id,
+                sc.room_number,
+                sc.room_programme,
+                sc.room_programme_mismatch,
+                sc.day,
+                sc.start_hour,
+                sc.semester,
+                sc.year,
+                sc.group_id,
+                sc.group_name,
+                sc.subgroup,
+                sec.lesson_type,
+                sec.subgroup_count,
+                sec.requires_computers,
+                grp.student_count,
+                grp.has_subgroups,
+                grp.programme AS group_programme,
+                grp.specialty_code
+            FROM schedules sc
+            JOIN sections sec ON sec.id = sc.section_id
+            JOIN groups grp ON grp.id = sc.group_id
+            WHERE sc.room_id = ?
+            """,
+            (room_block.get("room_id"),),
+        )
+        if (room_block.get("semester") in (None, "") or row.get("semester") == room_block.get("semester"))
+        and (room_block.get("year") in (None, "") or row.get("year") == room_block.get("year"))
+        and normalize_room_block_day(row.get("day")) == normalize_room_block_day(room_block.get("day"))
+        and int(room_block.get("start_hour") or 0) <= int(row.get("start_hour") or 0) < int(room_block.get("end_hour") or 0)
+    ]
+    relocated = []
+    for schedule_row in conflicting_schedules:
+        schedule_row["effective_student_count"] = schedule_student_count_for_room(
+            schedule_row,
+            schedule_row,
+            normalize_subgroup(schedule_row.get("subgroup")),
+        )
+        alternative_room = _find_alternative_room_for_schedule(
+            connection,
+            schedule_row,
+            blocked_slots_by_room=blocked_slots_by_room,
+            excluded_room_ids={room_block.get("room_id")},
+        )
+        if alternative_room is None:
+            raise ApiError(
+                400,
+                "bad_request",
+                "Не удалось перенести одно из конфликтующих занятий в другую аудиторию.",
+                details={
+                    "scheduleId": schedule_row["id"],
+                    "groupName": schedule_row.get("group_name"),
+                    "day": schedule_row.get("day"),
+                    "startHour": schedule_row.get("start_hour"),
+                },
+            )
+        room_programme, room_programme_mismatch = resolve_schedule_room_programme_meta(
+            connection,
+            schedule_row["section_id"],
+            alternative_room["id"],
+        )
+        db_execute(
+            connection,
+            """
+            UPDATE schedules
+            SET
+                room_id = ?,
+                room_number = ?,
+                room_programme = ?,
+                room_programme_mismatch = ?,
+                relocated_from_room_number = ?,
+                relocation_reason = ?
+            WHERE id = ?
+            """,
+            (
+                alternative_room["id"],
+                alternative_room.get("number", ""),
+                room_programme,
+                room_programme_mismatch,
+                schedule_row.get("room_number", ""),
+                room_block.get("reason", "") or "room_block",
+                schedule_row["id"],
+            ),
+        )
+        before_schedule = {
+            **schedule_row,
+            "room_programme": schedule_row.get("room_programme", ""),
+            "room_programme_mismatch": schedule_row.get("room_programme_mismatch", 0),
+            "relocated_from_room_number": "",
+            "relocation_reason": "",
+        }
+        after_schedule = {
+            **before_schedule,
+            "room_id": alternative_room["id"],
+            "room_number": alternative_room.get("number", ""),
+            "room_programme": room_programme,
+            "room_programme_mismatch": room_programme_mismatch,
+            "relocated_from_room_number": schedule_row.get("room_number", ""),
+            "relocation_reason": room_block.get("reason", "") or "room_block",
+        }
+        create_schedule_change_notifications(connection, before_item=before_schedule, after_item=after_schedule)
+        relocated.append(
+            {
+                "scheduleId": schedule_row["id"],
+                "fromRoomId": schedule_row.get("room_id"),
+                "fromRoomNumber": schedule_row.get("room_number"),
+                "toRoomId": alternative_room["id"],
+                "toRoomNumber": alternative_room.get("number", ""),
+                "day": schedule_row.get("day"),
+                "startHour": schedule_row.get("start_hour"),
+                "groupName": schedule_row.get("group_name"),
+                "relocationReason": room_block.get("reason", "") or "room_block",
+            }
+        )
+    return relocated
+
+
 def validate_schedule_payload(connection, payload, exclude_schedule_id=None):
     section_id = payload.get("section_id")
     room_id = payload.get("room_id")
@@ -533,7 +751,7 @@ def validate_schedule_payload(connection, payload, exclude_schedule_id=None):
         payload.get("semester"),
         payload.get("year"),
     )
-    if (str(day).strip(), int(start_hour)) in room_blocked_slots.get(room_id, set()):
+    if (normalize_room_block_day(day), int(start_hour)) in room_blocked_slots.get(room_id, set()):
         raise ApiError(400, "bad_request", "Аудитория недоступна в этот временной слот")
 
     teacher_conflict = query_one(
@@ -672,6 +890,16 @@ def list_collection(connection, collection, query, user=None):
             """,
         )
 
+    if collection == "room_blocks":
+        return query_all(
+            connection,
+            """
+            SELECT id, room_id, day, start_hour, end_hour, semester, year, reason
+            FROM room_blocks
+            ORDER BY room_id, day, start_hour, id
+            """,
+        )
+
     if collection == "groups":
         return query_all(
             connection,
@@ -760,7 +988,7 @@ def list_collection(connection, collection, query, user=None):
         SELECT
             s.id, s.section_id, s.course_id, s.course_name, s.teacher_id, s.teacher_name, s.room_id, s.room_number,
             s.group_id, s.group_name, s.subgroup, s.day, s.start_hour, s.semester, s.year, s.algorithm,
-            s.room_programme, s.room_programme_mismatch
+            s.room_programme, s.room_programme_mismatch, s.relocated_from_room_number, s.relocation_reason
         {from_sql}
         {where_sql}
         ORDER BY s.day, s.start_hour, s.id
@@ -957,6 +1185,37 @@ def create_collection_item(connection, collection, payload):
             (item_id,),
         )
 
+    if collection == "room_blocks":
+        normalized = normalize_room_block_interval(payload)
+        relocated = _relocate_conflicting_room_schedules(connection, normalized)
+        item_id = insert_and_get_id(
+            connection,
+            """
+            INSERT INTO room_blocks (room_id, day, start_hour, end_hour, semester, year, reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                normalized.get("room_id"),
+                normalized.get("day"),
+                normalized.get("start_hour"),
+                normalized.get("end_hour"),
+                normalized.get("semester"),
+                normalized.get("year"),
+                normalized.get("reason", ""),
+            ),
+        )
+        connection.commit()
+        row = query_one(
+            connection,
+            """
+            SELECT id, room_id, day, start_hour, end_hour, semester, year, reason
+            FROM room_blocks
+            WHERE id = ?
+            """,
+            (item_id,),
+        )
+        return {**row, "relocatedSchedules": relocated}
+
     if collection == "groups":
         normalized = normalize_number_fields(payload, ["student_count", "has_subgroups", "entry_year", "study_course"])
         group_language = normalize_language(normalized.get("language"), "ru")
@@ -1059,9 +1318,9 @@ def create_collection_item(connection, collection, payload):
             INSERT INTO schedules (
                 section_id, course_id, course_name, teacher_id, teacher_name, room_id, room_number,
                 group_id, group_name, subgroup, day, start_hour, semester, year, algorithm,
-                room_programme, room_programme_mismatch
+                room_programme, room_programme_mismatch, relocated_from_room_number, relocation_reason
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 normalized.get("section_id"),
@@ -1081,6 +1340,8 @@ def create_collection_item(connection, collection, payload):
                 normalized.get("algorithm"),
                 room_programme,
                 room_programme_mismatch,
+                normalized.get("relocated_from_room_number", ""),
+                normalized.get("relocation_reason", ""),
             ),
         )
         recompute_room_availability(connection)
@@ -1091,7 +1352,7 @@ def create_collection_item(connection, collection, payload):
             SELECT
                 id, section_id, course_id, course_name, teacher_id, teacher_name, room_id, room_number,
                 group_id, group_name, subgroup, day, start_hour, semester, year, algorithm,
-                room_programme, room_programme_mismatch
+                room_programme, room_programme_mismatch, relocated_from_room_number, relocation_reason
             FROM schedules
             WHERE id = ?
             """,
@@ -1280,6 +1541,39 @@ def update_collection_item(connection, collection, item_id, payload):
             (item_id,),
         )
 
+    if collection == "room_blocks":
+        normalized = normalize_room_block_interval(payload)
+        relocated = _relocate_conflicting_room_schedules(connection, normalized, exclude_block_id=item_id)
+        db_execute(
+            connection,
+            """
+            UPDATE room_blocks
+            SET room_id = ?, day = ?, start_hour = ?, end_hour = ?, semester = ?, year = ?, reason = ?
+            WHERE id = ?
+            """,
+            (
+                normalized.get("room_id"),
+                normalized.get("day"),
+                normalized.get("start_hour"),
+                normalized.get("end_hour"),
+                normalized.get("semester"),
+                normalized.get("year"),
+                normalized.get("reason", ""),
+                item_id,
+            ),
+        )
+        connection.commit()
+        row = query_one(
+            connection,
+            """
+            SELECT id, room_id, day, start_hour, end_hour, semester, year, reason
+            FROM room_blocks
+            WHERE id = ?
+            """,
+            (item_id,),
+        )
+        return {**row, "relocatedSchedules": relocated}
+
     if collection == "groups":
         normalized = normalize_number_fields(payload, ["student_count", "has_subgroups", "entry_year", "study_course"])
         group_language = normalize_language(normalized.get("language"), "ru")
@@ -1388,7 +1682,7 @@ def update_collection_item(connection, collection, item_id, payload):
                 section_id = ?, course_id = ?, course_name = ?, teacher_id = ?, teacher_name = ?,
                 room_id = ?, room_number = ?, group_id = ?, group_name = ?, subgroup = ?,
                 day = ?, start_hour = ?, semester = ?, year = ?, algorithm = ?,
-                room_programme = ?, room_programme_mismatch = ?
+                room_programme = ?, room_programme_mismatch = ?, relocated_from_room_number = ?, relocation_reason = ?
             WHERE id = ?
             """,
             (
@@ -1409,6 +1703,8 @@ def update_collection_item(connection, collection, item_id, payload):
                 normalized.get("algorithm"),
                 room_programme,
                 room_programme_mismatch,
+                normalized.get("relocated_from_room_number", ""),
+                normalized.get("relocation_reason", ""),
                 item_id,
             ),
         )
@@ -1419,7 +1715,7 @@ def update_collection_item(connection, collection, item_id, payload):
             SELECT
                 id, section_id, course_id, course_name, teacher_id, teacher_name, room_id, room_number,
                 group_id, group_name, subgroup, day, start_hour, semester, year, algorithm,
-                room_programme, room_programme_mismatch
+                room_programme, room_programme_mismatch, relocated_from_room_number, relocation_reason
             FROM schedules
             WHERE id = ?
             """,
@@ -1459,6 +1755,8 @@ def delete_collection_item(connection, collection, item_id):
         db_execute(connection, "DELETE FROM schedules WHERE room_id = ?", (item_id,))
         db_execute(connection, "DELETE FROM room_blocks WHERE room_id = ?", (item_id,))
         schedules_changed = True
+    elif collection == "room_blocks":
+        pass
     elif collection == "students":
         db_execute(connection, "DELETE FROM notifications WHERE recipient_role = 'student' AND recipient_id = ?", (item_id,))
     db_execute(connection, f"DELETE FROM {collection} WHERE id = ?", (item_id,))

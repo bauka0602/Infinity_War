@@ -450,7 +450,9 @@ def sqlite_schema():
             year INTEGER,
             algorithm TEXT,
             room_programme TEXT,
-            room_programme_mismatch INTEGER DEFAULT 0
+            room_programme_mismatch INTEGER DEFAULT 0,
+            relocated_from_room_number TEXT,
+            relocation_reason TEXT
         )
         """,
         """
@@ -459,6 +461,7 @@ def sqlite_schema():
             room_id INTEGER NOT NULL,
             day TEXT NOT NULL,
             start_hour INTEGER NOT NULL,
+            end_hour INTEGER,
             semester INTEGER,
             year INTEGER,
             reason TEXT
@@ -672,7 +675,9 @@ def postgres_schema():
             year INTEGER,
             algorithm TEXT,
             room_programme TEXT,
-            room_programme_mismatch INTEGER DEFAULT 0
+            room_programme_mismatch INTEGER DEFAULT 0,
+            relocated_from_room_number TEXT,
+            relocation_reason TEXT
         )
         """,
         """
@@ -681,6 +686,7 @@ def postgres_schema():
             room_id INTEGER NOT NULL,
             day TEXT NOT NULL,
             start_hour INTEGER NOT NULL,
+            end_hour INTEGER,
             semester INTEGER,
             year INTEGER,
             reason TEXT
@@ -1104,12 +1110,23 @@ def ensure_database():
         ensure_column(connection, "schedules", "subgroup", "TEXT")
         ensure_column(connection, "schedules", "room_programme", "TEXT")
         ensure_column(connection, "schedules", "room_programme_mismatch", "INTEGER DEFAULT 0")
+        ensure_column(connection, "schedules", "relocated_from_room_number", "TEXT")
+        ensure_column(connection, "schedules", "relocation_reason", "TEXT")
         ensure_column(connection, "room_blocks", "room_id", "INTEGER")
         ensure_column(connection, "room_blocks", "day", "TEXT")
         ensure_column(connection, "room_blocks", "start_hour", "INTEGER")
+        ensure_column(connection, "room_blocks", "end_hour", "INTEGER")
         ensure_column(connection, "room_blocks", "semester", "INTEGER")
         ensure_column(connection, "room_blocks", "year", "INTEGER")
         ensure_column(connection, "room_blocks", "reason", "TEXT")
+        db_execute(
+            connection,
+            """
+            UPDATE room_blocks
+            SET end_hour = start_hour + 1
+            WHERE end_hour IS NULL OR end_hour <= start_hour
+            """,
+        )
         db_execute(
             connection,
             """

@@ -66,6 +66,7 @@ ALLOWED_COLLECTIONS = {
     "teachers",
     "students",
     "rooms",
+    "room_blocks",
     "groups",
     "schedules",
     "sections",
@@ -99,7 +100,7 @@ async def _read_json_body(request: Request):
 def _require_collection_access(collection, headers, method):
     user = require_auth_user(headers)
 
-    if collection in {"courses", "course_components", "iup_entries", "teachers", "students", "rooms", "groups", "sections"} and user["role"] != "admin":
+    if collection in {"courses", "course_components", "iup_entries", "teachers", "students", "rooms", "room_blocks", "groups", "sections"} and user["role"] != "admin":
         raise ApiError(403, "forbidden", "Недостаточно прав")
 
     if collection == "schedules" and method in {"POST", "PUT", "DELETE"} and user["role"] != "admin":

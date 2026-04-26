@@ -511,6 +511,8 @@ def build_schedule(connection, semester, year, algorithm):
                     algorithm or "optimizer",
                     item.get("roomProgramme") or "",
                     1 if item.get("roomProgrammeFallbackUsed") else 0,
+                    "",
+                    "",
                 )
             )
 
@@ -528,9 +530,9 @@ def build_schedule(connection, semester, year, algorithm):
         INSERT INTO schedules (
             section_id, course_id, course_name, teacher_id, teacher_name, room_id, room_number,
             group_id, group_name, subgroup, day, start_hour, semester, year, algorithm,
-            room_programme, room_programme_mismatch
+            room_programme, room_programme_mismatch, relocated_from_room_number, relocation_reason
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows,
     )
@@ -563,7 +565,7 @@ def build_schedule(connection, semester, year, algorithm):
         SELECT
             id, section_id, course_id, course_name, teacher_id, teacher_name, room_id, room_number,
             group_id, group_name, subgroup, day, start_hour, semester, year, algorithm,
-            room_programme, room_programme_mismatch
+            room_programme, room_programme_mismatch, relocated_from_room_number, relocation_reason
         FROM schedules
         WHERE semester = ? AND year = ?
         ORDER BY day, start_hour, id
