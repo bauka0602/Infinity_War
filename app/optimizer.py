@@ -227,6 +227,11 @@ def _normalize_plan_items(payload):
                 "room_type_required": room_type_required,
                 "pc_required": pc_required,
                 "programme": normalize_programme_text(item.get("programme")),
+                "preferred_room_programmes": [
+                    normalize_programme_text(value)
+                    for value in (item.get("preferredRoomProgrammes") or [])
+                    if normalize_programme_text(value)
+                ],
                 "preferred_days": {str(day) for day in (item.get("preferredDays") or [])},
                 "preferred_hours": {int(hour) for hour in (item.get("preferredHours") or [])},
                 "preferred_slots": preferred_slots,
@@ -285,8 +290,10 @@ def _room_matches_item_constraints(room, item, required_type):
 
 def _find_compatible_room_ids(item, rooms):
     required_type = item["room_type_required"]
-    same_programme_room_ids = []
+    preferred_room_programmes = item.get("preferred_room_programmes") or []
+    preferred_room_ids = []
     fallback_other_programme = []
+    same_programme_room_ids = []
     compatible = []
     required_programme = item.get("programme") or ""
 
@@ -295,7 +302,15 @@ def _find_compatible_room_ids(item, rooms):
             continue
 
         room_programme = room.get("programme") or ""
-        if required_programme:
+        if preferred_room_programmes:
+            if room_programme and any(
+                same_programme(room_programme, preferred_programme)
+                for preferred_programme in preferred_room_programmes
+            ):
+                preferred_room_ids.append(room["id"])
+            else:
+                fallback_other_programme.append(room["id"])
+        elif required_programme:
             if room_programme and same_programme(room_programme, required_programme):
                 same_programme_room_ids.append(room["id"])
             else:
@@ -303,6 +318,10 @@ def _find_compatible_room_ids(item, rooms):
         else:
             compatible.append(room["id"])
 
+    if preferred_room_programmes:
+        if preferred_room_ids:
+            return preferred_room_ids + fallback_other_programme, False
+        return fallback_other_programme, bool(fallback_other_programme)
     if required_programme:
         if same_programme_room_ids:
             return same_programme_room_ids + fallback_other_programme, False
@@ -808,7 +827,15 @@ def optimize_schedule(payload):
 
         coefficient = _slot_score(slot, item) * 10
         coefficient += _room_score(room, item, prefer_lower_floors=prefer_lower_floors)
-        if item.get("programme"):
+        if item.get("preferred_room_programmes"):
+            if any(
+                same_programme(room.get("programme") or "", preferred_programme)
+                for preferred_programme in item["preferred_room_programmes"]
+            ):
+                coefficient += 55
+            elif room.get("programme"):
+                coefficient -= 25
+        elif item.get("programme"):
             if (room.get("programme") or "") == item["programme"]:
                 coefficient += 40
             else:
@@ -867,9 +894,16 @@ def optimize_schedule(payload):
             "roomNumber": room["number"],
             "roomType": room["type"],
             "roomProgramme": room.get("programme") or "",
-            "requestedProgramme": item.get("programme") or "",
+            "requestedProgramme": ", ".join(item.get("preferred_room_programmes") or []) or item.get("programme") or "",
             "roomProgrammeFallbackUsed": bool(
-                item.get("programme")
+                item.get("preferred_room_programmes")
+                and not any(
+                    same_programme(room.get("programme") or "", preferred_programme)
+                    for preferred_programme in item["preferred_room_programmes"]
+                )
+            ) or bool(
+                not item.get("preferred_room_programmes")
+                and item.get("programme")
                 and (room.get("programme") or "") != item.get("programme")
             ),
             "groups": item["group_ids"],

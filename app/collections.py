@@ -5,6 +5,7 @@ from math import ceil
 
 from .config import TEACHER_EMAIL_DOMAIN
 from .db import db_execute, insert_and_get_id, query_all, query_one
+from .education_programmes import resolve_education_group_value, room_matches_home_programmes
 from .errors import ApiError
 from .lesson_rules import requires_computers_for_component
 from .programme_utils import same_programme
@@ -119,6 +120,14 @@ def _same_programme(left, right):
     return same_programme(left, right)
 
 
+def _same_education_group(left_programme="", left_specialty="", right_programme="", right_specialty=""):
+    left_group = resolve_education_group_value(left_programme, left_specialty)
+    right_group = resolve_education_group_value(right_programme, right_specialty)
+    if left_group and right_group:
+        return left_group == right_group
+    return _same_programme(left_programme, right_programme)
+
+
 def generate_sections_from_components(connection, payload):
     semester = payload.get("semester")
     study_course = payload.get("study_course") or payload.get("year")
@@ -129,7 +138,7 @@ def generate_sections_from_components(connection, payload):
     all_groups = query_all(
         connection,
         """
-        SELECT id, name, programme, study_course
+        SELECT id, name, programme, specialty_code, study_course
         FROM groups
         WHERE programme IS NOT NULL
           AND programme != ''
@@ -141,7 +150,10 @@ def generate_sections_from_components(connection, payload):
         group
         for group in all_groups
         if (not study_course or int(group.get("study_course") or 0) == study_course)
-        and (not programme or _same_programme(group.get("programme"), programme))
+        and (
+            not programme
+            or _same_education_group(group.get("programme"), group.get("specialty_code"), programme, "")
+        )
     ]
     component_clauses = ["cc.lesson_type IN ('lecture', 'practical', 'lab')"]
     component_params = []
@@ -173,7 +185,7 @@ def generate_sections_from_components(connection, payload):
             """,
             tuple(component_params),
         )
-        if (not programme or _same_programme(component.get("programme"), programme))
+        if (not programme or _same_education_group(component.get("programme"), "", programme, ""))
     ]
 
     if not groups or not components:
@@ -195,7 +207,12 @@ def generate_sections_from_components(connection, payload):
         matching_groups = [
             group
             for group in groups
-            if _same_programme(group.get("programme"), component.get("programme"))
+            if _same_education_group(
+                group.get("programme"),
+                group.get("specialty_code"),
+                component.get("programme"),
+                "",
+            )
             and int(group.get("study_course") or 0) == int(component.get("year") or 0)
         ]
         for group in matching_groups:
@@ -875,7 +892,10 @@ def create_collection_item(connection, collection, payload):
         normalized = normalize_number_fields(payload, ["student_count", "has_subgroups", "entry_year", "study_course"])
         group_language = normalize_language(normalized.get("language"), "ru")
         specialty_code = normalize_specialty(normalized.get("specialty_code", normalized.get("specialty", "")))
-        programme = normalized.get("programme") or normalize_programme(specialty_code)
+        programme = resolve_education_group_value(
+            normalized.get("programme"),
+            specialty_code,
+        ) or normalize_programme(specialty_code)
         entry_year = normalized.get("entry_year") or infer_group_entry_year(normalized.get("name"))
         study_course = normalized.get("study_course") or infer_study_course(entry_year)
         item_id = insert_and_get_id(
@@ -1018,9 +1038,12 @@ def resolve_schedule_room_programme_meta(connection, section_id, room_id):
         """
         SELECT
             c.programme AS course_programme,
+            g.programme AS group_programme,
+            g.specialty_code AS specialty_code,
             r.programme AS room_programme
         FROM sections s
         JOIN courses c ON c.id = s.course_id
+        JOIN groups g ON g.id = s.group_id
         JOIN rooms r ON r.id = ?
         WHERE s.id = ?
         """,
@@ -1030,12 +1053,22 @@ def resolve_schedule_room_programme_meta(connection, section_id, room_id):
         return "", 0
 
     course_programme = row.get("course_programme") or ""
+    group_programme = row.get("group_programme") or ""
+    specialty_code = row.get("specialty_code") or ""
     room_programme = row.get("room_programme") or ""
-    mismatch = bool(
-        course_programme
-        and room_programme
-        and not same_programme(course_programme, room_programme)
+    home_match = room_matches_home_programmes(
+        room_programme,
+        group_programme,
+        specialty_code,
     )
+    if group_programme or specialty_code:
+        mismatch = bool(room_programme and not home_match)
+    else:
+        mismatch = bool(
+            course_programme
+            and room_programme
+            and not same_programme(course_programme, room_programme)
+        )
     return room_programme, 1 if mismatch else 0
 
 
@@ -1171,7 +1204,10 @@ def update_collection_item(connection, collection, item_id, payload):
         normalized = normalize_number_fields(payload, ["student_count", "has_subgroups", "entry_year", "study_course"])
         group_language = normalize_language(normalized.get("language"), "ru")
         specialty_code = normalize_specialty(normalized.get("specialty_code", normalized.get("specialty", "")))
-        programme = normalized.get("programme") or normalize_programme(specialty_code)
+        programme = resolve_education_group_value(
+            normalized.get("programme"),
+            specialty_code,
+        ) or normalize_programme(specialty_code)
         entry_year = normalized.get("entry_year") or infer_group_entry_year(normalized.get("name"))
         study_course = normalized.get("study_course") or infer_study_course(entry_year)
         db_execute(

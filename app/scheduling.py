@@ -3,6 +3,7 @@ from datetime import date, timedelta
 from math import ceil
 
 from .db import db_execute, db_executemany, query_all
+from .education_programmes import get_home_room_programmes
 from .errors import ApiError
 from .optimizer import optimize_schedule
 from .preference_service import get_approved_teacher_preferences
@@ -120,6 +121,10 @@ def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
     standalone_items = []
 
     for section in sections:
+        preferred_room_programmes = get_home_room_programmes(
+            section.get("group_programme"),
+            section.get("specialty_code"),
+        )
         base_group_id = section["group_name"] or str(section["group_id"])
         lesson_type = (section.get("lesson_type") or "lecture").strip().lower()
         pc_required = bool(section.get("requires_computers")) or lesson_type in PC_REQUIRED_LESSON_TYPES
@@ -129,6 +134,7 @@ def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
             "teacherId": section["instructor_id"],
             "teacherName": section["instructor_name"],
             "programme": section.get("programme") or "",
+            "preferredRoomProgrammes": preferred_room_programmes,
             "groupIds": [base_group_id],
             "lessonsPerWeek": int(section.get("classes_count") or 0),
             "studentCount": int(section.get("student_count") or 0),
@@ -148,6 +154,7 @@ def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
                 int(section.get("classes_count") or 0),
                 section.get("group_language") or "",
                 normalize_programme_text(section.get("programme") or ""),
+                tuple(sorted(normalize_programme_text(value) for value in preferred_room_programmes)),
             )
             grouped_lectures.setdefault(signature, []).append(section)
         else:
@@ -180,8 +187,25 @@ def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
                     }
                 )
 
-    for (course_id, instructor_id, classes_count, _group_language, _programme), lecture_sections in grouped_lectures.items():
+    for (
+        course_id,
+        instructor_id,
+        classes_count,
+        _group_language,
+        _programme,
+        _preferred_room_programmes,
+    ), lecture_sections in grouped_lectures.items():
         first_section = lecture_sections[0]
+        lecture_preferred_room_programmes = sorted(
+            {
+                programme
+                for section in lecture_sections
+                for programme in get_home_room_programmes(
+                    section.get("group_programme"),
+                    section.get("specialty_code"),
+                )
+            }
+        )
         plan_items.append(
             {
                 "id": "stream_"
@@ -203,6 +227,7 @@ def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
                 "subgroupIds": [],
                 "streamId": f"lecture-{course_id}-{instructor_id}",
                 "pcRequired": False,
+                "preferredRoomProgrammes": lecture_preferred_room_programmes,
             }
         )
 
@@ -285,7 +310,9 @@ def build_schedule(connection, semester, year, algorithm):
             g.student_count,
             g.has_subgroups,
             g.language AS group_language,
-            g.study_course
+            g.study_course,
+            g.programme AS group_programme,
+            g.specialty_code
         FROM sections s
         JOIN courses c ON c.id = s.course_id
         JOIN groups g ON g.id = s.group_id
