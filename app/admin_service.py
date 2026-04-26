@@ -50,6 +50,8 @@ def clear_collection_data(headers, collection):
                     db_execute(connection, "UPDATE sections SET teacher_id = NULL, teacher_name = ''")
                     db_execute(connection, "DELETE FROM teacher_preference_requests")
                     db_execute(connection, "DELETE FROM notifications WHERE recipient_role = 'teacher'")
+                else:
+                    db_execute(connection, "DELETE FROM room_blocks")
             elif collection == "students":
                 db_execute(connection, "DELETE FROM notifications WHERE recipient_role = 'student'")
             db_execute(connection, f"DELETE FROM {collection}")
@@ -70,6 +72,7 @@ def clear_all_data(headers):
                 "schedules",
                 "sections",
                 "teacher_preference_requests",
+                "room_blocks",
                 "iup_entries",
                 "course_components",
                 "courses",

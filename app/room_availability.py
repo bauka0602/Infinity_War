@@ -1,19 +1,47 @@
-from .db import db_execute
+from .db import db_execute, query_all
 
 
 def recompute_room_availability(connection):
+    # Room availability is a global on/off flag.
+    # Slot-level occupancy is derived from schedules and room_blocks separately.
     db_execute(
         connection,
         """
         UPDATE rooms
         SET available = CASE
-            WHEN EXISTS (
-                SELECT 1
-                FROM schedules s
-                WHERE s.room_id = rooms.id
-            )
-            THEN 0
-            ELSE 1
+            WHEN available IS NULL THEN 1
+            ELSE available
         END
         """,
     )
+
+
+def get_room_blocked_slots(connection, semester=None, year=None):
+    clauses = []
+    params = []
+    if semester is not None:
+        clauses.append("(semester = ? OR semester IS NULL)")
+        params.append(semester)
+    if year is not None:
+        clauses.append("(year = ? OR year IS NULL)")
+        params.append(year)
+    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    rows = query_all(
+        connection,
+        f"""
+        SELECT room_id, day, start_hour
+        FROM room_blocks
+        {where_sql}
+        ORDER BY room_id, day, start_hour
+        """,
+        tuple(params),
+    )
+    blocked_by_room = {}
+    for row in rows:
+        room_id = row.get("room_id")
+        day = str(row.get("day") or "").strip()
+        hour = row.get("start_hour")
+        if not room_id or not day or hour in (None, ""):
+            continue
+        blocked_by_room.setdefault(room_id, set()).add((day, int(hour)))
+    return blocked_by_room

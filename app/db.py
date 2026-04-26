@@ -454,6 +454,17 @@ def sqlite_schema():
         )
         """,
         """
+        CREATE TABLE IF NOT EXISTS room_blocks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            room_id INTEGER NOT NULL,
+            day TEXT NOT NULL,
+            start_hour INTEGER NOT NULL,
+            semester INTEGER,
+            year INTEGER,
+            reason TEXT
+        )
+        """,
+        """
         CREATE TABLE IF NOT EXISTS sections (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             course_id INTEGER NOT NULL,
@@ -662,6 +673,17 @@ def postgres_schema():
             algorithm TEXT,
             room_programme TEXT,
             room_programme_mismatch INTEGER DEFAULT 0
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS room_blocks (
+            id SERIAL PRIMARY KEY,
+            room_id INTEGER NOT NULL,
+            day TEXT NOT NULL,
+            start_hour INTEGER NOT NULL,
+            semester INTEGER,
+            year INTEGER,
+            reason TEXT
         )
         """,
         """
@@ -1082,6 +1104,12 @@ def ensure_database():
         ensure_column(connection, "schedules", "subgroup", "TEXT")
         ensure_column(connection, "schedules", "room_programme", "TEXT")
         ensure_column(connection, "schedules", "room_programme_mismatch", "INTEGER DEFAULT 0")
+        ensure_column(connection, "room_blocks", "room_id", "INTEGER")
+        ensure_column(connection, "room_blocks", "day", "TEXT")
+        ensure_column(connection, "room_blocks", "start_hour", "INTEGER")
+        ensure_column(connection, "room_blocks", "semester", "INTEGER")
+        ensure_column(connection, "room_blocks", "year", "INTEGER")
+        ensure_column(connection, "room_blocks", "reason", "TEXT")
         db_execute(
             connection,
             """

@@ -581,7 +581,7 @@ def test_manual_schedule_rejects_teacher_conflict(client, admin_auth_headers):
     assert second_response.json()["errorCode"] == "bad_request"
 
 
-def test_manual_schedule_recomputes_room_availability_and_scoped_reset_clears_it(client, admin_auth_headers):
+def test_manual_schedule_keeps_room_active_but_blocks_the_occupied_slot(client, admin_auth_headers):
     _seed_schedule_data(client, admin_auth_headers)
 
     sections_response = client.get("/api/sections", headers=admin_auth_headers)
@@ -614,7 +614,15 @@ def test_manual_schedule_recomputes_room_availability_and_scoped_reset_clears_it
 
     rooms_after_create = client.get("/api/rooms", headers=admin_auth_headers)
     assert rooms_after_create.status_code == 200
-    assert rooms_after_create.json()[0]["available"] == 0
+    assert rooms_after_create.json()[0]["available"] == 1
+
+    conflicting_create_response = client.post(
+        "/api/schedules",
+        headers=admin_auth_headers,
+        json=payload,
+    )
+    assert conflicting_create_response.status_code == 400
+    assert conflicting_create_response.json()["error"] == "Аудитория уже занята в это время"
 
     reset_response = client.post(
         "/api/schedules/reset",

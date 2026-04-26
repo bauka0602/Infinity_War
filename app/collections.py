@@ -9,7 +9,7 @@ from .education_programmes import resolve_education_group_value, room_matches_ho
 from .errors import ApiError
 from .lesson_rules import requires_computers_for_component
 from .programme_utils import same_programme
-from .room_availability import recompute_room_availability
+from .room_availability import get_room_blocked_slots, recompute_room_availability
 from .teacher_utils import build_teacher_name_signature, normalize_teacher_name
 
 LESSON_TYPE_ALIASES = {
@@ -482,6 +482,8 @@ def validate_schedule_payload(connection, payload, exclude_schedule_id=None):
     )
     if room is None:
         raise ApiError(400, "bad_request", "Для расписания не найдена аудитория")
+    if not int(room.get("available") or 0):
+        raise ApiError(400, "bad_request", "Аудитория отключена и недоступна для расписания")
 
     if int(payload.get("course_id") or section["course_id"]) != int(section["course_id"]):
         raise ApiError(400, "bad_request", "Дисциплина не совпадает с выбранной секцией")
@@ -525,6 +527,14 @@ def validate_schedule_payload(connection, payload, exclude_schedule_id=None):
     )
     if room_conflict:
         raise ApiError(400, "bad_request", "Аудитория уже занята в это время")
+
+    room_blocked_slots = get_room_blocked_slots(
+        connection,
+        payload.get("semester"),
+        payload.get("year"),
+    )
+    if (str(day).strip(), int(start_hour)) in room_blocked_slots.get(room_id, set()):
+        raise ApiError(400, "bad_request", "Аудитория недоступна в этот временной слот")
 
     teacher_conflict = query_one(
         connection,
@@ -1447,6 +1457,7 @@ def delete_collection_item(connection, collection, item_id):
         db_execute(connection, "DELETE FROM notifications WHERE recipient_role = 'teacher' AND recipient_id = ?", (item_id,))
     elif collection == "rooms":
         db_execute(connection, "DELETE FROM schedules WHERE room_id = ?", (item_id,))
+        db_execute(connection, "DELETE FROM room_blocks WHERE room_id = ?", (item_id,))
         schedules_changed = True
     elif collection == "students":
         db_execute(connection, "DELETE FROM notifications WHERE recipient_role = 'student' AND recipient_id = ?", (item_id,))

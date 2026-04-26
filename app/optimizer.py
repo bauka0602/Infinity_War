@@ -121,6 +121,13 @@ def _normalize_rooms(payload):
 
         floor_value = room.get("floor")
         pc_count_value = room.get("pcCount")
+        unavailable_slots = set()
+        for item in room.get("unavailableSlots") or []:
+            day = item.get("day")
+            hour = item.get("hour")
+            if day is None or hour is None:
+                continue
+            unavailable_slots.add((str(day), int(hour)))
         normalized.append(
             {
                 "id": room_id,
@@ -131,6 +138,7 @@ def _normalize_rooms(payload):
                 "building": str(room.get("building") or ""),
                 "floor": int(floor_value) if floor_value not in (None, "") else None,
                 "pc_count": int(pc_count_value) if pc_count_value not in (None, "") else 0,
+                "unavailable_slots": unavailable_slots,
             }
         )
     return normalized
@@ -341,6 +349,15 @@ def _group_allowed_slots(item, slots, teacher):
     return allowed_slots
 
 
+def _slot_has_available_room(slot, room_ids, room_map):
+    slot_key = (slot["day"], slot["hour"])
+    for room_id in room_ids:
+        room = room_map.get(room_id)
+        if room and slot_key not in room.get("unavailable_slots", set()):
+            return True
+    return False
+
+
 def optimize_schedule(payload):
     if cp_model is None:
         raise ApiError(
@@ -402,7 +419,11 @@ def optimize_schedule(payload):
         compatible_rooms_by_item[item["id"]] = compatible_rooms
 
         teacher = teacher_map[item["teacher_id"]]
-        allowed_slots = _group_allowed_slots(item, slots, teacher)
+        allowed_slots = [
+            slot_id
+            for slot_id in _group_allowed_slots(item, slots, teacher)
+            if _slot_has_available_room(slot_map[slot_id], compatible_rooms, room_map)
+        ]
         allowed_slots_by_item[item["id"]] = allowed_slots
         if len(allowed_slots) < item["lessons_per_week"]:
             incompatibilities.append(
@@ -444,6 +465,10 @@ def optimize_schedule(payload):
         for slot_id in allowed_slots_by_item[item_id]:
             room_vars_for_slot = []
             for room_id in compatible_rooms_by_item[item_id]:
+                room = room_map[room_id]
+                slot = slot_map[slot_id]
+                if (slot["day"], slot["hour"]) in room.get("unavailable_slots", set()):
+                    continue
                 variable_name = f"x__{item_id}__{slot_id}__{room_id}"
                 var = model.NewBoolVar(variable_name)
                 decision_vars[(item_id, slot_id, room_id)] = var

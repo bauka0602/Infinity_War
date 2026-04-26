@@ -1,5 +1,5 @@
 from calendar import monthrange
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from math import ceil
 
 from .db import db_execute, db_executemany, query_all
@@ -8,7 +8,7 @@ from .errors import ApiError
 from .optimizer import optimize_schedule
 from .preference_service import get_approved_teacher_preferences
 from .programme_utils import normalize_programme_text
-from .room_availability import recompute_room_availability
+from .room_availability import get_room_blocked_slots, recompute_room_availability
 
 DAY_NAME_TO_INDEX = {
     "monday": 0,
@@ -266,6 +266,7 @@ def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
                 "building": room.get("building") or "",
                 "floor": None,
                 "pcCount": int(room.get("computer_count") or 0),
+                "unavailableSlots": room.get("unavailable_slots") or [],
             }
             for room in rooms
         ],
@@ -278,6 +279,16 @@ def _day_to_iso(selected_monday, day_name):
     if day_index is None:
         raise ApiError(400, "bad_request", f"Неизвестный день в оптимизаторе: {day_name}")
     return (selected_monday + timedelta(days=day_index)).isoformat()
+
+
+def _room_block_day_for_optimizer(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        return datetime.fromisoformat(raw).strftime("%A")
+    except ValueError:
+        return raw
 
 
 def academic_periods_for_schedule_semester(semester):
@@ -335,9 +346,17 @@ def build_schedule(connection, semester, year, algorithm):
         """
         SELECT id, number, capacity, available, type, building, programme, computer_count
         FROM rooms
+        WHERE coalesce(available, 1) = 1
         ORDER BY capacity, id
         """,
     )
+    room_blocked_slots = get_room_blocked_slots(connection, semester, year)
+    for room in rooms:
+        room["unavailable_slots"] = [
+            {"day": _room_block_day_for_optimizer(day), "hour": hour}
+            for day, hour in sorted(room_blocked_slots.get(room["id"], set()))
+            if _room_block_day_for_optimizer(day)
+        ]
 
     missing_parts = []
     if not sections:
