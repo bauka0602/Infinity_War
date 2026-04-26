@@ -11,6 +11,7 @@ from .security import (
     sanitize_user,
     verify_password,
 )
+from .teacher_utils import build_teacher_name_signature, normalize_teacher_name
 
 
 def ensure_teacher_email_allowed(email, role):
@@ -169,6 +170,51 @@ def _clear_teacher_claim_state(connection, teacher_id):
     )
 
 
+def _get_teacher_assigned_disciplines(connection, teacher_id):
+    rows = query_all(
+        connection,
+        """
+        SELECT discipline_name
+        FROM (
+            SELECT course_name AS discipline_name
+            FROM course_components
+            WHERE teacher_id = ?
+              AND trim(coalesce(course_name, '')) <> ''
+
+            UNION
+
+            SELECT name AS discipline_name
+            FROM courses
+            WHERE instructor_id = ?
+              AND trim(coalesce(name, '')) <> ''
+
+            UNION
+
+            SELECT course_name AS discipline_name
+            FROM sections
+            WHERE teacher_id = ?
+              AND trim(coalesce(course_name, '')) <> ''
+        ) assigned
+        ORDER BY discipline_name
+        """,
+        (teacher_id, teacher_id, teacher_id),
+    )
+    return [row["discipline_name"] for row in rows if row.get("discipline_name")]
+
+
+def _sanitize_profile_user(connection, user):
+    if user and user.get("role") == "teacher":
+        disciplines = _get_teacher_assigned_disciplines(connection, user["id"])
+        return sanitize_user(
+            {
+                **user,
+                "assigned_disciplines": disciplines,
+                "assigned_disciplines_text": ", ".join(disciplines),
+            }
+        )
+    return sanitize_user(user)
+
+
 def _find_login_account(connection, email, selected_role):
     normalized = email.strip().lower()
     if selected_role == "admin":
@@ -277,8 +323,6 @@ def register_user(payload):
         teacher_missing = []
         if not phone:
             teacher_missing.append("phone")
-        if not subject_taught:
-            teacher_missing.append("subjectTaught")
         if not teaching_languages:
             teacher_missing.append("teachingLanguages")
         if teacher_missing:
@@ -356,9 +400,10 @@ def register_user(payload):
                     connection,
                     """
                     INSERT INTO teachers (
-                        name, email, password, token, avatar_data, phone, subject_taught, weekly_hours_limit, teaching_languages
+                        name, email, password, token, avatar_data, phone, subject_taught,
+                        weekly_hours_limit, teaching_languages, name_normalized, name_signature
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         payload["displayName"],
@@ -370,6 +415,8 @@ def register_user(payload):
                         subject_taught,
                         None,
                         ",".join(teaching_languages),
+                        normalize_teacher_name(payload["displayName"]),
+                        build_teacher_name_signature(payload["displayName"]),
                     ),
                 )
                 user = query_one(
@@ -418,12 +465,14 @@ def register_user(payload):
                     (user_id,),
                 )
             connection.commit()
-
-    return sanitize_user(user)
+            return _sanitize_profile_user(connection, user)
 
 
 def get_current_profile(headers):
-    return sanitize_user(require_auth_user(headers))
+    user = require_auth_user(headers)
+    with DB_LOCK:
+        with get_connection() as connection:
+            return _sanitize_profile_user(connection, user)
 
 
 def update_profile_avatar(headers, payload):
@@ -474,7 +523,7 @@ def update_profile_avatar(headers, payload):
             connection.commit()
             updated_user = _find_account_by_token(connection, user["token"])
 
-    return sanitize_user(updated_user)
+    return _sanitize_profile_user(connection, updated_user)
 
 
 def login_user(payload):

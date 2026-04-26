@@ -8,6 +8,7 @@ from .config import DB_LOCK
 from .db import db_execute, get_connection, insert_and_get_id, query_all, query_one
 from .errors import ApiError
 from .lesson_rules import requires_computers_for_component
+from .teacher_utils import build_teacher_name_signature, normalize_teacher_name
 
 COURSE_EDUCATIONAL_PROGRAMME_GROUP_ALIASES = {
     "b057": "B057 - Информационные технологии",
@@ -737,25 +738,48 @@ def _teacher_email_from_name(name):
 
 
 def _upsert_iup_teacher(connection, teacher_name, language):
+    normalized_name = normalize_teacher_name(teacher_name)
+    name_signature = build_teacher_name_signature(teacher_name)
     existing = query_one(
         connection,
-        "SELECT id, name FROM teachers WHERE lower(name) = lower(?)",
-        (teacher_name,),
+        """
+        SELECT id, name
+        FROM teachers
+        WHERE lower(name) = lower(?)
+           OR coalesce(name_normalized, '') = ?
+           OR (coalesce(name_signature, '') = ? AND ? <> '')
+        ORDER BY id
+        LIMIT 1
+        """,
+        (teacher_name, normalized_name, name_signature, name_signature),
     )
     if existing:
+        db_execute(
+            connection,
+            """
+            UPDATE teachers
+            SET
+                name_normalized = COALESCE(NULLIF(name_normalized, ''), ?),
+                name_signature = COALESCE(NULLIF(name_signature, ''), ?)
+            WHERE id = ?
+            """,
+            (normalized_name, name_signature, existing["id"]),
+        )
         return existing["id"], "existing"
 
     teacher_id = insert_and_get_id(
         connection,
         """
-        INSERT INTO teachers (name, email, subject_taught, teaching_languages)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO teachers (name, email, subject_taught, teaching_languages, name_normalized, name_signature)
+        VALUES (?, ?, ?, ?, ?, ?)
         """,
         (
             teacher_name,
             _teacher_email_from_name(teacher_name),
             "",
             language or "ru,kk",
+            normalized_name,
+            name_signature,
         ),
     )
     return teacher_id, "inserted"

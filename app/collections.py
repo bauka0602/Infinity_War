@@ -10,6 +10,7 @@ from .errors import ApiError
 from .lesson_rules import requires_computers_for_component
 from .programme_utils import same_programme
 from .room_availability import recompute_room_availability
+from .teacher_utils import build_teacher_name_signature, normalize_teacher_name
 
 LESSON_TYPE_ALIASES = {
     "lecture": "lecture",
@@ -74,6 +75,56 @@ def normalize_subgroup_mode(value, lesson_type="lecture"):
 
 def section_requires_computers(lesson_type, course_code="", course_name="", study_year=None):
     return 1 if requires_computers_for_component(lesson_type, course_code, course_name, study_year) else 0
+
+
+def _teacher_disciplines_map(connection):
+    rows = query_all(
+        connection,
+        """
+        SELECT teacher_id, discipline_name
+        FROM (
+            SELECT teacher_id, course_name AS discipline_name
+            FROM course_components
+            WHERE teacher_id IS NOT NULL
+              AND trim(coalesce(course_name, '')) <> ''
+
+            UNION
+
+            SELECT instructor_id AS teacher_id, name AS discipline_name
+            FROM courses
+            WHERE instructor_id IS NOT NULL
+              AND trim(coalesce(name, '')) <> ''
+
+            UNION
+
+            SELECT teacher_id, course_name AS discipline_name
+            FROM sections
+            WHERE teacher_id IS NOT NULL
+              AND trim(coalesce(course_name, '')) <> ''
+        ) assigned
+        ORDER BY teacher_id, discipline_name
+        """,
+    )
+    disciplines_by_teacher = {}
+    for row in rows:
+        teacher_id = row.get("teacher_id")
+        discipline_name = str(row.get("discipline_name") or "").strip()
+        if not teacher_id or not discipline_name:
+            continue
+        disciplines = disciplines_by_teacher.setdefault(teacher_id, [])
+        if discipline_name not in disciplines:
+            disciplines.append(discipline_name)
+    return disciplines_by_teacher
+
+
+def _serialize_teacher(row, disciplines_by_teacher=None):
+    disciplines = list((disciplines_by_teacher or {}).get(row["id"], []))
+    return {
+        **row,
+        "assigned_disciplines": disciplines,
+        "assigned_disciplines_text": ", ".join(disciplines),
+        "assigned_disciplines_count": len(disciplines),
+    }
 
 
 def resolve_section_teacher(connection, course_id, lesson_type, payload):
@@ -571,7 +622,7 @@ def list_collection(connection, collection, query, user=None):
         )
 
     if collection == "teachers":
-        return query_all(
+        teachers = query_all(
             connection,
             """
             SELECT id, name, email, phone, subject_taught, weekly_hours_limit, teaching_languages
@@ -579,6 +630,8 @@ def list_collection(connection, collection, query, user=None):
             ORDER BY id
             """,
         )
+        disciplines_by_teacher = _teacher_disciplines_map(connection)
+        return [_serialize_teacher(row, disciplines_by_teacher) for row in teachers]
 
     if collection == "students":
         return query_all(
@@ -826,8 +879,11 @@ def create_collection_item(connection, collection, payload):
         item_id = insert_and_get_id(
             connection,
             """
-            INSERT INTO teachers (name, email, phone, subject_taught, weekly_hours_limit, teaching_languages)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO teachers (
+                name, email, phone, subject_taught, weekly_hours_limit, teaching_languages,
+                name_normalized, name_signature
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 normalized.get("name"),
@@ -836,10 +892,12 @@ def create_collection_item(connection, collection, payload):
                 normalized.get("subject_taught", normalized.get("department", normalized.get("specialization", ""))),
                 normalized.get("weekly_hours_limit", normalized.get("max_hours_per_week")),
                 teaching_languages,
+                normalize_teacher_name(normalized.get("name")),
+                build_teacher_name_signature(normalized.get("name")),
             ),
         )
         connection.commit()
-        return query_one(
+        teacher = query_one(
             connection,
             """
             SELECT id, name, email, phone, subject_taught, weekly_hours_limit, teaching_languages
@@ -848,6 +906,7 @@ def create_collection_item(connection, collection, payload):
             """,
             (item_id,),
         )
+        return _serialize_teacher(teacher, _teacher_disciplines_map(connection))
 
     if collection == "rooms":
         normalized = normalize_number_fields(payload, ["capacity", "available", "is_available", "computer_count"])
@@ -1135,7 +1194,15 @@ def update_collection_item(connection, collection, item_id, payload):
             connection,
             """
             UPDATE teachers
-            SET name = ?, email = ?, phone = ?, subject_taught = ?, weekly_hours_limit = ?, teaching_languages = ?
+            SET
+                name = ?,
+                email = ?,
+                phone = ?,
+                subject_taught = ?,
+                weekly_hours_limit = ?,
+                teaching_languages = ?,
+                name_normalized = ?,
+                name_signature = ?
             WHERE id = ?
             """,
             (
@@ -1145,11 +1212,13 @@ def update_collection_item(connection, collection, item_id, payload):
                 normalized.get("subject_taught", normalized.get("department", normalized.get("specialization", ""))),
                 normalized.get("weekly_hours_limit", normalized.get("max_hours_per_week")),
                 teaching_languages,
+                normalize_teacher_name(normalized.get("name")),
+                build_teacher_name_signature(normalized.get("name")),
                 item_id,
             ),
         )
         connection.commit()
-        return query_one(
+        teacher = query_one(
             connection,
             """
             SELECT id, name, email, phone, subject_taught, weekly_hours_limit, teaching_languages
@@ -1158,6 +1227,7 @@ def update_collection_item(connection, collection, item_id, payload):
             """,
             (item_id,),
         )
+        return _serialize_teacher(teacher, _teacher_disciplines_map(connection))
 
     if collection == "rooms":
         normalized = normalize_number_fields(payload, ["capacity", "available", "is_available", "computer_count"])

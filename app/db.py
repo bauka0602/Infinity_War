@@ -11,6 +11,7 @@ except ImportError:
 from .config import DATA_DIR, DATABASE_URL, DB_ENGINE, DB_FILE, LEGACY_JSON_FILE
 from .security import hash_password
 from .store import default_store
+from .teacher_utils import build_teacher_name_signature, normalize_teacher_name
 
 
 def get_connection():
@@ -178,8 +179,8 @@ def seed_from_store(connection, store):
         db_execute(
             connection,
             """
-            INSERT INTO teachers (name, email, phone, subject_taught, weekly_hours_limit)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO teachers (name, email, phone, subject_taught, weekly_hours_limit, name_normalized, name_signature)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 teacher["name"],
@@ -187,6 +188,8 @@ def seed_from_store(connection, store):
                 teacher.get("phone", ""),
                 teacher.get("specialization", teacher.get("department", "")),
                 teacher.get("max_hours_per_week", teacher.get("weekly_hours_limit")),
+                normalize_teacher_name(teacher["name"]),
+                build_teacher_name_signature(teacher["name"]),
             ),
         )
 
@@ -342,6 +345,8 @@ def sqlite_schema():
             phone TEXT,
             subject_taught TEXT,
             weekly_hours_limit INTEGER,
+            name_normalized TEXT,
+            name_signature TEXT,
             teaching_languages TEXT DEFAULT 'ru,kk'
         )
         """,
@@ -551,6 +556,8 @@ def postgres_schema():
             phone TEXT,
             subject_taught TEXT,
             weekly_hours_limit INTEGER,
+            name_normalized TEXT,
+            name_signature TEXT,
             teaching_languages TEXT DEFAULT 'ru,kk'
         )
         """,
@@ -774,9 +781,9 @@ def migrate_legacy_role_accounts(connection):
                     connection,
                     """
                     INSERT INTO teachers (
-                        name, email, password, token, avatar_data, phone, subject_taught, weekly_hours_limit
+                        name, email, password, token, avatar_data, phone, subject_taught, weekly_hours_limit, name_normalized, name_signature
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         account["full_name"],
@@ -787,6 +794,8 @@ def migrate_legacy_role_accounts(connection):
                         "",
                         account.get("department", ""),
                         None,
+                        normalize_teacher_name(account["full_name"]),
+                        build_teacher_name_signature(account["full_name"]),
                     ),
                 )
             else:
@@ -799,7 +808,9 @@ def migrate_legacy_role_accounts(connection):
                         password = COALESCE(password, ?),
                         token = COALESCE(token, ?),
                         avatar_data = COALESCE(avatar_data, ?),
-                        subject_taught = COALESCE(NULLIF(subject_taught, ''), ?)
+                        subject_taught = COALESCE(NULLIF(subject_taught, ''), ?),
+                        name_normalized = COALESCE(NULLIF(name_normalized, ''), ?),
+                        name_signature = COALESCE(NULLIF(name_signature, ''), ?)
                     WHERE id = ?
                     """,
                     (
@@ -808,6 +819,8 @@ def migrate_legacy_role_accounts(connection):
                         account["token"],
                         account.get("avatar_data"),
                         account.get("department", ""),
+                        normalize_teacher_name(account["full_name"]),
+                        build_teacher_name_signature(account["full_name"]),
                         existing_teacher["id"],
                     ),
                 )
@@ -911,6 +924,8 @@ def ensure_database():
         ensure_column(connection, "courses", "requires_computers", "INTEGER DEFAULT 0")
         ensure_column(connection, "teachers", "subject_taught", "TEXT")
         ensure_column(connection, "teachers", "weekly_hours_limit", "INTEGER")
+        ensure_column(connection, "teachers", "name_normalized", "TEXT")
+        ensure_column(connection, "teachers", "name_signature", "TEXT")
         ensure_column(connection, "teachers", "password", "TEXT")
         ensure_column(connection, "teachers", "token", "TEXT")
         ensure_column(connection, "teachers", "claim_code", "TEXT")
@@ -918,6 +933,21 @@ def ensure_database():
         ensure_column(connection, "teachers", "claim_requested_at", "TEXT")
         ensure_column(connection, "teachers", "avatar_data", "TEXT")
         ensure_column(connection, "teachers", "teaching_languages", "TEXT DEFAULT 'ru,kk'")
+        teacher_rows = query_all(connection, "SELECT id, name FROM teachers")
+        for teacher in teacher_rows:
+            db_execute(
+                connection,
+                """
+                UPDATE teachers
+                SET name_normalized = ?, name_signature = ?
+                WHERE id = ?
+                """,
+                (
+                    normalize_teacher_name(teacher.get("name", "")),
+                    build_teacher_name_signature(teacher.get("name", "")),
+                    teacher["id"],
+                ),
+            )
         ensure_column(connection, "students", "avatar_data", "TEXT")
         ensure_column(connection, "students", "department", "TEXT")
         ensure_column(connection, "students", "programme", "TEXT")

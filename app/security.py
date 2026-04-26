@@ -55,6 +55,8 @@ def sanitize_user(row):
         "avatarData": row.get("avatar_data"),
         "department": row.get("department", ""),
         "subjectTaught": row.get("subject_taught", ""),
+        "assignedDisciplines": row.get("assigned_disciplines", []),
+        "assignedDisciplinesText": row.get("assigned_disciplines_text", ""),
         "programmeName": row.get("programme", ""),
         "groupId": row.get("group_id"),
         "groupName": row.get("group_name", ""),
