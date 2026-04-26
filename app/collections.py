@@ -3,7 +3,7 @@ from copy import deepcopy
 from datetime import date
 from math import ceil
 
-from .config import TEACHER_EMAIL_DOMAIN
+from .config import DB_ENGINE, TEACHER_EMAIL_DOMAIN
 from .db import db_execute, insert_and_get_id, query_all, query_one
 from .education_programmes import (
     get_home_room_programmes,
@@ -38,6 +38,40 @@ LESSON_TYPE_ALIASES = {
     "seminar": "seminar",
     "семинар": "seminar",
 }
+
+GROUP_SUBGROUPS_AGGREGATE_SQL = (
+    """
+    COALESCE(
+        (
+            SELECT string_agg(subgroup_value, ',' ORDER BY subgroup_value)
+            FROM (
+                SELECT DISTINCT upper(trim(s.subgroup)) AS subgroup_value
+                FROM schedules s
+                WHERE s.group_id = g.id
+                  AND trim(coalesce(s.subgroup, '')) <> ''
+            ) subgroup_values
+        ),
+        ''
+    ) AS generated_subgroups
+    """
+    if DB_ENGINE == "postgres"
+    else
+    """
+    COALESCE(
+        (
+            SELECT group_concat(subgroup_value, ',')
+            FROM (
+                SELECT DISTINCT upper(trim(s.subgroup)) AS subgroup_value
+                FROM schedules s
+                WHERE s.group_id = g.id
+                  AND trim(coalesce(s.subgroup, '')) <> ''
+                ORDER BY subgroup_value
+            )
+        ),
+        ''
+    ) AS generated_subgroups
+    """
+)
 
 SPECIALTY_PROGRAMME_ALIASES = {
     "би": "Бизнес-информатика",
@@ -924,22 +958,10 @@ def list_collection(connection, collection, query, user=None):
                     THEN 1
                     ELSE 0
                 END AS auto_has_subgroups,
-                COALESCE(
-                    (
-                        SELECT group_concat(subgroup_value, ',')
-                        FROM (
-                            SELECT DISTINCT upper(trim(s.subgroup)) AS subgroup_value
-                            FROM schedules s
-                            WHERE s.group_id = g.id
-                              AND trim(coalesce(s.subgroup, '')) <> ''
-                            ORDER BY subgroup_value
-                        )
-                    ),
-                    ''
-                ) AS generated_subgroups
+                {GROUP_SUBGROUPS_AGGREGATE_SQL}
             FROM groups g
             ORDER BY g.id
-            """,
+            """.format(GROUP_SUBGROUPS_AGGREGATE_SQL=GROUP_SUBGROUPS_AGGREGATE_SQL),
         )
 
     if collection == "sections":

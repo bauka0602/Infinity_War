@@ -1,10 +1,44 @@
 from fastapi import APIRouter
 
 from ...auth_service import search_claimable_teachers
-from ...config import DB_LOCK
+from ...config import DB_ENGINE, DB_LOCK
 from ...db import get_connection, query_all
 
 router = APIRouter()
+
+GROUP_SUBGROUPS_AGGREGATE_SQL = (
+    """
+    COALESCE(
+        (
+            SELECT string_agg(subgroup_value, ',' ORDER BY subgroup_value)
+            FROM (
+                SELECT DISTINCT upper(trim(s.subgroup)) AS subgroup_value
+                FROM schedules s
+                WHERE s.group_id = g.id
+                  AND trim(coalesce(s.subgroup, '')) <> ''
+            ) subgroup_values
+        ),
+        ''
+    ) AS generated_subgroups
+    """
+    if DB_ENGINE == "postgres"
+    else
+    """
+    COALESCE(
+        (
+            SELECT group_concat(subgroup_value, ',')
+            FROM (
+                SELECT DISTINCT upper(trim(s.subgroup)) AS subgroup_value
+                FROM schedules s
+                WHERE s.group_id = g.id
+                  AND trim(coalesce(s.subgroup, '')) <> ''
+                ORDER BY subgroup_value
+            )
+        ),
+        ''
+    ) AS generated_subgroups
+    """
+)
 
 
 @router.get("/public/groups")
@@ -34,26 +68,13 @@ def public_groups():
                         THEN 1
                         ELSE 0
                     END AS auto_has_subgroups,
-                    COALESCE(
-                        (
-                            SELECT group_concat(subgroup_value, ',')
-                            FROM (
-                                SELECT DISTINCT upper(trim(s.subgroup)) AS subgroup_value
-                                FROM schedules s
-                                WHERE s.group_id = g.id
-                                  AND trim(coalesce(s.subgroup, '')) <> ''
-                                ORDER BY subgroup_value
-                            )
-                        ),
-                        ''
-                    ) AS generated_subgroups
+                    {GROUP_SUBGROUPS_AGGREGATE_SQL}
                 FROM groups g
                 ORDER BY g.name, g.id
-                """,
+                """.format(GROUP_SUBGROUPS_AGGREGATE_SQL=GROUP_SUBGROUPS_AGGREGATE_SQL),
             )
 
 
 @router.get("/public/teachers/claim-search")
 def public_teachers_claim_search(q: str = ""):
     return search_claimable_teachers(q)
-
