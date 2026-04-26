@@ -47,6 +47,78 @@ def normalize_phone_search(value):
     return "".join(ch for ch in str(value or "") if ch.isdigit())
 
 
+def _count_students_in_group(connection, group_id):
+    return int(
+        query_one(
+            connection,
+            """
+            SELECT COUNT(*) AS count
+            FROM students
+            WHERE group_id = ?
+            """,
+            (group_id,),
+        )["count"]
+    )
+
+
+def _count_students_in_subgroup(connection, group_id, subgroup):
+    return int(
+        query_one(
+            connection,
+            """
+            SELECT COUNT(*) AS count
+            FROM students
+            WHERE group_id = ?
+              AND upper(coalesce(subgroup, '')) = ?
+            """,
+            (group_id, subgroup),
+        )["count"]
+    )
+
+
+def _subgroup_capacity_limits(group_capacity):
+    normalized_capacity = max(0, int(group_capacity or 0))
+    first_capacity = (normalized_capacity + 1) // 2
+    second_capacity = normalized_capacity // 2
+    return {"A": first_capacity, "B": second_capacity}
+
+
+def _enforce_student_group_capacity(connection, selected_group, subgroup):
+    group_id = selected_group["id"]
+    group_capacity = max(0, int(selected_group.get("student_count") or 0))
+    current_group_count = _count_students_in_group(connection, group_id)
+    if group_capacity and current_group_count >= group_capacity:
+        raise ApiError(400, "group_full", "Группа уже заполнена")
+
+    requires_subgroup = bool(
+        selected_group.get("auto_has_subgroups") or selected_group.get("has_subgroups")
+    )
+    if not requires_subgroup:
+        return
+
+    subgroup_limits = _subgroup_capacity_limits(group_capacity)
+    selected_subgroup = str(subgroup or "").strip().upper()
+    selected_limit = subgroup_limits.get(selected_subgroup, 0)
+    if selected_limit <= 0:
+        raise ApiError(400, "subgroup_full", f"Подгруппа {selected_subgroup} недоступна")
+
+    current_subgroup_count = _count_students_in_subgroup(connection, group_id, selected_subgroup)
+    if current_subgroup_count < selected_limit:
+        return
+
+    alternate_subgroup = "B" if selected_subgroup == "A" else "A"
+    alternate_limit = subgroup_limits.get(alternate_subgroup, 0)
+    alternate_count = _count_students_in_subgroup(connection, group_id, alternate_subgroup)
+    if alternate_limit > 0 and alternate_count < alternate_limit:
+        raise ApiError(
+            400,
+            "subgroup_full",
+            f"Подгруппа {selected_subgroup} заполнена, выберите {alternate_subgroup}",
+        )
+
+    raise ApiError(400, "group_full", "Группа уже заполнена")
+
+
 def _utc_now():
     return datetime.now(timezone.utc)
 
@@ -359,6 +431,7 @@ def register_user(payload):
                     SELECT
                         g.id,
                         g.name,
+                        g.student_count,
                         g.has_subgroups,
                         g.language,
                         CASE
@@ -394,6 +467,8 @@ def register_user(payload):
                         )
                 else:
                     subgroup = ""
+
+                _enforce_student_group_capacity(connection, selected_group, subgroup)
 
             if role == "teacher" and existing_teacher and not _is_teacher_claimed(existing_teacher):
                 raise ApiError(
