@@ -748,13 +748,13 @@ def _upsert_iup_teacher(connection, teacher_name, language):
     teacher_id = insert_and_get_id(
         connection,
         """
-        INSERT INTO teachers (name, email, department, teaching_languages)
+        INSERT INTO teachers (name, email, subject_taught, teaching_languages)
         VALUES (?, ?, ?, ?)
         """,
         (
             teacher_name,
             _teacher_email_from_name(teacher_name),
-            "Институт бизнеса и цифровых технологий",
+            "",
             language or "ru,kk",
         ),
     )

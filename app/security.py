@@ -54,6 +54,7 @@ def sanitize_user(row):
         "token": row["token"],
         "avatarData": row.get("avatar_data"),
         "department": row.get("department", ""),
+        "subjectTaught": row.get("subject_taught", ""),
         "programmeName": row.get("programme", ""),
         "groupId": row.get("group_id"),
         "groupName": row.get("group_name", ""),

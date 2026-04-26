@@ -95,7 +95,7 @@ def _find_account_by_token(connection, token):
         """
         SELECT
             id, email, phone, name AS full_name, 'teacher' AS role, token, avatar_data,
-            department, '' AS programme, NULL AS group_id, '' AS group_name, '' AS subgroup, '' AS language, teaching_languages
+            '' AS department, subject_taught, '' AS programme, NULL AS group_id, '' AS group_name, '' AS subgroup, '' AS language, teaching_languages
         FROM teachers
         WHERE token = ?
         """,
@@ -135,7 +135,7 @@ def _find_teacher_by_email(connection, email):
     return query_one(
         connection,
         """
-        SELECT id, email, password, token, name, phone, department, weekly_hours_limit, avatar_data, teaching_languages
+        SELECT id, email, password, token, name, phone, subject_taught, weekly_hours_limit, avatar_data, teaching_languages
         FROM teachers
         WHERE lower(email) = lower(?)
         """,
@@ -148,7 +148,7 @@ def _find_teacher_by_id(connection, teacher_id):
         connection,
         """
         SELECT
-            id, email, password, token, name, phone, department, weekly_hours_limit,
+            id, email, password, token, name, phone, subject_taught, weekly_hours_limit,
             avatar_data, teaching_languages, claim_code, claim_code_expires_at, claim_requested_at
         FROM teachers
         WHERE id = ?
@@ -187,7 +187,7 @@ def _find_login_account(connection, email, selected_role):
             """
             SELECT
                 id, email, phone, password, name AS full_name, 'teacher' AS role, token, avatar_data,
-                department, '' AS programme, NULL AS group_id, '' AS group_name, '' AS subgroup, '' AS language, teaching_languages
+                '' AS department, subject_taught, '' AS programme, NULL AS group_id, '' AS group_name, '' AS subgroup, '' AS language, teaching_languages
             FROM teachers
             WHERE lower(email) = lower(?)
             """,
@@ -243,6 +243,7 @@ def register_user(payload):
     email = payload["email"].strip()
     phone = (payload.get("phone") or "").strip()
     department = (payload.get("department") or "").strip()
+    subject_taught = (payload.get("subjectTaught") or payload.get("subject_taught") or department).strip()
     programme_name = (payload.get("programmeName") or "").strip()
     subgroup = (payload.get("subgroup") or "").strip().upper()
     group_id = payload.get("groupId")
@@ -276,8 +277,8 @@ def register_user(payload):
         teacher_missing = []
         if not phone:
             teacher_missing.append("phone")
-        if not department:
-            teacher_missing.append("department")
+        if not subject_taught:
+            teacher_missing.append("subjectTaught")
         if not teaching_languages:
             teacher_missing.append("teachingLanguages")
         if teacher_missing:
@@ -355,7 +356,7 @@ def register_user(payload):
                     connection,
                     """
                     INSERT INTO teachers (
-                        name, email, password, token, avatar_data, phone, department, weekly_hours_limit, teaching_languages
+                        name, email, password, token, avatar_data, phone, subject_taught, weekly_hours_limit, teaching_languages
                     )
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
@@ -366,7 +367,7 @@ def register_user(payload):
                         token,
                         None,
                         phone,
-                        department,
+                        subject_taught,
                         None,
                         ",".join(teaching_languages),
                     ),
@@ -376,7 +377,7 @@ def register_user(payload):
                     """
                     SELECT
                         id, email, phone, name AS full_name, 'teacher' AS role, token, avatar_data,
-                        department, '' AS programme, NULL AS group_id, '' AS group_name, '' AS subgroup, '' AS language, teaching_languages
+                        '' AS department, subject_taught, '' AS programme, NULL AS group_id, '' AS group_name, '' AS subgroup, '' AS language, teaching_languages
                     FROM teachers
                     WHERE id = ?
                     """,

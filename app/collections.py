@@ -574,7 +574,7 @@ def list_collection(connection, collection, query, user=None):
         return query_all(
             connection,
             """
-            SELECT id, name, email, phone, department, weekly_hours_limit, teaching_languages
+            SELECT id, name, email, phone, subject_taught, weekly_hours_limit, teaching_languages
             FROM teachers
             ORDER BY id
             """,
@@ -826,14 +826,14 @@ def create_collection_item(connection, collection, payload):
         item_id = insert_and_get_id(
             connection,
             """
-            INSERT INTO teachers (name, email, phone, department, weekly_hours_limit, teaching_languages)
+            INSERT INTO teachers (name, email, phone, subject_taught, weekly_hours_limit, teaching_languages)
             VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 normalized.get("name"),
                 normalized.get("email"),
                 normalized.get("phone", ""),
-                normalized.get("department", normalized.get("specialization", "")),
+                normalized.get("subject_taught", normalized.get("department", normalized.get("specialization", ""))),
                 normalized.get("weekly_hours_limit", normalized.get("max_hours_per_week")),
                 teaching_languages,
             ),
@@ -842,7 +842,7 @@ def create_collection_item(connection, collection, payload):
         return query_one(
             connection,
             """
-            SELECT id, name, email, phone, department, weekly_hours_limit, teaching_languages
+            SELECT id, name, email, phone, subject_taught, weekly_hours_limit, teaching_languages
             FROM teachers
             WHERE id = ?
             """,
@@ -1135,14 +1135,14 @@ def update_collection_item(connection, collection, item_id, payload):
             connection,
             """
             UPDATE teachers
-            SET name = ?, email = ?, phone = ?, department = ?, weekly_hours_limit = ?, teaching_languages = ?
+            SET name = ?, email = ?, phone = ?, subject_taught = ?, weekly_hours_limit = ?, teaching_languages = ?
             WHERE id = ?
             """,
             (
                 normalized.get("name"),
                 normalized.get("email"),
                 normalized.get("phone", ""),
-                normalized.get("department", normalized.get("specialization", "")),
+                normalized.get("subject_taught", normalized.get("department", normalized.get("specialization", ""))),
                 normalized.get("weekly_hours_limit", normalized.get("max_hours_per_week")),
                 teaching_languages,
                 item_id,
@@ -1152,7 +1152,7 @@ def update_collection_item(connection, collection, item_id, payload):
         return query_one(
             connection,
             """
-            SELECT id, name, email, phone, department, weekly_hours_limit, teaching_languages
+            SELECT id, name, email, phone, subject_taught, weekly_hours_limit, teaching_languages
             FROM teachers
             WHERE id = ?
             """,

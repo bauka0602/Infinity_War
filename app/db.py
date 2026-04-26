@@ -178,7 +178,7 @@ def seed_from_store(connection, store):
         db_execute(
             connection,
             """
-            INSERT INTO teachers (name, email, phone, department, weekly_hours_limit)
+            INSERT INTO teachers (name, email, phone, subject_taught, weekly_hours_limit)
             VALUES (?, ?, ?, ?, ?)
             """,
             (
@@ -340,7 +340,7 @@ def sqlite_schema():
             claim_requested_at TEXT,
             avatar_data TEXT,
             phone TEXT,
-            department TEXT,
+            subject_taught TEXT,
             weekly_hours_limit INTEGER,
             teaching_languages TEXT DEFAULT 'ru,kk'
         )
@@ -549,7 +549,7 @@ def postgres_schema():
             claim_requested_at TEXT,
             avatar_data TEXT,
             phone TEXT,
-            department TEXT,
+            subject_taught TEXT,
             weekly_hours_limit INTEGER,
             teaching_languages TEXT DEFAULT 'ru,kk'
         )
@@ -774,7 +774,7 @@ def migrate_legacy_role_accounts(connection):
                     connection,
                     """
                     INSERT INTO teachers (
-                        name, email, password, token, avatar_data, phone, department, weekly_hours_limit
+                        name, email, password, token, avatar_data, phone, subject_taught, weekly_hours_limit
                     )
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
@@ -799,7 +799,7 @@ def migrate_legacy_role_accounts(connection):
                         password = COALESCE(password, ?),
                         token = COALESCE(token, ?),
                         avatar_data = COALESCE(avatar_data, ?),
-                        department = COALESCE(NULLIF(department, ''), ?)
+                        subject_taught = COALESCE(NULLIF(subject_taught, ''), ?)
                     WHERE id = ?
                     """,
                     (
@@ -883,7 +883,8 @@ def ensure_database():
         rename_column(connection, "users", "programme_name", "programme")
         rename_column(connection, "courses", "study_year", "year")
         rename_column(connection, "courses", "programme_name", "programme")
-        rename_column(connection, "teachers", "specialization", "department")
+        rename_column(connection, "teachers", "specialization", "subject_taught")
+        rename_column(connection, "teachers", "department", "subject_taught")
         rename_column(connection, "teachers", "max_hours_per_week", "weekly_hours_limit")
         rename_column(connection, "rooms", "is_available", "available")
         rename_column(connection, "rooms", "department", "programme")
@@ -908,7 +909,7 @@ def ensure_database():
         ensure_column(connection, "courses", "academic_year", "TEXT")
         ensure_column(connection, "courses", "entry_year", "TEXT")
         ensure_column(connection, "courses", "requires_computers", "INTEGER DEFAULT 0")
-        ensure_column(connection, "teachers", "department", "TEXT")
+        ensure_column(connection, "teachers", "subject_taught", "TEXT")
         ensure_column(connection, "teachers", "weekly_hours_limit", "INTEGER")
         ensure_column(connection, "teachers", "password", "TEXT")
         ensure_column(connection, "teachers", "token", "TEXT")

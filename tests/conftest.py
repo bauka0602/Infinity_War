@@ -62,7 +62,7 @@ def seeded_teacher_request(backend_modules):
             connection,
             """
             INSERT INTO teachers (
-                name, email, password, token, avatar_data, phone, department, weekly_hours_limit, teaching_languages
+                name, email, password, token, avatar_data, phone, subject_taught, weekly_hours_limit, teaching_languages
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -109,7 +109,7 @@ def seeded_claimable_teacher(backend_modules):
             connection,
             """
             INSERT INTO teachers (
-                name, email, password, token, avatar_data, phone, department, weekly_hours_limit, teaching_languages
+                name, email, password, token, avatar_data, phone, subject_taught, weekly_hours_limit, teaching_languages
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -154,7 +154,7 @@ def seeded_teacher_account(backend_modules):
             connection,
             """
             INSERT INTO teachers (
-                name, email, password, token, avatar_data, phone, department, weekly_hours_limit, teaching_languages
+                name, email, password, token, avatar_data, phone, subject_taught, weekly_hours_limit, teaching_languages
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
