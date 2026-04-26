@@ -22,7 +22,7 @@ async def schedule_generate(request: Request):
     payload = await read_json_body(request)
     semester = int(payload.get("semester") or 1)
     year = int(payload.get("year") or date.today().year)
-    algorithm = payload.get("algorithm") or "greedy"
+    algorithm = payload.get("algorithm") or "cpsat"
     return create_schedule_generation_job(semester, year, algorithm)
 
 
@@ -44,4 +44,3 @@ async def sections_generate(request: Request):
     with DB_LOCK:
         with get_connection() as connection:
             return generate_sections_from_components(connection, payload)
-
