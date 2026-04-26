@@ -516,6 +516,8 @@ def build_schedule(connection, semester, year, algorithm):
                 )
             )
 
+    generated_group_ids = sorted({int(section["group_id"]) for section in sections if section.get("group_id") is not None})
+
     db_execute(
         connection,
         """
@@ -536,6 +538,18 @@ def build_schedule(connection, semester, year, algorithm):
         """,
         rows,
     )
+
+    if generated_group_ids:
+        reset_placeholders = ", ".join("?" for _ in generated_group_ids)
+        db_execute(
+            connection,
+            f"""
+            UPDATE groups
+            SET has_subgroups = 0
+            WHERE id IN ({reset_placeholders})
+            """,
+            tuple(generated_group_ids),
+        )
 
     generated_subgroup_group_ids = sorted(
         {

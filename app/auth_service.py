@@ -356,9 +356,23 @@ def register_user(payload):
                 selected_group = query_one(
                     connection,
                     """
-                    SELECT id, name, has_subgroups, language
-                    FROM groups
-                    WHERE id = ?
+                    SELECT
+                        g.id,
+                        g.name,
+                        g.has_subgroups,
+                        g.language,
+                        CASE
+                            WHEN EXISTS (
+                                SELECT 1
+                                FROM schedules s
+                                WHERE s.group_id = g.id
+                                  AND trim(coalesce(s.subgroup, '')) <> ''
+                            )
+                            THEN 1
+                            ELSE 0
+                        END AS auto_has_subgroups
+                    FROM groups g
+                    WHERE g.id = ?
                     """,
                     (group_id,),
                 )
@@ -370,7 +384,7 @@ def register_user(payload):
                         "bad_request",
                         "Язык студента должен совпадать с языком обучения группы",
                     )
-                if selected_group.get("has_subgroups"):
+                if selected_group.get("auto_has_subgroups") or selected_group.get("has_subgroups"):
                     if subgroup not in {"A", "B"}:
                         raise ApiError(
                             400,

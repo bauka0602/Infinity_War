@@ -2,8 +2,8 @@
   {
     "name": "05-057-25-11",
     "student_count": 28,
-    "specialty_code": "КИ",
-    "programme": "Компьютерная инженерия",
+    "specialty_code": "6B06103",
+    "programme": "b057",
     "language": "kk",
     "entry_year": 2025,
     "study_course": 1
@@ -11,8 +11,8 @@
   {
     "name": "05-057-25-12",
     "student_count": 28,
-    "specialty_code": "КИ",
-    "programme": "Компьютерная инженерия",
+    "specialty_code": "6B06103",
+    "programme": "b057",
     "language": "kk",
     "entry_year": 2025,
     "study_course": 1
@@ -20,8 +20,8 @@
   {
     "name": "05-057-25-13",
     "student_count": 29,
-    "specialty_code": "КИ",
-    "programme": "Компьютерная инженерия",
+    "specialty_code": "6B06103",
+    "programme": "b057",
     "language": "kk",
     "entry_year": 2025,
     "study_course": 1
@@ -29,8 +29,8 @@
   {
     "name": "05-057-25-14",
     "student_count": 29,
-    "specialty_code": "КИ",
-    "programme": "Компьютерная инженерия",
+    "specialty_code": "6B06103",
+    "programme": "b057",
     "language": "kk",
     "entry_year": 2025,
     "study_course": 1
@@ -38,8 +38,8 @@
   {
     "name": "05-057-25-15",
     "student_count": 28,
-    "specialty_code": "КИ",
-    "programme": "Компьютерная инженерия",
+    "specialty_code": "6B06103",
+    "programme": "b057",
     "language": "ru",
     "entry_year": 2025,
     "study_course": 1
@@ -47,8 +47,8 @@
   {
     "name": "05-057-25-16",
     "student_count": 27,
-    "specialty_code": "КИ",
-    "programme": "Компьютерная инженерия",
+    "specialty_code": "6B06103",
+    "programme": "b057",
     "language": "ru",
     "entry_year": 2025,
     "study_course": 1
@@ -56,8 +56,8 @@
   {
     "name": "05-057-25-17",
     "student_count": 28,
-    "specialty_code": "БИ",
-    "programme": "Бизнес-информатика",
+    "specialty_code": "6B06102",
+    "programme": "b057",
     "language": "kk",
     "entry_year": 2025,
     "study_course": 1
@@ -65,8 +65,8 @@
   {
     "name": "05-057-25-18",
     "student_count": 28,
-    "specialty_code": "БИ",
-    "programme": "Бизнес-информатика",
+    "specialty_code": "6B06102",
+    "programme": "b057",
     "language": "kk",
     "entry_year": 2025,
     "study_course": 1
@@ -74,8 +74,8 @@
   {
     "name": "05-057-25-19",
     "student_count": 26,
-    "specialty_code": "БИ",
-    "programme": "Бизнес-информатика",
+    "specialty_code": "6B06102",
+    "programme": "b057",
     "language": "ru",
     "entry_year": 2025,
     "study_course": 1
@@ -83,8 +83,8 @@
   {
     "name": "05-057-25-21",
     "student_count": 23,
-    "specialty_code": "КИ СОПР",
-    "programme": "Компьютерная инженерия (СОПР)",
+    "specialty_code": "6B06103",
+    "programme": "b057",
     "language": "kk",
     "entry_year": 2025,
     "study_course": 1
@@ -92,8 +92,8 @@
   {
     "name": "05-057-25-22",
     "student_count": 18,
-    "specialty_code": "КИ СОПР",
-    "programme": "Компьютерная инженерия (СОПР)",
+    "specialty_code": "6B06103",
+    "programme": "b057",
     "language": "ru",
     "entry_year": 2025,
     "study_course": 1
@@ -101,8 +101,8 @@
   {
     "name": "05-057-25-23",
     "student_count": 30,
-    "specialty_code": "КИ СОПР",
-    "programme": "Компьютерная инженерия (СОПР)",
+    "specialty_code": "6B06103",
+    "programme": "b057",
     "language": "ru",
     "entry_year": 2025,
     "study_course": 1
@@ -110,8 +110,8 @@
   {
     "name": "05-057-25-24",
     "student_count": 25,
-    "specialty_code": "КИ",
-    "programme": "Компьютерная инженерия",
+    "specialty_code": "6B06103",
+    "programme": "b057",
     "language": "kk",
     "entry_year": 2025,
     "study_course": 1
@@ -119,8 +119,8 @@
   {
     "name": "05-057-25-25",
     "student_count": 25,
-    "specialty_code": "КИ",
-    "programme": "Компьютерная инженерия",
+    "specialty_code": "6B06103",
+    "programme": "b057",
     "language": "kk",
     "entry_year": 2025,
     "study_course": 1
@@ -128,8 +128,8 @@
   {
     "name": "05-057-25-26",
     "student_count": 25,
-    "specialty_code": "БИ",
-    "programme": "Бизнес-информатика",
+    "specialty_code": "6B06102",
+    "programme": "b057",
     "language": "kk",
     "entry_year": 2025,
     "study_course": 1
@@ -137,8 +137,8 @@
   {
     "name": "05-057-24-09",
     "student_count": 29,
-    "specialty_code": "КИ",
-    "programme": "Компьютерная инженерия",
+    "specialty_code": "6B06103",
+    "programme": "b057",
     "language": "kk",
     "entry_year": 2024,
     "study_course": 2
@@ -146,8 +146,8 @@
   {
     "name": "05-057-24-10",
     "student_count": 27,
-    "specialty_code": "КИ",
-    "programme": "Компьютерная инженерия",
+    "specialty_code": "6B06103",
+    "programme": "b057",
     "language": "kk",
     "entry_year": 2024,
     "study_course": 2
@@ -155,8 +155,8 @@
   {
     "name": "05-057-24-11",
     "student_count": 27,
-    "specialty_code": "КИ",
-    "programme": "Компьютерная инженерия",
+    "specialty_code": "6B06103",
+    "programme": "b057",
     "language": "kk",
     "entry_year": 2024,
     "study_course": 2
@@ -164,8 +164,8 @@
   {
     "name": "05-057-24-12",
     "student_count": 22,
-    "specialty_code": "КИ",
-    "programme": "Компьютерная инженерия",
+    "specialty_code": "6B06103",
+    "programme": "b057",
     "language": "ru",
     "entry_year": 2024,
     "study_course": 2
@@ -173,8 +173,8 @@
   {
     "name": "05-057-24-13",
     "student_count": 13,
-    "specialty_code": "КИ",
-    "programme": "Компьютерная инженерия",
+    "specialty_code": "6B06103",
+    "programme": "b057",
     "language": "ru",
     "entry_year": 2024,
     "study_course": 2
@@ -182,8 +182,8 @@
   {
     "name": "05-057-24-14",
     "student_count": 23,
-    "specialty_code": "БИ",
-    "programme": "Бизнес-информатика",
+    "specialty_code": "6B06102",
+    "programme": "b057",
     "language": "kk",
     "entry_year": 2024,
     "study_course": 2
@@ -191,8 +191,8 @@
   {
     "name": "05-057-24-15",
     "student_count": 24,
-    "specialty_code": "БИ",
-    "programme": "Бизнес-информатика",
+    "specialty_code": "6B06102",
+    "programme": "b057",
     "language": "kk",
     "entry_year": 2024,
     "study_course": 2
@@ -200,8 +200,8 @@
   {
     "name": "05-057-24-16",
     "student_count": 16,
-    "specialty_code": "БИ",
-    "programme": "Бизнес-информатика",
+    "specialty_code": "6B06102",
+    "programme": "b057",
     "language": "ru",
     "entry_year": 2024,
     "study_course": 2
@@ -209,8 +209,8 @@
   {
     "name": "05-057-24-18 СОПР",
     "student_count": 18,
-    "specialty_code": "КИ СОПР",
-    "programme": "Компьютерная инженерия (СОПР)",
+    "specialty_code": "6B06103",
+    "programme": "b057",
     "language": "kk",
     "entry_year": 2024,
     "study_course": 2
@@ -218,8 +218,8 @@
   {
     "name": "05-057-24-19 СОПР",
     "student_count": 35,
-    "specialty_code": "КИ СОПР",
-    "programme": "Компьютерная инженерия (СОПР)",
+    "specialty_code": "6B06103",
+    "programme": "b057",
     "language": "ru",
     "entry_year": 2024,
     "study_course": 2
@@ -227,8 +227,8 @@
   {
     "name": "05-057-23-09",
     "student_count": 25,
-    "specialty_code": "КИ",
-    "programme": "Компьютерная инженерия",
+    "specialty_code": "6B06103",
+    "programme": "b057",
     "language": "kk",
     "entry_year": 2023,
     "study_course": 3
@@ -236,8 +236,8 @@
   {
     "name": "05-057-23-10",
     "student_count": 15,
-    "specialty_code": "КИ",
-    "programme": "Компьютерная инженерия",
+    "specialty_code": "6B06103",
+    "programme": "b057",
     "language": "kk",
     "entry_year": 2023,
     "study_course": 3
@@ -245,8 +245,8 @@
   {
     "name": "05-057-23-11",
     "student_count": 29,
-    "specialty_code": "КИ",
-    "programme": "Компьютерная инженерия",
+    "specialty_code": "6B06103",
+    "programme": "b057",
     "language": "ru",
     "entry_year": 2023,
     "study_course": 3
@@ -254,8 +254,8 @@
   {
     "name": "05-057-23-12",
     "student_count": 25,
-    "specialty_code": "БИ",
-    "programme": "Бизнес-информатика",
+    "specialty_code": "6B06102",
+    "programme": "b057",
     "language": "kk",
     "entry_year": 2023,
     "study_course": 3
@@ -263,8 +263,8 @@
   {
     "name": "05-057-23-13",
     "student_count": 15,
-    "specialty_code": "БИ",
-    "programme": "Бизнес-информатика",
+    "specialty_code": "6B06102",
+    "programme": "b057",
     "language": "kk",
     "entry_year": 2023,
     "study_course": 3
@@ -272,8 +272,8 @@
   {
     "name": "05-057-23-14",
     "student_count": 29,
-    "specialty_code": "БИ",
-    "programme": "Бизнес-информатика",
+    "specialty_code": "6B06102",
+    "programme": "b057",
     "language": "ru",
     "entry_year": 2023,
     "study_course": 3
@@ -281,8 +281,8 @@
   {
     "name": "05-057-23-16 СОПР",
     "student_count": 11,
-    "specialty_code": "КИ СОПР",
-    "programme": "Компьютерная инженерия (СОПР)",
+    "specialty_code": "6B06103",
+    "programme": "b057",
     "language": "ru",
     "entry_year": 2023,
     "study_course": 3
@@ -290,8 +290,8 @@
   {
     "name": "05-057-22-06",
     "student_count": 22,
-    "specialty_code": "КИ",
-    "programme": "Компьютерная инженерия",
+    "specialty_code": "6B06103",
+    "programme": "b057",
     "language": "kk",
     "entry_year": 2022,
     "study_course": 4
@@ -299,8 +299,8 @@
   {
     "name": "05-057-22-07",
     "student_count": 22,
-    "specialty_code": "КИ",
-    "programme": "Компьютерная инженерия",
+    "specialty_code": "6B06103",
+    "programme": "b057",
     "language": "ru",
     "entry_year": 2022,
     "study_course": 4
@@ -308,8 +308,8 @@
   {
     "name": "05-057-22-08",
     "student_count": 20,
-    "specialty_code": "БИ",
-    "programme": "Бизнес-информатика",
+    "specialty_code": "6B06102",
+    "programme": "b057",
     "language": "kk",
     "entry_year": 2022,
     "study_course": 4
@@ -317,8 +317,8 @@
   {
     "name": "05-057-22-09",
     "student_count": 21,
-    "specialty_code": "БИ",
-    "programme": "Бизнес-информатика",
+    "specialty_code": "6B06102",
+    "programme": "b057",
     "language": "ru",
     "entry_year": 2022,
     "study_course": 4
