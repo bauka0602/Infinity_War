@@ -787,9 +787,10 @@ def migrate_imported_teacher_emails(connection):
         """
         SELECT id, email
         FROM teachers
-        WHERE lower(email) LIKE '%@imported.local'
+        WHERE lower(email) LIKE ?
         ORDER BY id
         """,
+        ("%@imported.local",),
     )
 
     for teacher in imported_teachers:
