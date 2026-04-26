@@ -8,7 +8,14 @@ except ImportError:
     psycopg = None
     dict_row = None
 
-from .config import DATA_DIR, DATABASE_URL, DB_ENGINE, DB_FILE, LEGACY_JSON_FILE
+from .config import (
+    DATA_DIR,
+    DATABASE_URL,
+    DB_ENGINE,
+    DB_FILE,
+    LEGACY_JSON_FILE,
+    TEACHER_EMAIL_DOMAIN,
+)
 from .security import hash_password
 from .store import default_store
 from .teacher_utils import build_teacher_name_signature, normalize_teacher_name
@@ -774,6 +781,39 @@ def migrate_default_user_emails(connection):
     )
 
 
+def migrate_imported_teacher_emails(connection):
+    imported_teachers = query_all(
+        connection,
+        """
+        SELECT id, email
+        FROM teachers
+        WHERE lower(email) LIKE '%@imported.local'
+        ORDER BY id
+        """,
+    )
+
+    for teacher in imported_teachers:
+        email = str(teacher.get("email") or "").strip().lower()
+        local_part, _, _domain = email.partition("@")
+        if not local_part:
+            continue
+
+        next_email = f"{local_part}{TEACHER_EMAIL_DOMAIN}"
+        existing = query_one(
+            connection,
+            "SELECT id FROM teachers WHERE lower(email) = lower(?) AND id <> ?",
+            (next_email, teacher["id"]),
+        )
+        if existing is not None:
+            continue
+
+        db_execute(
+            connection,
+            "UPDATE teachers SET email = ? WHERE id = ?",
+            (next_email, teacher["id"]),
+        )
+
+
 def migrate_legacy_role_accounts(connection):
     legacy_accounts = query_all(
         connection,
@@ -1159,6 +1199,7 @@ def ensure_database():
         ensure_column(connection, "teacher_preference_requests", "created_at", "TEXT")
         ensure_column(connection, "teacher_preference_requests", "updated_at", "TEXT")
         migrate_default_user_emails(connection)
+        migrate_imported_teacher_emails(connection)
         migrate_legacy_role_accounts(connection)
         connection.commit()
 

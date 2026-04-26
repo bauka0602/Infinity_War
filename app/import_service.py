@@ -4,7 +4,7 @@ import re
 from io import BytesIO
 
 from .auth_service import require_auth_user
-from .config import DB_LOCK
+from .config import DB_LOCK, TEACHER_EMAIL_DOMAIN
 from .db import db_execute, get_connection, insert_and_get_id, query_all, query_one
 from .errors import ApiError
 from .lesson_rules import requires_computers_for_component
@@ -734,7 +734,7 @@ def _parse_iup_file(file_name, file_bytes):
 
 def _teacher_email_from_name(name):
     digest = hashlib.sha1(name.strip().lower().encode("utf-8")).hexdigest()[:12]
-    return f"iup-{digest}@imported.local"
+    return f"iup-{digest}{TEACHER_EMAIL_DOMAIN}"
 
 
 def _upsert_iup_teacher(connection, teacher_name, language):
