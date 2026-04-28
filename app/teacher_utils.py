@@ -3,17 +3,17 @@ import re
 
 def normalize_teacher_name(value):
     normalized = str(value or "").strip().lower().replace("ё", "е")
-    normalized = normalized.replace(".", " ")
-    normalized = re.sub(r"\s+", " ", normalized)
-    return normalized
+    normalized = normalized.replace(".", "")
+    return re.sub(r"\s+", "", normalized)
 
 
 def build_teacher_name_signature(value):
-    normalized = normalize_teacher_name(value)
-    if not normalized:
+    text = str(value or "").strip().lower().replace("ё", "е").replace(".", " ")
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
         return ""
 
-    parts = normalized.split(" ")
+    parts = text.split(" ")
     surname = parts[0]
     initials = []
 

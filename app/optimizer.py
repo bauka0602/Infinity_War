@@ -240,6 +240,11 @@ def _normalize_plan_items(payload):
                     for value in (item.get("preferredRoomProgrammes") or [])
                     if normalize_programme_text(value)
                 ],
+                "allowed_room_numbers": {
+                    _normalize_text(value)
+                    for value in (item.get("allowedRoomNumbers") or [])
+                    if _normalize_text(value)
+                },
                 "preferred_days": {str(day) for day in (item.get("preferredDays") or [])},
                 "preferred_hours": {int(hour) for hour in (item.get("preferredHours") or [])},
                 "preferred_slots": preferred_slots,
@@ -286,14 +291,40 @@ def _room_matches_item_constraints(room, item, required_type):
     if room["capacity"] and item["student_count"] and room["capacity"] < item["student_count"]:
         return False
 
-    if required_type and required_type not in {"any", "all"}:
-        if not room["type"] or room["type"] != required_type:
+    lesson_type = item.get("lesson_type")
+    room_type = room.get("type") or ""
+    if lesson_type == "lecture":
+        if room_type != "lecture":
             return False
+    elif lesson_type == "practical":
+        if room_type not in {"practical", "lecture"}:
+            return False
+    elif lesson_type == "lab":
+        if room_type != "practical":
+            return False
+    elif required_type and required_type not in {"any", "all"} and room_type != required_type:
+        return False
 
     if item["pc_required"]:
         if room["pc_count"] < MIN_COMPUTER_COUNT:
             return False
     return True
+
+
+def _room_matches_fallback_constraints(room, item):
+    if item["pc_required"] and room["pc_count"] < MIN_COMPUTER_COUNT:
+        return False
+    if item.get("lesson_type") == "lab" and room.get("type") != "practical":
+        return False
+    return True
+
+
+def _room_number_allowed(room, item):
+    allowed_numbers = item.get("allowed_room_numbers") or set()
+    if not allowed_numbers:
+        return True
+    room_number = _normalize_text(room.get("number"))
+    return any(allowed_number == room_number or allowed_number in room_number for allowed_number in allowed_numbers)
 
 
 def _find_compatible_room_ids(item, rooms):
@@ -306,6 +337,8 @@ def _find_compatible_room_ids(item, rooms):
     required_programme = item.get("programme") or ""
 
     for room in rooms:
+        if not _room_number_allowed(room, item):
+            continue
         if not _room_matches_item_constraints(room, item, required_type):
             continue
 
@@ -329,12 +362,23 @@ def _find_compatible_room_ids(item, rooms):
     if preferred_room_programmes:
         if preferred_room_ids:
             return preferred_room_ids + fallback_other_programme, False
-        return fallback_other_programme, bool(fallback_other_programme)
+        if fallback_other_programme:
+            return fallback_other_programme, True
     if required_programme:
         if same_programme_room_ids:
             return same_programme_room_ids + fallback_other_programme, False
-        return fallback_other_programme, bool(fallback_other_programme)
-    return compatible, False
+        if fallback_other_programme:
+            return fallback_other_programme, True
+    if compatible:
+        return compatible, False
+
+    fallback_ids = [
+        room["id"]
+        for room in rooms
+        if _room_number_allowed(room, item)
+        if _room_matches_fallback_constraints(room, item)
+    ]
+    return fallback_ids, bool(fallback_ids)
 
 
 def _group_allowed_slots(item, slots, teacher):

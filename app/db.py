@@ -487,7 +487,10 @@ def sqlite_schema():
             subgroup_count INTEGER DEFAULT 1,
             requires_computers INTEGER DEFAULT 0,
             teacher_id INTEGER,
-            teacher_name TEXT
+            teacher_name TEXT,
+            iup_entry_id INTEGER,
+            source TEXT DEFAULT 'manual',
+            match_method TEXT
         )
         """,
         """
@@ -712,7 +715,10 @@ def postgres_schema():
             subgroup_count INTEGER DEFAULT 1,
             requires_computers INTEGER DEFAULT 0,
             teacher_id INTEGER,
-            teacher_name TEXT
+            teacher_name TEXT,
+            iup_entry_id INTEGER,
+            source TEXT DEFAULT 'manual',
+            match_method TEXT
         )
         """,
         """
@@ -1049,6 +1055,9 @@ def ensure_database():
         ensure_column(connection, "sections", "requires_computers", "INTEGER DEFAULT 0")
         ensure_column(connection, "sections", "teacher_id", "INTEGER")
         ensure_column(connection, "sections", "teacher_name", "TEXT")
+        ensure_column(connection, "sections", "iup_entry_id", "INTEGER")
+        ensure_column(connection, "sections", "source", "TEXT DEFAULT 'manual'")
+        ensure_column(connection, "sections", "match_method", "TEXT")
         db_execute(
             connection,
             """
@@ -1199,6 +1208,14 @@ def ensure_database():
         ensure_column(connection, "teacher_preference_requests", "admin_comment", "TEXT")
         ensure_column(connection, "teacher_preference_requests", "created_at", "TEXT")
         ensure_column(connection, "teacher_preference_requests", "updated_at", "TEXT")
+        db_execute(connection, "CREATE INDEX IF NOT EXISTS idx_courses_code ON courses(code)")
+        db_execute(connection, "CREATE INDEX IF NOT EXISTS idx_course_components_code ON course_components(course_code)")
+        db_execute(connection, "CREATE INDEX IF NOT EXISTS idx_iup_entries_code ON iup_entries(course_code)")
+        db_execute(connection, "CREATE INDEX IF NOT EXISTS idx_sections_group_id ON sections(group_id)")
+        db_execute(connection, "CREATE INDEX IF NOT EXISTS idx_sections_teacher_id ON sections(teacher_id)")
+        db_execute(connection, "CREATE INDEX IF NOT EXISTS idx_schedules_group_id ON schedules(group_id)")
+        db_execute(connection, "CREATE INDEX IF NOT EXISTS idx_schedules_teacher_id ON schedules(teacher_id)")
+        db_execute(connection, "CREATE INDEX IF NOT EXISTS idx_teachers_name_signature ON teachers(name_signature)")
         migrate_default_user_emails(connection)
         migrate_imported_teacher_emails(connection)
         migrate_legacy_role_accounts(connection)

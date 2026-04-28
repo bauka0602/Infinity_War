@@ -8,6 +8,11 @@ from ...config import DB_LOCK
 from ...db import get_connection
 from ...errors import ApiError
 from ...job_store import create_schedule_generation_job, get_schedule_generation_job
+from ...section_generation import (
+    build_validation_report,
+    generate_sections_from_iup,
+    preview_sections_from_iup,
+)
 from ..common import read_json_body
 
 router = APIRouter()
@@ -44,3 +49,38 @@ async def sections_generate(request: Request):
     with DB_LOCK:
         with get_connection() as connection:
             return generate_sections_from_components(connection, payload)
+
+
+@router.post("/sections/generate-from-iup")
+async def sections_generate_from_iup(request: Request):
+    user = require_auth_user(request.headers)
+    if user["role"] != "admin":
+        raise ApiError(403, "forbidden", "Недостаточно прав")
+
+    payload = await read_json_body(request)
+    with DB_LOCK:
+        with get_connection() as connection:
+            return generate_sections_from_iup(connection, payload)
+
+
+@router.post("/sections/generate-from-iup/preview")
+async def sections_generate_from_iup_preview(request: Request):
+    user = require_auth_user(request.headers)
+    if user["role"] != "admin":
+        raise ApiError(403, "forbidden", "Недостаточно прав")
+
+    payload = await read_json_body(request)
+    with DB_LOCK:
+        with get_connection() as connection:
+            return preview_sections_from_iup(connection, payload)
+
+
+@router.get("/validation/report")
+def validation_report(request: Request):
+    user = require_auth_user(request.headers)
+    if user["role"] != "admin":
+        raise ApiError(403, "forbidden", "Недостаточно прав")
+
+    with DB_LOCK:
+        with get_connection() as connection:
+            return build_validation_report(connection)

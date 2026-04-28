@@ -19,6 +19,7 @@ DAY_NAME_TO_INDEX = {
 }
 PC_REQUIRED_LESSON_TYPES = {"lab"}
 MIN_COMPUTER_COUNT = 10
+PHYSICAL_EDUCATION_ROOM_NUMBER = "орленок"
 SUBGROUP_MODES = {"none", "auto", "forced"}
 SEASON_ACADEMIC_PERIODS = {
     1: (1, 3, 5, 7),
@@ -59,6 +60,10 @@ def _room_matches_lesson_type(room, lesson_type, pc_required=False):
     normalized_room_type = _normalize_room_type(room)
     if lesson_type == "lecture":
         return normalized_room_type == "lecture"
+    if lesson_type == "practical":
+        return normalized_room_type in {"practical", "lecture"}
+    if lesson_type == "lab":
+        return normalized_room_type == "practical"
     return normalized_room_type == "practical"
 
 
@@ -96,6 +101,12 @@ def _resolve_subgroup_count(section, rooms):
 
     student_count = _int_at_least(section.get("student_count"), 0, 0)
     pc_required = bool(section.get("requires_computers")) or lesson_type in PC_REQUIRED_LESSON_TYPES
+    if _is_physical_education(section):
+        rooms = [
+            room
+            for room in rooms
+            if PHYSICAL_EDUCATION_ROOM_NUMBER in str(room.get("number") or "").strip().lower()
+        ]
     max_capacity = _max_room_capacity_for_lesson(rooms, lesson_type, pc_required)
     if student_count <= 0 or max_capacity <= 0 or student_count <= max_capacity:
         return 1
@@ -113,6 +124,14 @@ def _room_type_required(lesson_type, pc_required=False):
     if lesson_type == "lecture":
         return "lecture"
     return "practical"
+
+
+def _is_physical_education(section):
+    text = " ".join(
+        str(section.get(field) or "").lower()
+        for field in ("course_name", "course_code")
+    )
+    return "физ" in text or "дене шынықтыру" in text
 
 
 def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
@@ -146,6 +165,9 @@ def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
             "lessonType": lesson_type,
             "pcRequired": pc_required,
         }
+        if _is_physical_education(section):
+            base_item["allowedRoomNumbers"] = [PHYSICAL_EDUCATION_ROOM_NUMBER]
+            base_item["roomTypeRequired"] = "practical"
 
         if lesson_type == "lecture":
             signature = (

@@ -968,7 +968,10 @@ def list_collection(connection, collection, query, user=None):
         return query_all(
             connection,
             """
-            SELECT id, course_id, course_name, group_id, group_name, classes_count, lesson_type, subgroup_mode, subgroup_count, requires_computers, teacher_id, teacher_name
+            SELECT
+                id, course_id, course_name, group_id, group_name, classes_count,
+                lesson_type, subgroup_mode, subgroup_count, requires_computers,
+                teacher_id, teacher_name, iup_entry_id, source, match_method
             FROM sections
             ORDER BY id
             """,
@@ -1277,7 +1280,7 @@ def create_collection_item(connection, collection, payload):
         )
 
     if collection == "sections":
-        normalized = normalize_number_fields(payload, ["course_id", "group_id", "classes_count", "class_count", "subgroup_count", "requires_computers", "teacher_id"])
+        normalized = normalize_number_fields(payload, ["course_id", "group_id", "classes_count", "class_count", "subgroup_count", "requires_computers", "teacher_id", "iup_entry_id"])
         normalized["lesson_type"] = normalize_lesson_type(normalized.get("lesson_type"))
         normalized["subgroup_mode"] = normalize_subgroup_mode(normalized.get("subgroup_mode"), normalized["lesson_type"])
         normalized["subgroup_count"] = positive_int(normalized.get("subgroup_count"), 1)
@@ -1294,8 +1297,12 @@ def create_collection_item(connection, collection, payload):
         item_id = insert_and_get_id(
             connection,
             """
-            INSERT INTO sections (course_id, course_name, group_id, group_name, classes_count, lesson_type, subgroup_mode, subgroup_count, requires_computers, teacher_id, teacher_name)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO sections (
+                course_id, course_name, group_id, group_name, classes_count,
+                lesson_type, subgroup_mode, subgroup_count, requires_computers,
+                teacher_id, teacher_name, iup_entry_id, source, match_method
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 normalized.get("course_id"),
@@ -1309,13 +1316,19 @@ def create_collection_item(connection, collection, payload):
                 requires_computers,
                 teacher_id,
                 teacher_name,
+                normalized.get("iup_entry_id"),
+                normalized.get("source", "manual"),
+                normalized.get("match_method", "manual"),
             ),
         )
         connection.commit()
         return query_one(
             connection,
             """
-            SELECT id, course_id, course_name, group_id, group_name, classes_count, lesson_type, subgroup_mode, subgroup_count, requires_computers, teacher_id, teacher_name
+            SELECT
+                id, course_id, course_name, group_id, group_name, classes_count,
+                lesson_type, subgroup_mode, subgroup_count, requires_computers,
+                teacher_id, teacher_name, iup_entry_id, source, match_method
             FROM sections
             WHERE id = ?
             """,
@@ -1637,7 +1650,7 @@ def update_collection_item(connection, collection, item_id, payload):
         )
 
     if collection == "sections":
-        normalized = normalize_number_fields(payload, ["course_id", "group_id", "classes_count", "class_count", "subgroup_count", "requires_computers", "teacher_id"])
+        normalized = normalize_number_fields(payload, ["course_id", "group_id", "classes_count", "class_count", "subgroup_count", "requires_computers", "teacher_id", "iup_entry_id"])
         normalized["lesson_type"] = normalize_lesson_type(normalized.get("lesson_type"))
         normalized["subgroup_mode"] = normalize_subgroup_mode(normalized.get("subgroup_mode"), normalized["lesson_type"])
         normalized["subgroup_count"] = positive_int(normalized.get("subgroup_count"), 1)
@@ -1655,7 +1668,11 @@ def update_collection_item(connection, collection, item_id, payload):
             connection,
             """
             UPDATE sections
-            SET course_id = ?, course_name = ?, group_id = ?, group_name = ?, classes_count = ?, lesson_type = ?, subgroup_mode = ?, subgroup_count = ?, requires_computers = ?, teacher_id = ?, teacher_name = ?
+            SET
+                course_id = ?, course_name = ?, group_id = ?, group_name = ?,
+                classes_count = ?, lesson_type = ?, subgroup_mode = ?, subgroup_count = ?,
+                requires_computers = ?, teacher_id = ?, teacher_name = ?,
+                iup_entry_id = ?, source = ?, match_method = ?
             WHERE id = ?
             """,
             (
@@ -1670,6 +1687,9 @@ def update_collection_item(connection, collection, item_id, payload):
                 requires_computers,
                 teacher_id,
                 teacher_name,
+                normalized.get("iup_entry_id"),
+                normalized.get("source", "manual"),
+                normalized.get("match_method", "manual"),
                 item_id,
             ),
         )
@@ -1677,7 +1697,10 @@ def update_collection_item(connection, collection, item_id, payload):
         return query_one(
             connection,
             """
-            SELECT id, course_id, course_name, group_id, group_name, classes_count, lesson_type, subgroup_mode, subgroup_count, requires_computers, teacher_id, teacher_name
+            SELECT
+                id, course_id, course_name, group_id, group_name, classes_count,
+                lesson_type, subgroup_mode, subgroup_count, requires_computers,
+                teacher_id, teacher_name, iup_entry_id, source, match_method
             FROM sections
             WHERE id = ?
             """,
