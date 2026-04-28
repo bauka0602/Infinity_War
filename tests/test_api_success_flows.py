@@ -239,10 +239,10 @@ def test_rop_import_creates_courses_from_curriculum_plan(client, admin_auth_head
     assert {item["requires_computers"] for item in components} == {0}
 
 
-def test_practical_requires_computers_only_for_it_after_first_year():
+def test_only_lab_requires_computers():
     assert requires_computers_for_component("lab", "Lang 1101", "Английский язык", 1) is True
     assert requires_computers_for_component("practical", "IKT 1101", "Информационные технологии", 1) is False
-    assert requires_computers_for_component("practical", "BD 2201", "Базы данных", 2) is True
+    assert requires_computers_for_component("practical", "BD 2201", "Базы данных", 2) is False
     assert requires_computers_for_component("practice", "Pr 4301", "Преддипломная практика", 4) is False
 
 

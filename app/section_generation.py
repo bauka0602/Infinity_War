@@ -474,10 +474,7 @@ def _build_sections_from_iup(connection, payload, preview=False):
         classes_count = _classes_count(iup_entry, component)
         if classes_count < 1 or classes_count > 4:
             add_issue(issues, "classes_count_invalid", "classes_count скорректирован до диапазона 1..4.", "warning", iup_entry_id=iup_entry["id"])
-        requires_computers = 1 if (
-            component.get("requires_computers")
-            or requires_computers_for_component(lesson_type, component.get("course_code"), component.get("course_name"), component.get("study_year"))
-        ) else 0
+        requires_computers = 1 if lesson_type == "lab" else 0
         section = {
             "course_id": component["course_id"],
             "course_name": component["course_name"],

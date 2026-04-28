@@ -282,8 +282,22 @@ def _room_score(room, item, prefer_lower_floors=True):
     if prefer_lower_floors and room["floor"] is not None:
         score += max(0, 6 - int(room["floor"]))
 
-    if item["room_type_required"] and room["type"] == item["room_type_required"]:
-        score += 3
+    lesson_type = item.get("lesson_type")
+    room_type = room.get("type") or ""
+    if lesson_type == "practical":
+        if room_type == "practical":
+            score += 45
+            if int(room.get("pc_count") or 0) >= MIN_COMPUTER_COUNT:
+                score += 8
+        elif room_type == "lecture":
+            score -= 12
+    elif lesson_type == "lecture" and room_type == "lecture":
+        score += 35
+    elif lesson_type == "lab" and room_type == "practical":
+        score += 45
+
+    if item["room_type_required"] and room_type == item["room_type_required"]:
+        score += 6
     return score
 
 

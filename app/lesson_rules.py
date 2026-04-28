@@ -51,11 +51,4 @@ def requires_computers_for_component(lesson_type, course_code="", course_name=""
     normalized_type = str(lesson_type or "").strip().lower()
     if normalized_type == "lab":
         return True
-    if normalized_type != "practical":
-        return False
-
-    year = _study_year_or_none(study_year)
-    if year is not None and year <= 1:
-        return False
-
-    return is_it_practical_course(course_code, course_name)
+    return False

@@ -485,6 +485,10 @@ def schedule_room_type_matches(room_type, lesson_type, requires_computers=False)
     normalized_lesson_type = normalize_lesson_type(lesson_type)
     if normalized_lesson_type == "lecture":
         return normalized_room_type == "lecture"
+    if normalized_lesson_type == "practical":
+        return normalized_room_type in {"practical", "lecture"}
+    if normalized_lesson_type == "lab":
+        return normalized_room_type == "practical"
     return normalized_room_type == "practical"
 
 
@@ -506,6 +510,19 @@ def _room_candidate_score(room, schedule_row):
     )
     room_programme = room.get("programme") or ""
     score = 0
+    lesson_type = normalize_lesson_type(schedule_row.get("lesson_type"))
+    room_type = normalize_room_type(room.get("type"))
+    if lesson_type == "practical":
+        if room_type == "practical":
+            score += 45
+            if int(room.get("computer_count") or 0) >= MIN_COMPUTER_COUNT:
+                score += 8
+        elif room_type == "lecture":
+            score -= 12
+    elif lesson_type == "lecture" and room_type == "lecture":
+        score += 35
+    elif lesson_type == "lab" and room_type == "practical":
+        score += 45
     if home_programmes and room_programme:
         if any(same_programme(room_programme, home_programme) for home_programme in home_programmes):
             score += 100
