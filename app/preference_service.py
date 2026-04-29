@@ -4,11 +4,12 @@ from .auth_service import require_auth_user
 from .config import DB_LOCK
 from .db import db_execute, get_connection, insert_and_get_id, query_all, query_one
 from .errors import ApiError
+from .time_slots import SCHEDULE_HOURS
 
 
 VALID_DAYS = {"monday", "tuesday", "wednesday", "thursday", "friday"}
 VALID_STATUSES = {"pending", "approved", "rejected"}
-VALID_HOURS = set(range(8, 18))
+VALID_HOURS = set(SCHEDULE_HOURS)
 
 
 def _now_iso():

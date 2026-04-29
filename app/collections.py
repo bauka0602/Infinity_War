@@ -497,10 +497,7 @@ def schedule_student_count_for_room(section, group, subgroup):
     if not subgroup:
         return student_count
 
-    subgroup_count = positive_int(section.get("subgroup_count"), 1)
-    if group.get("has_subgroups"):
-        subgroup_count = max(2, subgroup_count)
-    return ceil(student_count / subgroup_count) if student_count else 0
+    return ceil(student_count / 2) if student_count else 0
 
 
 def _room_candidate_score(room, schedule_row):

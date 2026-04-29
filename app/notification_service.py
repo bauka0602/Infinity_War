@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from .auth_service import require_auth_user
 from .db import db_execute, get_connection, insert_and_get_id, query_all, query_one
 from .errors import ApiError
+from .time_slots import format_lesson_time_range
 
 
 def _utc_now_iso():
@@ -96,7 +97,7 @@ def _format_schedule_brief(schedule_item):
     subgroup_label = f", subgroup {subgroup}" if subgroup else ""
     return (
         f"{schedule_item.get('course_name', 'Unknown course')} | "
-        f"{schedule_item.get('day', '')} {schedule_item.get('start_hour', '')}:00 | "
+        f"{schedule_item.get('day', '')} {format_lesson_time_range(schedule_item.get('start_hour', 0))} | "
         f"room {schedule_item.get('room_number', '')} | "
         f"group {schedule_item.get('group_name', '')}{subgroup_label}"
     )

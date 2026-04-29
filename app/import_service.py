@@ -383,7 +383,21 @@ def _extract_programme_name(rows):
     return ""
 
 
+def _programme_from_file_name(file_name):
+    normalized = re.sub(r"[\s_\-]+", " ", str(file_name or "").lower())
+    if "сопр" in normalized:
+        return "Компьютерная инженерия (СОПР)"
+    if re.search(r"(^|[^a-zа-я])(?:би|bi)([^a-zа-я]|$)", normalized):
+        return "Бизнес-информатика"
+    if re.search(r"(^|[^a-zа-я])(?:ки|ki)([^a-zа-я]|$)", normalized):
+        return "Компьютерная инженерия"
+    return ""
+
+
 def _normalize_rop_programme_name(file_name, programme):
+    file_programme = _programme_from_file_name(file_name)
+    if file_programme:
+        return file_programme
     if "сопр" in file_name.lower() and programme:
         return f"{programme} (СОПР)"
     return programme
@@ -506,15 +520,26 @@ def _join_wrapped_text(lines):
 
 def _normalise_iup_programme(value):
     text = str(value or "").strip()
-    if "бизнес" in text.lower():
+    normalized_text = text.lower()
+    if "бизнес" in normalized_text or "6b06102" in normalized_text:
         return "Бизнес-информатика"
-    if "компьютер" in text.lower():
+    is_computer_engineering = "компьютер" in normalized_text or "6b06103" in normalized_text
+    if "сопр" in normalized_text or (
+        is_computer_engineering
+        and re.search(r"\b3\s*(?:г|год|года|лет)\b", normalized_text)
+    ):
+        return "Компьютерная инженерия (СОПР)"
+    if is_computer_engineering:
         return "Компьютерная инженерия"
     return text
 
 
 def _normalise_iup_language(value):
     text = str(value or "").strip().lower()
+    if text in {"kk", "kz", "қазақ", "казахский"}:
+        return "kk"
+    if text in {"ru", "русский", "орыс"}:
+        return "ru"
     if text.startswith(("каз", "қаз")):
         return "kk"
     if text.startswith(("рус", "орыс")):
@@ -523,6 +548,12 @@ def _normalise_iup_language(value):
 
 
 def _infer_iup_group_name(file_name, programme):
+    full_match = re.search(r"05[-_]?057[-_](\d{2})[-_](\d{2})", file_name)
+    if full_match:
+        base_name = f"05-057-{full_match.group(1)}-{full_match.group(2)}"
+        if "сопр" in str(programme or "").lower() or "сопр" in file_name.lower():
+            return f"{base_name} СОПР"
+        return base_name
     match = re.search(r"(\d{2})[-_](\d{2})", file_name)
     if not match:
         return ""
@@ -542,11 +573,14 @@ def _extract_iup_metadata(file_name, lines):
         "academicYear": "",
     }
     for index, line in enumerate(lines):
+        lower_line = line.lower()
         if line.startswith("Курс "):
             match = re.search(r"\d+", line)
             metadata["studyCourse"] = int(match.group(0)) if match else None
         elif line.startswith("Язык обучения"):
             metadata["language"] = _normalise_iup_language(line.replace("Язык обучения", "", 1))
+        elif line.startswith("Оқыту тілі"):
+            metadata["language"] = _normalise_iup_language(line.replace("Оқыту тілі", "", 1))
         elif (
             not metadata["academicYear"]
             and "учебный год" in line.lower()
@@ -556,8 +590,16 @@ def _extract_iup_metadata(file_name, lines):
             metadata["academicYear"] = f"{match.group(1)}-{match.group(2)}"
         elif "(6B" in line or "(7M" in line:
             if "информатика" in line.lower() or "инженерия" in line.lower():
-                metadata["programme"] = _normalise_iup_programme(re.sub(r"\s*\([^)]*\)", "", line))
+                metadata["programme"] = _normalise_iup_programme(line)
+        elif (
+            metadata["programme"] == "Компьютерная инженерия"
+            and "форма обучения" in lower_line
+            and re.search(r"\b3\s*(?:г|год|года|лет)\b", lower_line)
+        ):
+            metadata["programme"] = "Компьютерная инженерия (СОПР)"
 
+    if not metadata["programme"]:
+        metadata["programme"] = _programme_from_file_name(file_name)
     metadata["groupName"] = _infer_iup_group_name(file_name, metadata["programme"])
     return metadata
 
@@ -691,7 +733,13 @@ def _parse_iup_file(file_name, file_bytes):
             continue
 
         next_index = index + 2
-        while next_index < len(lines) and not _is_iup_course_start(lines, next_index):
+        while next_index < len(lines):
+            if _is_iup_course_start(lines, next_index):
+                break
+            if re.match(r"^(\d+)\s+Курс обучения", lines[next_index]):
+                break
+            if re.match(r"^(\d+)\s+Академический период", lines[next_index]):
+                break
             next_index += 1
 
         course = _parse_iup_course_block(lines[index:next_index])
@@ -740,10 +788,11 @@ def _teacher_email_from_name(name):
 def _upsert_iup_teacher(connection, teacher_name, language):
     normalized_name = normalize_teacher_name(teacher_name)
     name_signature = build_teacher_name_signature(teacher_name)
+    normalized_language = _normalise_iup_language(language)
     existing = query_one(
         connection,
         """
-        SELECT id, name
+        SELECT id, name, teaching_languages
         FROM teachers
         WHERE lower(name) = lower(?)
            OR coalesce(name_normalized, '') = ?
@@ -754,16 +803,25 @@ def _upsert_iup_teacher(connection, teacher_name, language):
         (teacher_name, normalized_name, name_signature, name_signature),
     )
     if existing:
+        current_languages = [
+            value.strip().lower()
+            for value in str(existing.get("teaching_languages") or "").split(",")
+            if value.strip()
+        ]
+        if normalized_language and normalized_language not in current_languages:
+            current_languages.append(normalized_language)
+        teaching_languages = ",".join(current_languages or [normalized_language or "ru"])
         db_execute(
             connection,
             """
             UPDATE teachers
             SET
                 name_normalized = COALESCE(NULLIF(name_normalized, ''), ?),
-                name_signature = COALESCE(NULLIF(name_signature, ''), ?)
+                name_signature = COALESCE(NULLIF(name_signature, ''), ?),
+                teaching_languages = ?
             WHERE id = ?
             """,
-            (normalized_name, name_signature, existing["id"]),
+            (normalized_name, name_signature, teaching_languages, existing["id"]),
         )
         return existing["id"], "existing"
 
@@ -777,7 +835,7 @@ def _upsert_iup_teacher(connection, teacher_name, language):
             teacher_name,
             _teacher_email_from_name(teacher_name),
             "",
-            language or "ru,kk",
+            normalized_language or "ru",
             normalized_name,
             name_signature,
         ),
@@ -797,6 +855,20 @@ def _resolve_iup_group_name(connection, group_name):
         (f"{group_name}%",),
     )
     return prefixed["name"] if prefixed else group_name
+
+
+def _load_group_context(connection, group_name):
+    if not group_name:
+        return None
+    return query_one(
+        connection,
+        """
+        SELECT name, programme, language, study_course
+        FROM groups
+        WHERE name = ?
+        """,
+        (group_name,),
+    )
 
 
 def _find_matching_iup_course(connection, course_code, programme, semester):
@@ -870,12 +942,13 @@ def _find_matching_iup_course_relaxed(connection, course_code, programme, semest
     )
 
 
-def _course_import_item(code, name, semester=None, programme=None):
+def _course_import_item(code, name, semester=None, programme=None, study_year=None):
     return {
         "code": code or "",
         "name": name or "",
         "semester": semester,
         "programme": programme or "",
+        "studyYear": study_year,
     }
 
 
@@ -905,6 +978,7 @@ def _get_iup_course_lists(connection, parsed):
             course.get("name", ""),
             course.get("semester"),
             metadata.get("programme", ""),
+            course.get("studyYear"),
         )
         if match:
             matched_courses.append(item)
@@ -912,6 +986,26 @@ def _get_iup_course_lists(connection, parsed):
             missing_courses.append(item)
 
     return matched_courses, missing_courses
+
+
+def _missing_courses_for_study_year(missing_courses, study_year):
+    return [
+        course
+        for course in missing_courses
+        if int(course.get("studyYear") or 0) == int(study_year)
+    ]
+
+
+def _is_first_year_base_course(course):
+    return int(course.get("studyYear") or 0) == 1 and int(course.get("semester") or 0) in {1, 2}
+
+
+def _missing_first_year_base_courses(missing_courses):
+    return [
+        course
+        for course in missing_courses
+        if _is_first_year_base_course(course)
+    ]
 
 
 def _create_iup_missing_courses(connection, parsed, missing_courses):
@@ -940,7 +1034,9 @@ def _create_iup_missing_courses(connection, parsed, missing_courses):
                 course.get("code") or item.get("code") or "",
                 course.get("credits"),
                 None,
-                "Imported from IUP as missing course draft.",
+                "Imported from IUP: first-year base course not present in ROP."
+                if _is_first_year_base_course(course)
+                else "Imported from IUP as missing course draft.",
                 course.get("studyYear"),
                 course.get("semester") or item.get("semester"),
                 _normalize_course_department(metadata.get("educationalProgrammeGroup") or "B057"),
@@ -962,6 +1058,7 @@ def _create_iup_missing_courses(connection, parsed, missing_courses):
             course.get("name") or item.get("name"),
             course.get("semester") or item.get("semester"),
             metadata.get("programme", ""),
+            course.get("studyYear") or item.get("studyYear"),
         ))
 
         lesson_entries = [
@@ -1012,6 +1109,12 @@ def _create_iup_missing_courses(connection, parsed, missing_courses):
 def _store_iup_entries(connection, parsed, create_missing_courses=False):
     metadata = parsed["metadata"]
     metadata["groupName"] = _resolve_iup_group_name(connection, metadata.get("groupName", ""))
+    group_context = _load_group_context(connection, metadata.get("groupName", ""))
+    if group_context:
+        if group_context.get("language"):
+            metadata["language"] = group_context["language"]
+        if group_context.get("study_course") and not metadata.get("studyCourse"):
+            metadata["studyCourse"] = group_context["study_course"]
     db_execute(
         connection,
         "DELETE FROM iup_entries WHERE file_name = ? AND group_name = ?",
@@ -1023,8 +1126,10 @@ def _store_iup_entries(connection, parsed, create_missing_courses=False):
     teacher_cache = {}
     matched_courses, missing_courses = _get_iup_course_lists(connection, parsed)
     created_courses = []
-    if create_missing_courses and missing_courses:
-        created_courses = _create_iup_missing_courses(connection, parsed, missing_courses)
+    auto_first_year_courses = _missing_first_year_base_courses(missing_courses)
+    courses_to_create = missing_courses if create_missing_courses else auto_first_year_courses
+    if courses_to_create:
+        created_courses = _create_iup_missing_courses(connection, parsed, courses_to_create)
         matched_courses, missing_courses = _get_iup_course_lists(connection, parsed)
 
     for entry in parsed["entries"]:

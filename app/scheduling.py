@@ -1,6 +1,6 @@
 from calendar import monthrange
+from copy import deepcopy
 from datetime import date, datetime, timedelta
-from math import ceil
 
 from .db import db_execute, db_executemany, query_all
 from .education_programmes import get_home_room_programmes
@@ -9,6 +9,7 @@ from .optimizer import optimize_schedule
 from .preference_service import get_approved_teacher_preferences
 from .programme_utils import normalize_programme_text
 from .room_availability import get_room_blocked_slots, recompute_room_availability
+from .time_slots import SCHEDULE_HOURS
 
 DAY_NAME_TO_INDEX = {
     "monday": 0,
@@ -21,6 +22,8 @@ PC_REQUIRED_LESSON_TYPES = {"lab"}
 MIN_COMPUTER_COUNT = 10
 PHYSICAL_EDUCATION_ROOM_NUMBER = "орленок"
 SUBGROUP_MODES = {"none", "auto", "forced"}
+MAX_GENERATED_SUBGROUPS = 2
+USE_GREEDY_BATCH_SCHEDULER = True
 SEASON_ACADEMIC_PERIODS = {
     1: (1, 3, 5, 7),
     2: (2, 4, 6, 8),
@@ -97,7 +100,7 @@ def _resolve_subgroup_count(section, rooms):
     if mode == "none":
         return 1
     if mode == "forced":
-        return max(2, configured_count)
+        return min(MAX_GENERATED_SUBGROUPS, max(2, configured_count))
 
     student_count = _int_at_least(section.get("student_count"), 0, 0)
     pc_required = bool(section.get("requires_computers")) or lesson_type in PC_REQUIRED_LESSON_TYPES
@@ -110,7 +113,7 @@ def _resolve_subgroup_count(section, rooms):
     max_capacity = _max_room_capacity_for_lesson(rooms, lesson_type, pc_required)
     if student_count <= 0 or max_capacity <= 0 or student_count <= max_capacity:
         return 1
-    return max(2, ceil(student_count / max_capacity))
+    return MAX_GENERATED_SUBGROUPS
 
 
 def _subgroup_size(student_count, subgroup_count, index):
@@ -131,7 +134,11 @@ def _is_physical_education(section):
         str(section.get(field) or "").lower()
         for field in ("course_name", "course_code")
     )
-    return "физ" in text or "дене шынықтыру" in text
+    return (
+        "физическая культура" in text
+        or "дене шынықтыру" in text
+        or "fk " in f"{text} "
+    )
 
 
 def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
@@ -257,12 +264,12 @@ def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
 
     return {
         "days": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
-        "hours": list(range(8, 18)),
+        "hours": SCHEDULE_HOURS,
         "preferSeparateSubgroupsByDay": False,
         "preferLowerFloors": True,
         "enforceLectureBeforeLab": True,
-        "maxClassesPerDayForTeacher": 4,
-        "maxClassesPerDayForAudience": 4,
+        "maxClassesPerDayForTeacher": 6,
+        "maxClassesPerDayForAudience": 6,
         # Render free instances are memory-constrained, so keep the solver lean by default.
         "enableGapPenalties": False,
         "enableBuildingTransitionPenalties": False,
@@ -315,6 +322,376 @@ def _room_block_day_for_optimizer(value):
 
 def academic_periods_for_schedule_semester(semester):
     return SEASON_ACADEMIC_PERIODS.get(int(semester), (int(semester),))
+
+
+def _build_section_lookup(sections, rooms):
+    section_lookup = {}
+    for section in sections:
+        lesson_type = (section.get("lesson_type") or "lecture").strip().lower()
+        if lesson_type == "lecture":
+            continue
+        section_lookup[f"section_{section['id']}"] = [
+            {
+                "section_id": section["id"],
+                "group_id": section["group_id"],
+                "group_name": section["group_name"],
+                "subgroup": "",
+            }
+        ]
+        for index in range(_resolve_subgroup_count(section, rooms)):
+            subgroup = _subgroup_label(index)
+            section_lookup[f"section_{section['id']}_{subgroup}"] = {
+                "section_id": section["id"],
+                "group_id": section["group_id"],
+                "group_name": section["group_name"],
+                "subgroup": subgroup,
+            }
+
+    lecture_groups = {}
+    for section in sections:
+        lesson_type = (section.get("lesson_type") or "lecture").strip().lower()
+        if lesson_type != "lecture":
+            continue
+        signature = (
+            section["course_id"],
+            section["instructor_id"],
+            int(section.get("classes_count") or 0),
+            section.get("group_language") or "",
+            normalize_programme_text(section.get("programme") or ""),
+            tuple(
+                sorted(
+                    normalize_programme_text(value)
+                    for value in get_home_room_programmes(
+                        section.get("group_programme"),
+                        section.get("specialty_code"),
+                    )
+                )
+            ),
+        )
+        lecture_groups.setdefault(signature, []).append(section)
+    for _signature, lecture_sections in lecture_groups.items():
+        item_id = "stream_" + "_".join(str(section["id"]) for section in lecture_sections)
+        section_lookup[item_id] = [
+            {
+                "section_id": section["id"],
+                "group_id": section["group_id"],
+                "group_name": section["group_name"],
+                "subgroup": "",
+            }
+            for section in lecture_sections
+        ]
+    return section_lookup
+
+
+def _rows_from_generated_items(generated_items, section_lookup, selected_monday, semester, year, algorithm):
+    rows = []
+    for item in generated_items:
+        section_entries = section_lookup.get(item["itemId"])
+        if section_entries is None:
+            raise ApiError(
+                400,
+                "bad_request",
+                f"Оптимизатор вернул неизвестную секцию: {item['itemId']}",
+            )
+        if isinstance(section_entries, dict):
+            section_entries = [section_entries]
+        for section_meta in section_entries:
+            rows.append(
+                (
+                    section_meta["section_id"],
+                    item.get("courseId"),
+                    item.get("courseName"),
+                    item.get("teacherId"),
+                    item.get("teacherName"),
+                    item.get("roomId"),
+                    item.get("roomNumber"),
+                    section_meta["group_id"],
+                    section_meta["group_name"],
+                    section_meta["subgroup"],
+                    _day_to_iso(selected_monday, item.get("day")),
+                    int(item.get("hour")),
+                    semester,
+                    year,
+                    algorithm or "optimizer",
+                    item.get("roomProgramme") or "",
+                    1 if item.get("roomProgrammeFallbackUsed") else 0,
+                    "",
+                    "",
+                )
+            )
+    return rows
+
+
+def _merge_slot_lists(left, right):
+    seen = {(item.get("day"), int(item.get("hour"))) for item in left}
+    merged = list(left)
+    for item in right:
+        key = (item.get("day"), int(item.get("hour")))
+        if key not in seen:
+            seen.add(key)
+            merged.append({"day": item.get("day"), "hour": int(item.get("hour"))})
+    return merged
+
+
+def _apply_batch_occupancy(payload, occupied):
+    room_slots = occupied["rooms"]
+    teacher_slots = occupied["teachers"]
+    group_slots = occupied["groups"]
+
+    for room in payload["rooms"]:
+        blocked = [
+            {"day": day, "hour": hour}
+            for day, hour in sorted(room_slots.get(room["id"], set()))
+        ]
+        if blocked:
+            room["unavailableSlots"] = _merge_slot_lists(room.get("unavailableSlots") or [], blocked)
+
+    for item in payload["planItems"]:
+        forbidden = [
+            {"day": day, "hour": hour}
+            for day, hour in sorted(teacher_slots.get(item.get("teacherId"), set()))
+        ]
+        for group_id in item.get("groupIds") or []:
+            forbidden.extend(
+                {"day": day, "hour": hour}
+                for day, hour in sorted(group_slots.get(str(group_id), set()))
+            )
+        if forbidden:
+            item["forbiddenSlots"] = _merge_slot_lists(item.get("forbiddenSlots") or [], forbidden)
+    return payload
+
+
+def _record_batch_occupancy(occupied, generated_items):
+    for item in generated_items:
+        slot = (item.get("day"), int(item.get("hour")))
+        occupied["rooms"].setdefault(item.get("roomId"), set()).add(slot)
+        occupied["teachers"].setdefault(item.get("teacherId"), set()).add(slot)
+        for group_id in item.get("groups") or []:
+            occupied["groups"].setdefault(str(group_id), set()).add(slot)
+
+
+def _slot_key_from_raw(raw):
+    return (str(raw.get("day")), int(raw.get("hour")))
+
+
+def _greedy_room_candidates(item, rooms, day, hour, room_unavailable=None):
+    lesson_type = (item.get("lessonType") or "lecture").strip().lower()
+    pc_required = bool(item.get("pcRequired")) or lesson_type in PC_REQUIRED_LESSON_TYPES
+    allowed_numbers = {
+        str(value).strip().lower()
+        for value in (item.get("allowedRoomNumbers") or [])
+        if str(value).strip()
+    }
+    candidates = []
+    for room in rooms:
+        room_number = str(room.get("number") or "").strip().lower()
+        if allowed_numbers and not any(value == room_number or value in room_number for value in allowed_numbers):
+            continue
+        if room_unavailable is None:
+            unavailable = {_slot_key_from_raw(slot) for slot in room.get("unavailableSlots") or []}
+        else:
+            unavailable = room_unavailable.get(room.get("id"), set())
+        if (day, hour) in unavailable:
+            continue
+        room_for_match = {
+            "type": room.get("type") or "",
+            "capacity": int(room.get("capacity") or 0),
+            "computer_count": int(room.get("pcCount") or room.get("computer_count") or 0),
+        }
+        if not _room_matches_lesson_type(room_for_match, lesson_type, pc_required=pc_required):
+            continue
+        if int(room.get("capacity") or 0) < int(item.get("studentCount") or 0):
+            continue
+        if pc_required and int(room.get("pcCount") or 0) < MIN_COMPUTER_COUNT:
+            continue
+        type_score = 1 if _normalize_room_type(room_for_match) == _room_type_required(lesson_type, pc_required) else 0
+        candidates.append((type_score, int(room.get("capacity") or 0), str(room.get("number") or ""), room))
+    candidates.sort(key=lambda entry: (-entry[0], entry[1], entry[2]))
+    return [entry[3] for entry in candidates]
+
+
+def _greedy_optimize_batch(payload):
+    days = payload.get("days") or ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+    hours = payload.get("hours") or SCHEDULE_HOURS
+    slots = [(str(day), int(hour)) for day in days for hour in hours]
+    max_teacher_day = int(payload.get("maxClassesPerDayForTeacher") or 4)
+    max_audience_day = int(payload.get("maxClassesPerDayForAudience") or 4)
+
+    room_unavailable = {
+        room.get("id"): {_slot_key_from_raw(slot) for slot in room.get("unavailableSlots") or []}
+        for room in payload.get("rooms") or []
+    }
+    room_busy = set()
+    teacher_busy = set()
+    group_busy = set()
+    teacher_day_count = {}
+    group_day_count = {}
+    generated = []
+
+    items = sorted(
+        payload.get("planItems") or [],
+        key=lambda item: (
+            0 if (item.get("lessonType") or "").strip().lower() == "lecture" else 1,
+            -int(item.get("lessonsPerWeek") or 0),
+            str(item.get("courseName") or ""),
+        ),
+    )
+
+    for item in items:
+        forbidden = {_slot_key_from_raw(slot) for slot in item.get("forbiddenSlots") or []}
+        lessons_left = int(item.get("lessonsPerWeek") or 0)
+        for _lesson_index in range(lessons_left):
+            placed = None
+            for day, hour in slots:
+                if (day, hour) in forbidden:
+                    continue
+                teacher_key = (item.get("teacherId"), day, hour)
+                if teacher_key in teacher_busy:
+                    continue
+                if teacher_day_count.get((item.get("teacherId"), day), 0) >= max_teacher_day:
+                    continue
+                group_ids = [str(group_id) for group_id in item.get("groupIds") or []]
+                if any((group_id, day, hour) in group_busy for group_id in group_ids):
+                    continue
+                if any(group_day_count.get((group_id, day), 0) >= max_audience_day for group_id in group_ids):
+                    continue
+                for room in _greedy_room_candidates(
+                    item,
+                    payload.get("rooms") or [],
+                    day,
+                    hour,
+                    room_unavailable=room_unavailable,
+                ):
+                    room_key = (room.get("id"), day, hour)
+                    if (day, hour) in room_unavailable.get(room.get("id"), set()):
+                        continue
+                    if room_key in room_busy:
+                        continue
+                    placed = (day, hour, room)
+                    break
+                if placed:
+                    break
+            if not placed:
+                raise ApiError(
+                    400,
+                    "optimizer_no_solution",
+                    "Не удалось найти допустимое расписание для заданных ограничений.",
+                    details={
+                        "itemId": item.get("id"),
+                        "courseName": item.get("courseName"),
+                        "lessonType": item.get("lessonType"),
+                    },
+                )
+            day, hour, room = placed
+            room_busy.add((room.get("id"), day, hour))
+            teacher_busy.add((item.get("teacherId"), day, hour))
+            teacher_day_count[(item.get("teacherId"), day)] = teacher_day_count.get((item.get("teacherId"), day), 0) + 1
+            for group_id in [str(group_id) for group_id in item.get("groupIds") or []]:
+                group_busy.add((group_id, day, hour))
+                group_day_count[(group_id, day)] = group_day_count.get((group_id, day), 0) + 1
+            generated.append(
+                {
+                    "itemId": item.get("id"),
+                    "courseId": item.get("courseId"),
+                    "courseName": item.get("courseName"),
+                    "teacherId": item.get("teacherId"),
+                    "teacherName": item.get("teacherName"),
+                    "roomId": room.get("id"),
+                    "roomNumber": room.get("number"),
+                    "roomProgramme": room.get("programme") or "",
+                    "roomProgrammeFallbackUsed": False,
+                    "groups": [str(group_id) for group_id in item.get("groupIds") or []],
+                    "subgroups": item.get("subgroupIds") or [],
+                    "streamId": item.get("streamId"),
+                    "day": day,
+                    "hour": hour,
+                }
+            )
+    return {"status": "GREEDY", "schedule": generated, "diagnostics": {"fallback": "greedy"}}
+
+
+def _schedule_batch_key(section):
+    return (
+        int(section.get("study_course") or 0),
+        str(section.get("group_language") or "").strip().lower(),
+        normalize_programme_text(section.get("group_programme") or section.get("programme") or ""),
+        normalize_programme_text(section.get("specialty_code") or ""),
+    )
+
+
+def _generate_schedule_rows_by_batches(sections, teachers, rooms, teacher_preferences, semester, year, algorithm):
+    selected_monday = monday_for_week(year)
+    rows = []
+    occupied = {"rooms": {}, "teachers": {}, "groups": {}}
+    batch_keys = sorted(
+        {_schedule_batch_key(section) for section in sections},
+        key=lambda key: (-key[0], key[2], key[1], key[3]),
+    )
+    for batch_key in batch_keys:
+        study_course = batch_key[0]
+        batch_sections = [
+            section
+            for section in sections
+            if _schedule_batch_key(section) == batch_key
+        ]
+        if not batch_sections:
+            continue
+        payload = _build_optimizer_payload(batch_sections, teachers, deepcopy(rooms), teacher_preferences)
+        payload = _apply_batch_occupancy(payload, occupied)
+        if USE_GREEDY_BATCH_SCHEDULER:
+            optimization_result = _greedy_optimize_batch(payload)
+        else:
+            try:
+                optimization_result = optimize_schedule(payload)
+            except ApiError as exc:
+                if exc.code == "optimizer_no_solution":
+                    try:
+                        optimization_result = _greedy_optimize_batch(payload)
+                    except ApiError as fallback_exc:
+                        details = getattr(fallback_exc, "details", None) or {}
+                        if isinstance(details, dict):
+                            details = {
+                                **details,
+                                "studyCourse": study_course,
+                                "batchKey": {
+                                    "language": batch_key[1],
+                                    "programme": batch_key[2],
+                                    "specialtyCode": batch_key[3],
+                                },
+                                "batchSections": len(batch_sections),
+                                "batchPlanItems": len(payload.get("planItems") or []),
+                            }
+                        raise ApiError(
+                            fallback_exc.status,
+                            fallback_exc.code,
+                            f"{fallback_exc.message} Пакет: {study_course} курс, {batch_key[2] or 'без направления'}, {batch_key[1] or 'без языка'}.",
+                            details=details,
+                        ) from fallback_exc
+                else:
+                    details = getattr(exc, "details", None) or {}
+                    if isinstance(details, dict):
+                        details = {
+                            **details,
+                            "studyCourse": study_course,
+                            "batchKey": {
+                                "language": batch_key[1],
+                                "programme": batch_key[2],
+                                "specialtyCode": batch_key[3],
+                            },
+                            "batchSections": len(batch_sections),
+                            "batchPlanItems": len(payload.get("planItems") or []),
+                        }
+                    raise ApiError(
+                        exc.status,
+                        exc.code,
+                        f"{exc.message} Пакет: {study_course} курс, {batch_key[2] or 'без направления'}, {batch_key[1] or 'без языка'}.",
+                        details=details,
+                    ) from exc
+        generated_items = optimization_result.get("schedule") or []
+        section_lookup = _build_section_lookup(batch_sections, rooms)
+        rows.extend(_rows_from_generated_items(generated_items, section_lookup, selected_monday, semester, year, algorithm))
+        _record_batch_occupancy(occupied, generated_items)
+    return rows
 
 
 def build_schedule(connection, semester, year, algorithm):
@@ -450,93 +827,15 @@ def build_schedule(connection, semester, year, algorithm):
             }
         )
 
-    payload = _build_optimizer_payload(sections, teachers, rooms, teacher_preferences)
-    optimization_result = optimize_schedule(payload)
-    generated_items = optimization_result.get("schedule") or []
-    selected_monday = monday_for_week(year)
-
-    section_lookup = {}
-    for section in sections:
-        lesson_type = (section.get("lesson_type") or "lecture").strip().lower()
-        if lesson_type == "lecture":
-            continue
-        section_lookup[f"section_{section['id']}"] = [
-            {
-                "section_id": section["id"],
-                "group_id": section["group_id"],
-                "group_name": section["group_name"],
-                "subgroup": "",
-            }
-        ]
-        for index in range(_resolve_subgroup_count(section, rooms)):
-            subgroup = _subgroup_label(index)
-            section_lookup[f"section_{section['id']}_{subgroup}"] = {
-                "section_id": section["id"],
-                "group_id": section["group_id"],
-                "group_name": section["group_name"],
-                "subgroup": subgroup,
-            }
-
-    lecture_groups = {}
-    for section in sections:
-        lesson_type = (section.get("lesson_type") or "lecture").strip().lower()
-        if lesson_type != "lecture":
-            continue
-        signature = (
-            section["course_id"],
-            section["instructor_id"],
-            int(section.get("classes_count") or 0),
-            section.get("group_language") or "",
-            normalize_programme_text(section.get("programme") or ""),
-        )
-        lecture_groups.setdefault(signature, []).append(section)
-    for signature, lecture_sections in lecture_groups.items():
-        item_id = "stream_" + "_".join(str(section["id"]) for section in lecture_sections)
-        section_lookup[item_id] = [
-            {
-                "section_id": section["id"],
-                "group_id": section["group_id"],
-                "group_name": section["group_name"],
-                "subgroup": "",
-            }
-            for section in lecture_sections
-        ]
-
-    rows = []
-    for item in generated_items:
-        section_entries = section_lookup.get(item["itemId"])
-        if section_entries is None:
-            raise ApiError(
-                400,
-                "bad_request",
-                f"Оптимизатор вернул неизвестную секцию: {item['itemId']}",
-            )
-        if isinstance(section_entries, dict):
-            section_entries = [section_entries]
-        for section_meta in section_entries:
-            rows.append(
-                (
-                    section_meta["section_id"],
-                    item.get("courseId"),
-                    item.get("courseName"),
-                    item.get("teacherId"),
-                    item.get("teacherName"),
-                    item.get("roomId"),
-                    item.get("roomNumber"),
-                    section_meta["group_id"],
-                    section_meta["group_name"],
-                    section_meta["subgroup"],
-                    _day_to_iso(selected_monday, item.get("day")),
-                    int(item.get("hour")),
-                    semester,
-                    year,
-                    algorithm or "optimizer",
-                    item.get("roomProgramme") or "",
-                    1 if item.get("roomProgrammeFallbackUsed") else 0,
-                    "",
-                    "",
-                )
-            )
+    rows = _generate_schedule_rows_by_batches(
+        sections,
+        teachers,
+        rooms,
+        teacher_preferences,
+        semester,
+        year,
+        algorithm,
+    )
 
     generated_group_ids = sorted({int(section["group_id"]) for section in sections if section.get("group_id") is not None})
 

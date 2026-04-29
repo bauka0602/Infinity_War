@@ -636,6 +636,81 @@ def test_manual_schedule_keeps_room_active_but_blocks_the_occupied_slot(client, 
     assert rooms_after_reset.json()[0]["available"] == 1
 
 
+def test_room_block_relocates_conflicting_schedule_to_alternative_room(client, admin_auth_headers):
+    _seed_schedule_data(client, admin_auth_headers)
+
+    second_room_response = client.post(
+        "/api/rooms",
+        headers=admin_auth_headers,
+        json={
+            "number": "402",
+            "capacity": 40,
+            "building": "Main",
+            "type": "lecture",
+            "department": "CS",
+            "available": 1,
+        },
+    )
+    assert second_room_response.status_code == 201
+    second_room = second_room_response.json()
+
+    sections_response = client.get("/api/sections", headers=admin_auth_headers)
+    rooms_response = client.get("/api/rooms", headers=admin_auth_headers)
+    assert sections_response.status_code == 200
+    assert rooms_response.status_code == 200
+    section = sections_response.json()[0]
+    original_room = next(room for room in rooms_response.json() if room["number"] == "401")
+
+    schedule_response = client.post(
+        "/api/schedules",
+        headers=admin_auth_headers,
+        json={
+            "section_id": section["id"],
+            "course_id": section["course_id"],
+            "course_name": section["course_name"],
+            "teacher_id": section["teacher_id"],
+            "teacher_name": section["teacher_name"],
+            "room_id": original_room["id"],
+            "room_number": original_room["number"],
+            "group_id": section["group_id"],
+            "group_name": section["group_name"],
+            "subgroup": "",
+            "day": "2026-04-20",
+            "start_hour": 9,
+            "semester": 1,
+            "year": 2026,
+            "algorithm": "manual",
+        },
+    )
+    assert schedule_response.status_code == 201
+
+    block_response = client.post(
+        "/api/room_blocks",
+        headers=admin_auth_headers,
+        json={
+            "room_id": original_room["id"],
+            "day": "2026-04-20",
+            "start_hour": 9,
+            "end_hour": 10,
+            "semester": 1,
+            "year": 2026,
+            "reason": "repair",
+        },
+    )
+    assert block_response.status_code == 201
+    block_payload = block_response.json()
+    assert block_payload["relocatedSchedules"][0]["fromRoomNumber"] == "401"
+    assert block_payload["relocatedSchedules"][0]["toRoomNumber"] == "402"
+
+    schedules_response = client.get("/api/schedules", headers=admin_auth_headers)
+    assert schedules_response.status_code == 200
+    relocated = schedules_response.json()[0]
+    assert relocated["room_id"] == second_room["id"]
+    assert relocated["room_number"] == "402"
+    assert relocated["relocated_from_room_number"] == "401"
+    assert relocated["relocation_reason"] == "repair"
+
+
 def test_schedule_export_supports_semester_and_year_scope(client, admin_auth_headers):
     _seed_schedule_data(client, admin_auth_headers)
 
@@ -688,6 +763,70 @@ def test_schedule_export_supports_semester_and_year_scope(client, admin_auth_hea
     assert rows[1][0] == "Algorithms"
     assert rows[1][7] == 1
     assert rows[1][8] == 2026
+
+
+def test_auto_subgroups_are_limited_to_a_and_b():
+    from backend.app.scheduling import _build_optimizer_payload, _resolve_subgroup_count
+
+    section = {
+        "id": 1,
+        "course_id": 1,
+        "course_name": "Programming",
+        "group_id": 1,
+        "group_name": "SE-24-01",
+        "lesson_type": "lab",
+        "subgroup_mode": "auto",
+        "subgroup_count": 1,
+        "requires_computers": 1,
+        "student_count": 120,
+        "instructor_id": 1,
+        "instructor_name": "Teacher A",
+        "programme": "",
+        "group_programme": "",
+        "specialty_code": "",
+    }
+    rooms = [
+        {
+            "id": 1,
+            "number": "201",
+            "capacity": 20,
+            "type": "practical",
+            "computer_count": 20,
+            "programme": "",
+            "building": "",
+            "unavailable_slots": [],
+        }
+    ]
+
+    assert _resolve_subgroup_count(section, rooms) == 2
+
+    payload = _build_optimizer_payload(
+        [section],
+        [{"id": 1, "name": "Teacher A", "weekly_hours_limit": None, "teaching_languages": "ru,kk"}],
+        rooms,
+        {},
+    )
+
+    subgroup_ids = sorted(
+        item["subgroupIds"][0]
+        for item in payload["planItems"]
+        if item.get("subgroupIds")
+    )
+    assert subgroup_ids == ["SE-24-01-A", "SE-24-01-B"]
+
+
+def test_forced_subgroups_are_capped_at_two():
+    from backend.app.scheduling import _resolve_subgroup_count
+
+    section = {
+        "lesson_type": "practical",
+        "subgroup_mode": "forced",
+        "subgroup_count": 4,
+        "student_count": 80,
+        "requires_computers": 0,
+    }
+
+    assert _resolve_subgroup_count(section, []) == 2
 
 
 def test_optimizer_allows_parallel_different_subgroups():

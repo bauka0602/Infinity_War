@@ -64,6 +64,46 @@ def _same_programme(left, right):
     return same_programme(left_normalized, right_normalized)
 
 
+def _programme_kind(programme="", specialty_code="", group_name=""):
+    text = " ".join(
+        str(value or "").lower()
+        for value in (programme, specialty_code, group_name)
+    )
+    if "сопр" in text:
+        return "ki_sopr"
+    if "6b06102" in text or "бизнес" in text or re.search(r"(^|[^a-zа-я])(?:би|bi)([^a-zа-я]|$)", text):
+        return "bi"
+    if "6b06103" in text or "компьютер" in text or re.search(r"(^|[^a-zа-я])(?:ки|ki)([^a-zа-я]|$)", text):
+        return "ki"
+    return ""
+
+
+def _same_academic_programme(group, iup_entry):
+    group_kind = _programme_kind(
+        group.get("programme"),
+        group.get("specialty_code"),
+        group.get("name"),
+    )
+    iup_kind = _programme_kind(iup_entry.get("programme"), "", iup_entry.get("group_name"))
+    if group_kind and iup_kind:
+        return group_kind == iup_kind
+    if str(group.get("programme") or "").strip().lower() == "b057":
+        return bool(iup_kind)
+    return _same_programme(group.get("programme"), iup_entry.get("programme"))
+
+
+def _same_study_course(group, iup_entry):
+    group_course = group.get("study_course")
+    entry_course = iup_entry.get("study_course")
+    if group_course in (None, "") or entry_course in (None, ""):
+        return True
+    return int(group_course) == int(entry_course)
+
+
+def _is_first_year_base_iup_entry(iup_entry):
+    return int(iup_entry.get("study_course") or 0) == 1 and int(iup_entry.get("academic_period") or 0) in {1, 2}
+
+
 def _classes_count(iup_entry, component):
     weekly = component.get("weekly_classes")
     if weekly not in (None, ""):
@@ -168,11 +208,10 @@ def _build_component_index(components):
             normalize_course_code(component.get("course_code")),
             int(component.get("academic_period") or 0),
             normalize_lesson_type(component.get("lesson_type")),
-            normalize_language(component.get("language"), ""),
             normalize_programme_text(component.get("programme") or component.get("course_programme")),
         )
         index.setdefault(key, []).append(component)
-        by_lesson_period.setdefault((key[1], key[2], key[3], key[4]), []).append(component)
+        by_lesson_period.setdefault((key[1], key[2], key[3]), []).append(component)
     return index, by_lesson_period
 
 
@@ -181,7 +220,6 @@ def _match_component(iup_entry, component_index, by_lesson_period, issues, stric
         normalize_course_code(iup_entry.get("course_code")),
         int(iup_entry.get("academic_period") or 0),
         normalize_lesson_type(iup_entry.get("lesson_type")),
-        normalize_language(iup_entry.get("language"), ""),
         normalize_programme_text(iup_entry.get("programme")),
     )
     candidates = component_index.get(key) or []
@@ -243,7 +281,7 @@ def _find_group(connection, iup_entry, issues):
     if not _same_language(group.get("language"), iup_entry.get("language")):
         add_issue(issues, "language_mismatch", "Язык группы и дисциплины ИУП не совпадает.", "error", group_name=group_name)
         return None
-    if not _same_programme(group.get("programme"), iup_entry.get("programme")):
+    if not _same_academic_programme(group, iup_entry):
         add_issue(issues, "programme_mismatch", "Программа группы и дисциплины ИУП не совпадает.", "error", group_name=group_name)
         return None
     return group
@@ -436,7 +474,12 @@ def _build_sections_from_iup(connection, payload, preview=False):
 
     if not iup_entries:
         raise ApiError(400, "iup_entries_missing", "Нет записей ИУП для генерации sections.")
-    if not components and strict_mode:
+    has_first_year_iup_entries = any(
+        normalize_lesson_type(entry.get("lesson_type")) in ACTIVE_LESSON_TYPES
+        and _is_first_year_base_iup_entry(entry)
+        for entry in iup_entries
+    )
+    if not components and strict_mode and not has_first_year_iup_entries:
         raise ApiError(400, "rop_components_missing", "Нет компонентов РОП для сопоставления с ИУП.")
 
     inserted = 0
@@ -450,21 +493,40 @@ def _build_sections_from_iup(connection, payload, preview=False):
         if lesson_type not in ACTIVE_LESSON_TYPES:
             skipped += 1
             continue
-        if normalize_component(iup_entry.get("component")) in ELECTIVE_COMPONENTS:
-            electives_by_group[iup_entry.get("group_name")] = electives_by_group.get(iup_entry.get("group_name"), 0) + 1
-
         group = _find_group(connection, iup_entry, issues)
         if not group:
             skipped += 1
             continue
+        if not _same_study_course(group, iup_entry):
+            add_issue(
+                issues,
+                "study_course_mismatch",
+                "Строка ИУП относится к другому курсу обучения и не использована.",
+                "info",
+                iup_entry_id=iup_entry.get("id"),
+                group_name=group.get("name"),
+                group_study_course=group.get("study_course"),
+                iup_study_course=iup_entry.get("study_course"),
+                course_name=iup_entry.get("course_name"),
+            )
+            skipped += 1
+            continue
+        if normalize_component(iup_entry.get("component")) in ELECTIVE_COMPONENTS:
+            electives_by_group[iup_entry.get("group_name")] = electives_by_group.get(iup_entry.get("group_name"), 0) + 1
         component, match_method = _match_component(iup_entry, component_index, by_lesson_period, issues, strict_mode)
         if component is None:
-            if strict_mode:
+            if strict_mode and not _is_first_year_base_iup_entry(iup_entry):
                 skipped += 1
                 continue
-            add_issue(issues, "fallback_iup_course_used", "Section будет создан по ИУП без найденного РОП.", "warning", iup_entry_id=iup_entry["id"])
+            issue_code = "first_year_iup_course_used" if _is_first_year_base_iup_entry(iup_entry) else "fallback_iup_course_used"
+            issue_message = (
+                "Предмет 1 курса 1/2 периода создан по ИУП без РОП."
+                if _is_first_year_base_iup_entry(iup_entry)
+                else "Section будет создан по ИУП без найденного РОП."
+            )
+            add_issue(issues, issue_code, issue_message, "warning", iup_entry_id=iup_entry["id"])
             component = _fallback_component_from_iup(connection, iup_entry, preview=preview)
-            match_method = "fallback_iup"
+            match_method = "first_year_iup" if _is_first_year_base_iup_entry(iup_entry) else "fallback_iup"
 
         teacher = _find_teacher_for_preview(connection, iup_entry, issues) if preview else _find_or_create_teacher(connection, iup_entry, issues)
         if not teacher:
@@ -525,7 +587,6 @@ def _build_sections_from_iup(connection, payload, preview=False):
             normalize_course_code(entry.get("course_code")),
             int(entry.get("academic_period") or 0),
             normalize_lesson_type(entry.get("lesson_type")),
-            normalize_language(entry.get("language"), ""),
             normalize_programme_text(entry.get("programme")),
         )
         for entry in iup_entries
@@ -535,7 +596,6 @@ def _build_sections_from_iup(connection, payload, preview=False):
             normalize_course_code(component.get("course_code")),
             int(component.get("academic_period") or 0),
             normalize_lesson_type(component.get("lesson_type")),
-            normalize_language(component.get("language"), ""),
             normalize_programme_text(component.get("programme") or component.get("course_programme")),
         )
         if component_key not in iup_keys:
@@ -639,7 +699,6 @@ def build_validation_report(connection):
             normalize_course_code(entry.get("course_code")),
             int(entry.get("academic_period") or 0),
             normalize_lesson_type(entry.get("lesson_type")),
-            normalize_language(entry.get("language"), ""),
             normalize_programme_text(entry.get("programme")),
         )
         iup_keys.add(key)
@@ -659,7 +718,6 @@ def build_validation_report(connection):
             normalize_course_code(component.get("course_code")),
             int(component.get("academic_period") or 0),
             normalize_lesson_type(component.get("lesson_type")),
-            normalize_language(component.get("language"), ""),
             normalize_programme_text(component.get("programme") or component.get("course_programme")),
         )
         if key not in iup_keys:

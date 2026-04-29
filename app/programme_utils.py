@@ -3,7 +3,6 @@ import re
 
 def normalize_programme_text(value):
     normalized = str(value or "").strip().lower()
-    normalized = re.sub(r"\s*\([^)]*\)\s*$", "", normalized)
     normalized = re.sub(r"\s+", " ", normalized)
     return normalized
 

@@ -4,6 +4,7 @@ from collections import defaultdict
 
 from .errors import ApiError
 from .programme_utils import normalize_programme_text, same_programme
+from .time_slots import SCHEDULE_HOURS
 
 try:
     from ortools.sat.python import cp_model
@@ -12,9 +13,10 @@ except ImportError:  # pragma: no cover - depends on environment
 
 
 WEEKDAYS_DEFAULT = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
-HOURS_DEFAULT = list(range(8, 18))
+HOURS_DEFAULT = SCHEDULE_HOURS
 LESSON_TYPE_ORDER = {"lecture": 1, "practice": 2, "practical": 2, "seminar": 2, "lab": 3}
 MIN_COMPUTER_COUNT = 10
+MAX_ROOM_CANDIDATES_DEFAULT = 48
 
 
 def _unique_preserve_order(values):
@@ -265,7 +267,7 @@ def _slot_score(slot, item):
     if item["preferred_hours"] and slot["hour"] in item["preferred_hours"]:
         score += 15
 
-    score += max(0, 18 - int(slot["hour"]))
+    score += max(0, 21 - int(slot["hour"]))
 
     if item["lesson_type"] == "lecture" and slot["hour"] <= 12:
         score += 3
@@ -395,6 +397,20 @@ def _find_compatible_room_ids(item, rooms):
     return fallback_ids, bool(fallback_ids)
 
 
+def _limit_room_candidates(item, room_ids, room_map, limit, prefer_lower_floors=True):
+    if not limit or len(room_ids) <= limit:
+        return room_ids
+    ordered = sorted(
+        room_ids,
+        key=lambda room_id: (
+            -_room_score(room_map[room_id], item, prefer_lower_floors=prefer_lower_floors),
+            int(room_map[room_id].get("capacity") or 0),
+            str(room_map[room_id].get("number") or room_id),
+        ),
+    )
+    return ordered[:limit]
+
+
 def _group_allowed_slots(item, slots, teacher):
     allowed_slots = []
     for slot in slots:
@@ -450,6 +466,10 @@ def optimize_schedule(payload):
     days = _unique_preserve_order(slot["day"] for slot in slots)
     max_classes_per_day_for_teacher = int(payload.get("maxClassesPerDayForTeacher") or 4)
     max_classes_per_day_for_audience = int(payload.get("maxClassesPerDayForAudience") or 4)
+    max_room_candidates_per_item = int(
+        payload.get("maxRoomCandidatesPerItem") or MAX_ROOM_CANDIDATES_DEFAULT
+    )
+    prefer_lower_floors = _normalize_bool(payload.get("preferLowerFloors", True))
 
     for item in items:
         if item["teacher_id"] not in teacher_map:
@@ -474,6 +494,13 @@ def optimize_schedule(payload):
                 }
             )
             continue
+        compatible_rooms = _limit_room_candidates(
+            item,
+            compatible_rooms,
+            room_map,
+            max_room_candidates_per_item,
+            prefer_lower_floors=prefer_lower_floors,
+        )
         compatible_rooms_by_item[item["id"]] = compatible_rooms
 
         teacher = teacher_map[item["teacher_id"]]
@@ -506,7 +533,6 @@ def optimize_schedule(payload):
     item_day_used_vars = {}
     item_earliest_slot_vars = {}
 
-    prefer_lower_floors = _normalize_bool(payload.get("preferLowerFloors", True))
     enforce_lecture_before_lab = _normalize_bool(payload.get("enforceLectureBeforeLab", True))
     prefer_separate_subgroups_by_day = _normalize_bool(
         payload.get("preferSeparateSubgroupsByDay", False)
