@@ -995,7 +995,7 @@ def list_collection(connection, collection, query, user=None):
     params = []
     semester = query.get("semester", [None])[0]
     year = query.get("year", [None])[0]
-    from_sql = "FROM schedules s"
+    from_sql = "FROM schedules s LEFT JOIN sections sec ON sec.id = s.section_id"
     if semester is not None:
         clauses.append("s.semester = ?")
         params.append(semester)
@@ -1027,6 +1027,7 @@ def list_collection(connection, collection, query, user=None):
         SELECT
             s.id, s.section_id, s.course_id, s.course_name, s.teacher_id, s.teacher_name, s.room_id, s.room_number,
             s.group_id, s.group_name, s.subgroup, s.day, s.start_hour, s.semester, s.year, s.algorithm,
+            COALESCE(sec.lesson_type, 'lecture') AS lesson_type,
             s.room_programme, s.room_programme_mismatch, s.relocated_from_room_number, s.relocation_reason
         {from_sql}
         {where_sql}
