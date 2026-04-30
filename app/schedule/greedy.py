@@ -145,83 +145,184 @@ def _rebalance_generated_schedule(
             group_day_count,
             day_load_count,
         ) = _rebuild_usage(generated)
-        heavy_day = max(days, key=lambda day: day_load_count.get(day, 0))
         lightest_day = min(days, key=lambda day: day_load_count.get(day, 0))
+        heavy_day = max(days, key=lambda day: day_load_count.get(day, 0))
         if day_load_count.get(heavy_day, 0) - day_load_count.get(lightest_day, 0) <= 8:
             break
 
         moved = False
-        candidates = [
-            entry
-            for entry in generated
-            if entry.get("day") == heavy_day
-            and not bool(item_by_id.get(entry.get("itemId"), {}).get("preferLastLesson"))
-        ]
-        candidates.sort(
-            key=lambda entry: (
-                _slot_index(slot_indexes, entry.get("day"), entry.get("hour")),
-                str(entry.get("courseName") or ""),
-            ),
+        source_days = sorted(
+            [day for day in days if day_load_count.get(day, 0) - day_load_count.get(lightest_day, 0) > 8],
+            key=lambda day: day_load_count.get(day, 0),
             reverse=True,
         )
 
-        for entry in candidates:
+        for source_day in source_days:
+            candidates = [
+                entry
+                for entry in generated
+                if entry.get("day") == source_day
+                and not bool(item_by_id.get(entry.get("itemId"), {}).get("preferLastLesson"))
+            ]
+            candidates.sort(
+                key=lambda entry: (
+                    _slot_index(slot_indexes, entry.get("day"), entry.get("hour")),
+                    str(entry.get("courseName") or ""),
+                ),
+                reverse=True,
+            )
+
+            for entry in candidates:
+                item = item_by_id.get(entry.get("itemId"))
+                if not item:
+                    continue
+
+                old_day = entry["day"]
+                old_hour = int(entry["hour"])
+                old_room_id = entry.get("roomId")
+                teacher_id = entry.get("teacherId")
+                group_ids = [str(group_id) for group_id in entry.get("groups") or []]
+
+                room_busy.discard((old_room_id, old_day, old_hour))
+                teacher_busy.discard((teacher_id, old_day, old_hour))
+                teacher_day_count[(teacher_id, old_day)] = max(
+                    0, teacher_day_count.get((teacher_id, old_day), 0) - 1
+                )
+                day_load_count[old_day] = max(0, day_load_count.get(old_day, 0) - 1)
+                for group_id in group_ids:
+                    group_busy.discard((group_id, old_day, old_hour))
+                    group_day_count[(group_id, old_day)] = max(
+                        0, group_day_count.get((group_id, old_day), 0) - 1
+                    )
+
+                target_days = sorted(
+                    [day for day in days if day != old_day],
+                    key=lambda day: (day_load_count.get(day, 0), day),
+                )
+                target_slots = [(target_day, int(hour)) for target_day in target_days for hour in hours]
+                target_slots.sort(
+                    key=lambda slot: (
+                        day_load_count.get(slot[0], 0),
+                        max(
+                            (
+                                group_day_count.get((group_id, slot[0]), 0)
+                                for group_id in group_ids
+                            ),
+                            default=0,
+                        ),
+                        teacher_day_count.get((teacher_id, slot[0]), 0),
+                        _slot_index(slot_indexes, slot[0], slot[1]),
+                    )
+                )
+
+                for day, hour in target_slots:
+                    if (day, hour) in {
+                        _slot_key_from_raw(slot) for slot in item.get("forbiddenSlots") or []
+                    }:
+                        continue
+                    if (teacher_id, day, hour) in teacher_busy:
+                        continue
+                    if teacher_day_count.get((teacher_id, day), 0) >= max_teacher_day:
+                        continue
+                    if any((group_id, day, hour) in group_busy for group_id in group_ids):
+                        continue
+                    if any(
+                        group_day_count.get((group_id, day), 0) >= max_audience_day
+                        for group_id in group_ids
+                    ):
+                        continue
+                    if not _precedence_is_valid(generated, item_by_id, entry, day, hour, slot_indexes):
+                        continue
+                    for room in _greedy_room_candidates(
+                        item,
+                        rooms,
+                        day,
+                        hour,
+                        room_unavailable=room_unavailable,
+                    ):
+                        if (room.get("id"), day, hour) in room_busy:
+                            continue
+                        entry["day"] = day
+                        entry["hour"] = hour
+                        entry["roomId"] = room.get("id")
+                        entry["roomNumber"] = room.get("number")
+                        entry["roomProgramme"] = room.get("programme") or ""
+                        moved = True
+                        break
+                    if moved:
+                        break
+
+                if moved:
+                    break
+
+            if moved:
+                break
+
+        if not moved:
+            break
+
+    return generated
+
+
+def _improve_prefer_last_lessons(
+    generated,
+    payload,
+    item_by_id,
+    hours,
+    slot_indexes,
+    room_unavailable,
+):
+    rooms = payload.get("rooms") or []
+    for _attempt in range(len(generated)):
+        (
+            room_busy,
+            teacher_busy,
+            group_busy,
+            _teacher_day_count,
+            _group_day_count,
+            _day_load_count,
+        ) = _rebuild_usage(generated)
+        moved = False
+        preferred_entries = [
+            entry
+            for entry in generated
+            if bool(item_by_id.get(entry.get("itemId"), {}).get("preferLastLesson"))
+        ]
+        preferred_entries.sort(
+            key=lambda entry: _slot_index(slot_indexes, entry.get("day"), entry.get("hour"))
+        )
+        for entry in preferred_entries:
+            day = entry.get("day")
+            current_hour = int(entry.get("hour"))
+            group_ids = [str(group_id) for group_id in entry.get("groups") or []]
+            if not group_ids:
+                continue
+            other_group_hours = [
+                int(other.get("hour"))
+                for other in generated
+                if other is not entry
+                and other.get("day") == day
+                and set(other.get("groups") or []).intersection(group_ids)
+            ]
+            if not other_group_hours or current_hour >= max(other_group_hours):
+                continue
+
             item = item_by_id.get(entry.get("itemId"))
             if not item:
                 continue
 
-            old_day = entry["day"]
-            old_hour = int(entry["hour"])
-            old_room_id = entry.get("roomId")
-            teacher_id = entry.get("teacherId")
-            group_ids = [str(group_id) for group_id in entry.get("groups") or []]
-
-            room_busy.discard((old_room_id, old_day, old_hour))
-            teacher_busy.discard((teacher_id, old_day, old_hour))
-            teacher_day_count[(teacher_id, old_day)] = max(
-                0, teacher_day_count.get((teacher_id, old_day), 0) - 1
-            )
-            day_load_count[old_day] = max(0, day_load_count.get(old_day, 0) - 1)
+            room_busy.discard((entry.get("roomId"), day, current_hour))
+            teacher_busy.discard((entry.get("teacherId"), day, current_hour))
             for group_id in group_ids:
-                group_busy.discard((group_id, old_day, old_hour))
-                group_day_count[(group_id, old_day)] = max(
-                    0, group_day_count.get((group_id, old_day), 0) - 1
-                )
+                group_busy.discard((group_id, day, current_hour))
 
-            target_days = sorted(
-                [day for day in days if day != heavy_day],
-                key=lambda day: (day_load_count.get(day, 0), day),
-            )
-            target_slots = [(target_day, int(hour)) for target_day in target_days for hour in hours]
-            target_slots.sort(
-                key=lambda slot: (
-                    max(
-                        (
-                            group_day_count.get((group_id, slot[0]), 0)
-                            for group_id in group_ids
-                        ),
-                        default=0,
-                    ),
-                    teacher_day_count.get((teacher_id, slot[0]), 0),
-                    _slot_index(slot_indexes, slot[0], slot[1]),
-                )
-            )
-
-            for day, hour in target_slots:
-                if (day, hour) in {
-                    _slot_key_from_raw(slot) for slot in item.get("forbiddenSlots") or []
-                }:
+            min_target_hour = max(other_group_hours)
+            for hour in sorted((int(hour) for hour in hours if int(hour) >= min_target_hour), reverse=True):
+                if hour == current_hour:
                     continue
-                if (teacher_id, day, hour) in teacher_busy:
-                    continue
-                if teacher_day_count.get((teacher_id, day), 0) >= max_teacher_day:
+                if (entry.get("teacherId"), day, hour) in teacher_busy:
                     continue
                 if any((group_id, day, hour) in group_busy for group_id in group_ids):
-                    continue
-                if any(
-                    group_day_count.get((group_id, day), 0) >= max_audience_day
-                    for group_id in group_ids
-                ):
                     continue
                 if not _precedence_is_valid(generated, item_by_id, entry, day, hour, slot_indexes):
                     continue
@@ -234,7 +335,6 @@ def _rebalance_generated_schedule(
                 ):
                     if (room.get("id"), day, hour) in room_busy:
                         continue
-                    entry["day"] = day
                     entry["hour"] = hour
                     entry["roomId"] = room.get("id")
                     entry["roomNumber"] = room.get("number")
@@ -272,6 +372,7 @@ def optimize_greedy_schedule(payload):
     group_day_count = {}
     group_day_max_hour = {}
     day_load_count = {str(day): 0 for day in days}
+    lesson_type_day_count = {}
     lecture_required_keys = set()
     lecture_slots_by_course_group = {}
     generated = []
@@ -288,6 +389,19 @@ def optimize_greedy_schedule(payload):
             str(item.get("courseName") or ""),
         ),
     )
+    lesson_type_totals = {}
+    for item in items:
+        item_lesson_type = (item.get("lessonType") or "lecture").strip().lower()
+        lesson_type_totals[item_lesson_type] = lesson_type_totals.get(item_lesson_type, 0) + int(
+            item.get("lessonsPerWeek") or 0
+        )
+    lecture_window_days = days[: min(3, len(days))]
+    lecture_target_per_day = max(
+        1,
+        (lesson_type_totals.get("lecture", 0) + len(lecture_window_days) - 1)
+        // max(1, len(lecture_window_days)),
+    )
+
     for item in items:
         if (item.get("lessonType") or "").strip().lower() != "lecture":
             continue
@@ -348,7 +462,12 @@ def optimize_greedy_schedule(payload):
                     max_group_day_load = max(group_day_values, default=0)
                     group_day_load_sum = sum(group_day_values)
                     if lesson_type == "lecture":
+                        lecture_day_load = lesson_type_day_count.get((lesson_type, day), 0)
+                        lecture_over_target = max(0, lecture_day_load - lecture_target_per_day)
+                        lecture_window_penalty = 0 if day in lecture_window_days else 10
                         placement_rank = (
+                            lecture_over_target,
+                            lecture_window_penalty,
                             slot_index,
                             max_group_day_load,
                             teacher_day_count.get((item.get("teacherId"), day), 0),
@@ -411,6 +530,7 @@ def optimize_greedy_schedule(payload):
             teacher_busy.add((item.get("teacherId"), day, hour))
             teacher_day_count[(item.get("teacherId"), day)] = teacher_day_count.get((item.get("teacherId"), day), 0) + 1
             day_load_count[day] = day_load_count.get(day, 0) + 1
+            lesson_type_day_count[(lesson_type, day)] = lesson_type_day_count.get((lesson_type, day), 0) + 1
             for group_id in [str(group_id) for group_id in item.get("groupIds") or []]:
                 group_busy.add((group_id, day, hour))
                 group_day_count[(group_id, day)] = group_day_count.get((group_id, day), 0) + 1
@@ -453,5 +573,13 @@ def optimize_greedy_schedule(payload):
         room_unavailable,
         max_teacher_day,
         max_audience_day,
+    )
+    generated = _improve_prefer_last_lessons(
+        generated,
+        payload,
+        item_by_id,
+        hours,
+        slot_indexes,
+        room_unavailable,
     )
     return {"status": "GREEDY", "schedule": generated, "diagnostics": {"algorithm": "greedy"}}
