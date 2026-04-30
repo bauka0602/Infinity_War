@@ -81,6 +81,7 @@ SPECIALTY_PROGRAMME_ALIASES = {
     "сопр": "Компьютерная инженерия (СОПР)",
 }
 MIN_COMPUTER_COUNT = 10
+PHYSICAL_EDUCATION_ROOM_NUMBER = "орленок"
 
 
 def normalize_number_fields(payload, fields):
@@ -135,6 +136,19 @@ def normalize_subgroup_mode(value, lesson_type="lecture"):
 
 def section_requires_computers(lesson_type, course_code="", course_name="", study_year=None):
     return 1 if requires_computers_for_component(lesson_type, course_code, course_name, study_year) else 0
+
+
+def is_physical_education_course(course_name="", course_code=""):
+    text = f"{course_name or ''} {course_code or ''}".strip().lower()
+    return (
+        "физическая культура" in text
+        or "дене шынықтыру" in text
+        or "fk " in f"{text} "
+    )
+
+
+def is_physical_education_room(room_number):
+    return PHYSICAL_EDUCATION_ROOM_NUMBER in str(room_number or "").strip().lower()
 
 
 def _teacher_disciplines_map(connection):
@@ -549,6 +563,11 @@ def _find_alternative_room_for_schedule(connection, schedule_row, blocked_slots_
     for room in rooms:
         if room["id"] == schedule_row.get("room_id") or room["id"] in excluded_room_ids:
             continue
+        if is_physical_education_room(room.get("number")) and not is_physical_education_course(
+            schedule_row.get("course_name"),
+            schedule_row.get("course_code"),
+        ):
+            continue
         if not schedule_room_type_matches(room.get("type"), lesson_type, requires_computers):
             continue
         if int(room.get("capacity") or 0) < int(schedule_row.get("effective_student_count") or 0):
@@ -603,12 +622,14 @@ def _relocate_conflicting_room_schedules(connection, room_block, exclude_block_i
                 sec.lesson_type,
                 sec.subgroup_count,
                 sec.requires_computers,
+                c.code AS course_code,
                 grp.student_count,
                 grp.has_subgroups,
                 grp.programme AS group_programme,
                 grp.specialty_code
             FROM schedules sc
             JOIN sections sec ON sec.id = sc.section_id
+            JOIN courses c ON c.id = sc.course_id
             JOIN groups grp ON grp.id = sc.group_id
             WHERE sc.room_id = ?
             """,
@@ -724,6 +745,7 @@ def validate_schedule_payload(connection, payload, exclude_schedule_id=None):
             s.lesson_type, s.subgroup_mode, s.subgroup_count, s.requires_computers,
             COALESCE(s.teacher_id, c.instructor_id) AS teacher_id,
             COALESCE(NULLIF(s.teacher_name, ''), c.instructor_name, '') AS teacher_name,
+            c.code AS course_code,
             c.year AS course_year,
             c.programme AS course_programme,
             g.student_count, g.has_subgroups, g.study_course
@@ -763,6 +785,11 @@ def validate_schedule_payload(connection, payload, exclude_schedule_id=None):
     requires_computers = bool(section.get("requires_computers")) or lesson_type == "lab"
     if not schedule_room_type_matches(room.get("type"), lesson_type, requires_computers):
         raise ApiError(400, "bad_request", "Аудитория не подходит для типа занятия")
+    if is_physical_education_room(room.get("number")) and not is_physical_education_course(
+        section.get("course_name"),
+        section.get("course_code"),
+    ):
+        raise ApiError(400, "bad_request", "В аудитории Орленок можно проводить только физкультуру")
 
     effective_student_count = schedule_student_count_for_room(section, section, subgroup)
     room_capacity = int(room.get("capacity") or 0)

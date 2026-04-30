@@ -211,6 +211,9 @@ def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
         if _is_physical_education(section):
             base_item["allowedRoomNumbers"] = [PHYSICAL_EDUCATION_ROOM_NUMBER]
             base_item["roomTypeRequired"] = "practical"
+            base_item["preferLastLesson"] = True
+        else:
+            base_item["forbiddenRoomNumbers"] = [PHYSICAL_EDUCATION_ROOM_NUMBER]
 
         if lesson_type == "lecture" and _is_first_year_section(section):
             signature = (
@@ -535,10 +538,17 @@ def _greedy_room_candidates(item, rooms, day, hour, room_unavailable=None):
         for value in (item.get("allowedRoomNumbers") or [])
         if str(value).strip()
     }
+    forbidden_numbers = {
+        str(value).strip().lower()
+        for value in (item.get("forbiddenRoomNumbers") or [])
+        if str(value).strip()
+    }
     candidates = []
     for room in rooms:
         room_number = str(room.get("number") or "").strip().lower()
         if allowed_numbers and not any(value == room_number or value in room_number for value in allowed_numbers):
+            continue
+        if forbidden_numbers and any(value == room_number or value in room_number for value in forbidden_numbers):
             continue
         if room_unavailable is None:
             unavailable = {_slot_key_from_raw(slot) for slot in room.get("unavailableSlots") or []}
@@ -567,6 +577,7 @@ def _greedy_optimize_batch(payload):
     days = payload.get("days") or ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
     hours = payload.get("hours") or SCHEDULE_HOURS
     slots = [(str(day), int(hour)) for day in days for hour in hours]
+    slot_indexes = {slot: index for index, slot in enumerate(slots)}
     max_teacher_day = int(payload.get("maxClassesPerDayForTeacher") or 4)
     max_audience_day = int(payload.get("maxClassesPerDayForAudience") or 4)
 
@@ -579,22 +590,39 @@ def _greedy_optimize_batch(payload):
     group_busy = set()
     teacher_day_count = {}
     group_day_count = {}
+    group_day_max_hour = {}
+    day_load_count = {str(day): 0 for day in days}
+    lecture_required_keys = set()
+    lecture_slots_by_course_group = {}
     generated = []
 
     items = sorted(
         payload.get("planItems") or [],
         key=lambda item: (
-            0 if (item.get("lessonType") or "").strip().lower() == "lecture" else 1,
+            2
+            if item.get("preferLastLesson")
+            else 0
+            if (item.get("lessonType") or "").strip().lower() == "lecture"
+            else 1,
             -int(item.get("lessonsPerWeek") or 0),
             str(item.get("courseName") or ""),
         ),
     )
+    for item in items:
+        if (item.get("lessonType") or "").strip().lower() != "lecture":
+            continue
+        course_id = item.get("courseId")
+        for group_id in [str(group_id) for group_id in item.get("groupIds") or []]:
+            lecture_required_keys.add((course_id, group_id))
 
     for item in items:
         forbidden = {_slot_key_from_raw(slot) for slot in item.get("forbiddenSlots") or []}
+        lesson_type = (item.get("lessonType") or "lecture").strip().lower()
+        course_id = item.get("courseId")
+        prefer_last_lesson = bool(item.get("preferLastLesson"))
         lessons_left = int(item.get("lessonsPerWeek") or 0)
         for _lesson_index in range(lessons_left):
-            placed = None
+            placement_candidates = []
             for day, hour in slots:
                 if (day, hour) in forbidden:
                     continue
@@ -608,6 +636,19 @@ def _greedy_optimize_batch(payload):
                     continue
                 if any(group_day_count.get((group_id, day), 0) >= max_audience_day for group_id in group_ids):
                     continue
+                slot_index = slot_indexes[(day, hour)]
+                if lesson_type in {"practical", "lab"}:
+                    lecture_is_later_or_missing = False
+                    for group_id in group_ids:
+                        lecture_key = (course_id, group_id)
+                        if lecture_key not in lecture_required_keys:
+                            continue
+                        lecture_slot_index = lecture_slots_by_course_group.get(lecture_key)
+                        if lecture_slot_index is None or lecture_slot_index >= slot_index:
+                            lecture_is_later_or_missing = True
+                            break
+                    if lecture_is_later_or_missing:
+                        continue
                 for room in _greedy_room_candidates(
                     item,
                     payload.get("rooms") or [],
@@ -620,10 +661,60 @@ def _greedy_optimize_batch(payload):
                         continue
                     if room_key in room_busy:
                         continue
-                    placed = (day, hour, room)
-                    break
-                if placed:
-                    break
+                    group_day_values = [
+                        group_day_count.get((group_id, day), 0)
+                        for group_id in group_ids
+                    ]
+                    max_group_day_load = max(group_day_values, default=0)
+                    group_day_load_sum = sum(group_day_values)
+                    if lesson_type == "lecture":
+                        placement_rank = (
+                            slot_index,
+                            max_group_day_load,
+                            teacher_day_count.get((item.get("teacherId"), day), 0),
+                            day_load_count.get(day, 0),
+                            group_day_load_sum,
+                        )
+                    elif prefer_last_lesson:
+                        existing_group_day_max_hour = max(
+                            (
+                                group_day_max_hour.get((group_id, day), -1)
+                                for group_id in group_ids
+                            ),
+                            default=-1,
+                        )
+                        last_lesson_penalty = 0 if hour >= existing_group_day_max_hour else 1
+                        placement_rank = (
+                            last_lesson_penalty,
+                            -slot_index,
+                            max_group_day_load,
+                            teacher_day_count.get((item.get("teacherId"), day), 0),
+                            day_load_count.get(day, 0),
+                            group_day_load_sum,
+                        )
+                    else:
+                        placement_rank = (
+                            max_group_day_load,
+                            teacher_day_count.get((item.get("teacherId"), day), 0),
+                            day_load_count.get(day, 0),
+                            group_day_load_sum,
+                            slot_index,
+                        )
+                    placement_candidates.append(
+                        (
+                            *placement_rank,
+                            int(room.get("capacity") or 0),
+                            str(room.get("number") or ""),
+                            str(room.get("id") or ""),
+                            day,
+                            hour,
+                            room,
+                        )
+                    )
+            placed = None
+            if placement_candidates:
+                *_, day, hour, room = min(placement_candidates)
+                placed = (day, hour, room)
             if not placed:
                 raise ApiError(
                     400,
@@ -639,9 +730,20 @@ def _greedy_optimize_batch(payload):
             room_busy.add((room.get("id"), day, hour))
             teacher_busy.add((item.get("teacherId"), day, hour))
             teacher_day_count[(item.get("teacherId"), day)] = teacher_day_count.get((item.get("teacherId"), day), 0) + 1
+            day_load_count[day] = day_load_count.get(day, 0) + 1
             for group_id in [str(group_id) for group_id in item.get("groupIds") or []]:
                 group_busy.add((group_id, day, hour))
                 group_day_count[(group_id, day)] = group_day_count.get((group_id, day), 0) + 1
+                group_day_max_hour[(group_id, day)] = max(
+                    group_day_max_hour.get((group_id, day), -1),
+                    int(hour),
+                )
+                if lesson_type == "lecture":
+                    lecture_key = (course_id, group_id)
+                    slot_index = slot_indexes[(day, hour)]
+                    existing_slot_index = lecture_slots_by_course_group.get(lecture_key)
+                    if existing_slot_index is None or slot_index < existing_slot_index:
+                        lecture_slots_by_course_group[lecture_key] = slot_index
             generated.append(
                 {
                     "itemId": item.get("id"),
@@ -757,6 +859,7 @@ def build_schedule(connection, semester, year, algorithm):
             s.id,
             s.course_id,
             s.course_name,
+            c.code AS course_code,
             s.group_id,
             s.group_name,
             s.classes_count,

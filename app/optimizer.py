@@ -247,6 +247,11 @@ def _normalize_plan_items(payload):
                     for value in (item.get("allowedRoomNumbers") or [])
                     if _normalize_text(value)
                 },
+                "forbidden_room_numbers": {
+                    _normalize_text(value)
+                    for value in (item.get("forbiddenRoomNumbers") or [])
+                    if _normalize_text(value)
+                },
                 "preferred_days": {str(day) for day in (item.get("preferredDays") or [])},
                 "preferred_hours": {int(hour) for hour in (item.get("preferredHours") or [])},
                 "preferred_slots": preferred_slots,
@@ -336,10 +341,13 @@ def _room_matches_fallback_constraints(room, item):
 
 
 def _room_number_allowed(room, item):
+    room_number = _normalize_text(room.get("number"))
+    forbidden_numbers = item.get("forbidden_room_numbers") or set()
+    if forbidden_numbers and any(forbidden_number == room_number or forbidden_number in room_number for forbidden_number in forbidden_numbers):
+        return False
     allowed_numbers = item.get("allowed_room_numbers") or set()
     if not allowed_numbers:
         return True
-    room_number = _normalize_text(room.get("number"))
     return any(allowed_number == room_number or allowed_number in room_number for allowed_number in allowed_numbers)
 
 
