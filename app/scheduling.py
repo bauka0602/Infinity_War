@@ -129,6 +129,42 @@ def _room_type_required(lesson_type, pc_required=False):
     return "practical"
 
 
+def _is_first_year_section(section):
+    try:
+        return int(section.get("study_course") or 0) == 1
+    except (TypeError, ValueError):
+        return False
+
+
+def _lecture_stream_id(lecture_sections):
+    return "stream_" + "_".join(str(section["id"]) for section in lecture_sections)
+
+
+def _chunk_sections_by_capacity(sections, max_capacity):
+    if max_capacity <= 0:
+        return [sections]
+
+    chunks = []
+    current = []
+    current_count = 0
+    ordered_sections = sorted(
+        sections,
+        key=lambda section: _int_at_least(section.get("student_count"), 0, 0),
+        reverse=True,
+    )
+    for section in ordered_sections:
+        student_count = _int_at_least(section.get("student_count"), 0, 0)
+        if current and current_count + student_count > max_capacity:
+            chunks.append(current)
+            current = []
+            current_count = 0
+        current.append(section)
+        current_count += student_count
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 def _is_physical_education(section):
     text = " ".join(
         str(section.get(field) or "").lower()
@@ -176,7 +212,7 @@ def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
             base_item["allowedRoomNumbers"] = [PHYSICAL_EDUCATION_ROOM_NUMBER]
             base_item["roomTypeRequired"] = "practical"
 
-        if lesson_type == "lecture":
+        if lesson_type == "lecture" and _is_first_year_section(section):
             signature = (
                 section["course_id"],
                 section["instructor_id"],
@@ -186,6 +222,17 @@ def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
                 tuple(sorted(normalize_programme_text(value) for value in preferred_room_programmes)),
             )
             grouped_lectures.setdefault(signature, []).append(section)
+        elif lesson_type == "lecture":
+            standalone_items.append(
+                {
+                    **base_item,
+                    "id": f"section_{section['id']}",
+                    "lessonType": lesson_type,
+                    "roomTypeRequired": "lecture",
+                    "streamId": f"{section['course_id']}-{section['group_id']}",
+                    "subgroupIds": [],
+                }
+            )
         else:
             subgroup_count = _resolve_subgroup_count(section, rooms)
             if subgroup_count <= 1:
@@ -224,41 +271,43 @@ def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
         _programme,
         _preferred_room_programmes,
     ), lecture_sections in grouped_lectures.items():
-        first_section = lecture_sections[0]
-        lecture_preferred_room_programmes = sorted(
-            {
-                programme
-                for section in lecture_sections
-                for programme in get_home_room_programmes(
-                    section.get("group_programme"),
-                    section.get("specialty_code"),
-                )
-            }
-        )
-        plan_items.append(
-            {
-                "id": "stream_"
-                + "_".join(str(section["id"]) for section in lecture_sections),
-                "courseId": course_id,
-                "courseName": first_section["course_name"],
-                "teacherId": instructor_id,
-                "teacherName": first_section["instructor_name"],
-                "groupIds": [section["group_name"] or str(section["group_id"]) for section in lecture_sections],
-                "lessonsPerWeek": classes_count,
-                "studentCount": sum(int(section.get("student_count") or 0) for section in lecture_sections),
-                "preferredBuildings": [],
-                "preferredDays": [],
-                "preferredHours": [],
-                "preferredSlots": teacher_preferences.get(instructor_id, []),
-                "forbiddenSlots": [],
-                "lessonType": "lecture",
-                "roomTypeRequired": "lecture",
-                "subgroupIds": [],
-                "streamId": f"lecture-{course_id}-{instructor_id}",
-                "pcRequired": False,
-                "preferredRoomProgrammes": lecture_preferred_room_programmes,
-            }
-        )
+        max_lecture_capacity = _max_room_capacity_for_lesson(rooms, "lecture")
+        for lecture_chunk in _chunk_sections_by_capacity(lecture_sections, max_lecture_capacity):
+            first_section = lecture_chunk[0]
+            lecture_preferred_room_programmes = sorted(
+                {
+                    programme
+                    for section in lecture_chunk
+                    for programme in get_home_room_programmes(
+                        section.get("group_programme"),
+                        section.get("specialty_code"),
+                    )
+                }
+            )
+            stream_id = _lecture_stream_id(lecture_chunk)
+            plan_items.append(
+                {
+                    "id": stream_id,
+                    "courseId": course_id,
+                    "courseName": first_section["course_name"],
+                    "teacherId": instructor_id,
+                    "teacherName": first_section["instructor_name"],
+                    "groupIds": [section["group_name"] or str(section["group_id"]) for section in lecture_chunk],
+                    "lessonsPerWeek": classes_count,
+                    "studentCount": sum(int(section.get("student_count") or 0) for section in lecture_chunk),
+                    "preferredBuildings": [],
+                    "preferredDays": [],
+                    "preferredHours": [],
+                    "preferredSlots": teacher_preferences.get(instructor_id, []),
+                    "forbiddenSlots": [],
+                    "lessonType": "lecture",
+                    "roomTypeRequired": "lecture",
+                    "subgroupIds": [],
+                    "streamId": f"lecture-{course_id}-{instructor_id}-{stream_id}",
+                    "pcRequired": False,
+                    "preferredRoomProgrammes": lecture_preferred_room_programmes,
+                }
+            )
 
     plan_items.extend(standalone_items)
 
@@ -328,7 +377,7 @@ def _build_section_lookup(sections, rooms):
     section_lookup = {}
     for section in sections:
         lesson_type = (section.get("lesson_type") or "lecture").strip().lower()
-        if lesson_type == "lecture":
+        if lesson_type == "lecture" and _is_first_year_section(section):
             continue
         section_lookup[f"section_{section['id']}"] = [
             {
@@ -338,6 +387,8 @@ def _build_section_lookup(sections, rooms):
                 "subgroup": "",
             }
         ]
+        if lesson_type == "lecture":
+            continue
         for index in range(_resolve_subgroup_count(section, rooms)):
             subgroup = _subgroup_label(index)
             section_lookup[f"section_{section['id']}_{subgroup}"] = {
@@ -350,7 +401,7 @@ def _build_section_lookup(sections, rooms):
     lecture_groups = {}
     for section in sections:
         lesson_type = (section.get("lesson_type") or "lecture").strip().lower()
-        if lesson_type != "lecture":
+        if lesson_type != "lecture" or not _is_first_year_section(section):
             continue
         signature = (
             section["course_id"],
@@ -369,17 +420,19 @@ def _build_section_lookup(sections, rooms):
             ),
         )
         lecture_groups.setdefault(signature, []).append(section)
+    max_lecture_capacity = _max_room_capacity_for_lesson(rooms, "lecture")
     for _signature, lecture_sections in lecture_groups.items():
-        item_id = "stream_" + "_".join(str(section["id"]) for section in lecture_sections)
-        section_lookup[item_id] = [
-            {
-                "section_id": section["id"],
-                "group_id": section["group_id"],
-                "group_name": section["group_name"],
-                "subgroup": "",
-            }
-            for section in lecture_sections
-        ]
+        for lecture_chunk in _chunk_sections_by_capacity(lecture_sections, max_lecture_capacity):
+            item_id = _lecture_stream_id(lecture_chunk)
+            section_lookup[item_id] = [
+                {
+                    "section_id": section["id"],
+                    "group_id": section["group_id"],
+                    "group_name": section["group_name"],
+                    "subgroup": "",
+                }
+                for section in lecture_chunk
+            ]
     return section_lookup
 
 
