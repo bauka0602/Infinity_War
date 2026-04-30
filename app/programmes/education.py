@@ -1,6 +1,6 @@
 import re
 
-from .programme_utils import normalize_programme_text
+from .utils import normalize_programme_text
 
 EDUCATION_GROUPS = [
     {

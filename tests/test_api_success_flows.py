@@ -5,7 +5,7 @@ from io import BytesIO
 import pytest
 from openpyxl import Workbook, load_workbook
 
-from backend.app.lesson_rules import requires_computers_for_component
+from backend.app.sections.lesson_rules import requires_computers_for_component
 
 
 def _wait_for_job_completion(client, headers, job_id, timeout_seconds=5):
@@ -766,7 +766,7 @@ def test_schedule_export_supports_semester_and_year_scope(client, admin_auth_hea
 
 
 def test_auto_subgroups_are_limited_to_a_and_b():
-    from backend.app.scheduling import _build_optimizer_payload, _resolve_subgroup_count
+    from backend.app.schedule.service import _build_optimizer_payload, _resolve_subgroup_count
 
     section = {
         "id": 1,
@@ -816,7 +816,7 @@ def test_auto_subgroups_are_limited_to_a_and_b():
 
 
 def test_forced_subgroups_are_capped_at_two():
-    from backend.app.scheduling import _resolve_subgroup_count
+    from backend.app.schedule.service import _resolve_subgroup_count
 
     section = {
         "lesson_type": "practical",
@@ -830,7 +830,7 @@ def test_forced_subgroups_are_capped_at_two():
 
 
 def test_optimizer_allows_parallel_different_subgroups():
-    from backend.app.optimizer import optimize_schedule
+    from backend.app.schedule.cp_sat_optimizer import optimize_schedule
 
     result = optimize_schedule(
         {
@@ -880,7 +880,7 @@ def test_optimizer_allows_parallel_different_subgroups():
 
 
 def test_optimizer_allows_lab_in_practical_room_with_at_least_ten_computers():
-    from backend.app.optimizer import optimize_schedule
+    from backend.app.schedule.cp_sat_optimizer import optimize_schedule
 
     result = optimize_schedule(
         {
@@ -914,8 +914,8 @@ def test_optimizer_allows_lab_in_practical_room_with_at_least_ten_computers():
 
 
 def test_optimizer_rejects_computer_lesson_when_practical_room_has_less_than_ten_computers():
-    from backend.app.optimizer import optimize_schedule
-    from backend.app.errors import ApiError
+    from backend.app.schedule.cp_sat_optimizer import optimize_schedule
+    from backend.app.core.errors import ApiError
 
     with pytest.raises(ApiError) as exc_info:
         optimize_schedule(

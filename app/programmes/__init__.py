@@ -1,0 +1,1 @@
+"""Educational programmes domain package."""

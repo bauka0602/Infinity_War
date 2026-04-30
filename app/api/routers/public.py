@@ -1,8 +1,8 @@
 from fastapi import APIRouter
 
-from ...auth_service import search_claimable_teachers
-from ...config import DB_ENGINE, DB_LOCK
-from ...db import get_connection, query_all
+from ...auth.service import search_claimable_teachers
+from ...core.config import DB_ENGINE, DB_LOCK
+from ...core.db import get_connection, query_all
 
 router = APIRouter()
 

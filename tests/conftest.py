@@ -19,9 +19,9 @@ def _reload_backend(test_db_path):
         if module_name.startswith(MODULE_PREFIXES):
             sys.modules.pop(module_name, None)
 
-    db_module = importlib.import_module("backend.app.db")
+    db_module = importlib.import_module("backend.app.core.db")
     db_module.ensure_database()
-    app_module = importlib.import_module("backend.app.fastapi_app")
+    app_module = importlib.import_module("backend.app.api.app")
     return app_module, db_module
 
 
@@ -148,7 +148,7 @@ def seeded_group(backend_modules):
 @pytest.fixture
 def seeded_teacher_account(backend_modules):
     _app_module, db_module = backend_modules
-    security_module = importlib.import_module("backend.app.security")
+    security_module = importlib.import_module("backend.app.auth.security")
     with db_module.get_connection() as connection:
         teacher_id = db_module.insert_and_get_id(
             connection,

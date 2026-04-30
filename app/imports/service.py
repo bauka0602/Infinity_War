@@ -3,12 +3,12 @@ import hashlib
 import re
 from io import BytesIO
 
-from .auth_service import require_auth_user
-from .config import DB_LOCK, TEACHER_EMAIL_DOMAIN
-from .db import db_execute, get_connection, insert_and_get_id, query_all, query_one
-from .errors import ApiError
-from .lesson_rules import requires_computers_for_component
-from .teacher_utils import build_teacher_name_signature, normalize_teacher_name
+from ..auth.service import require_auth_user
+from ..core.config import DB_LOCK, TEACHER_EMAIL_DOMAIN
+from ..core.db import db_execute, get_connection, insert_and_get_id, query_all, query_one
+from ..core.errors import ApiError
+from ..sections.lesson_rules import requires_computers_for_component
+from ..teachers.utils import build_teacher_name_signature, normalize_teacher_name
 
 COURSE_EDUCATIONAL_PROGRAMME_GROUP_ALIASES = {
     "b057": "B057 - Информационные технологии",

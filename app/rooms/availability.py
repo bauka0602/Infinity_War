@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from .db import db_execute, query_all
+from ..core.db import db_execute, query_all
 
 
 def recompute_room_availability(connection):

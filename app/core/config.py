@@ -26,12 +26,13 @@ def load_env_file(env_path):
         os.environ.setdefault(key, value)
 
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-PROJECT_ROOT = BASE_DIR.parent
-DATA_DIR = BASE_DIR / "data"
+APP_DIR = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = APP_DIR.parent
+BASE_DIR = PROJECT_ROOT
+DATA_DIR = PROJECT_ROOT / "data"
 
 load_env_file(PROJECT_ROOT / ".env")
-load_env_file(BASE_DIR / ".env")
+load_env_file(APP_DIR / ".env")
 
 DB_FILE = Path(os.getenv("SQLITE_DB_FILE", DATA_DIR / "timetable.db"))
 LEGACY_JSON_FILE = DATA_DIR / "store.json"

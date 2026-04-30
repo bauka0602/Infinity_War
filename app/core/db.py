@@ -16,9 +16,9 @@ from .config import (
     LEGACY_JSON_FILE,
     TEACHER_EMAIL_DOMAIN,
 )
-from .security import hash_password
+from ..auth.security import hash_password
 from .store import default_store
-from .teacher_utils import build_teacher_name_signature, normalize_teacher_name
+from ..teachers.utils import build_teacher_name_signature, normalize_teacher_name
 
 
 def get_connection():

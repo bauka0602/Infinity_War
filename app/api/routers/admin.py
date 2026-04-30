@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Request
 
-from ...admin_service import clear_all_data, clear_collection_data, clear_schedule_data
+from ...admin.service import clear_all_data, clear_collection_data, clear_schedule_data
 from ..common import read_json_body
 
 router = APIRouter()
@@ -26,4 +26,3 @@ async def schedules_reset(request: Request):
         semester=int(semester) if semester not in (None, "") else None,
         year=int(year) if year not in (None, "") else None,
     )
-

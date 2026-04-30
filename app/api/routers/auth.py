@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Request
 
-from ...auth_service import (
+from ...auth.service import (
     confirm_teacher_claim,
     get_current_profile,
     login_user,
@@ -47,4 +47,3 @@ def profile_get(request: Request):
 @router.post("/profile/avatar")
 async def profile_avatar(request: Request):
     return update_profile_avatar(request.headers, await read_json_body(request))
-

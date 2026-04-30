@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from .errors import ApiError
-from .programme_utils import normalize_programme_text, same_programme
+from ..core.errors import ApiError
+from ..programmes.utils import normalize_programme_text, same_programme
 from .time_slots import SCHEDULE_HOURS
 
 try:
@@ -257,6 +257,7 @@ def _normalize_plan_items(payload):
                 "preferred_slots": preferred_slots,
                 "preferred_buildings": {str(v) for v in (item.get("preferredBuildings") or [])},
                 "forbidden_slots": forbidden_slots,
+                "prefer_last_lesson": _normalize_bool(item.get("preferLastLesson")),
                 "precedence_signature": precedence_signature,
             }
         )
@@ -272,7 +273,10 @@ def _slot_score(slot, item):
     if item["preferred_hours"] and slot["hour"] in item["preferred_hours"]:
         score += 15
 
-    score += max(0, 21 - int(slot["hour"]))
+    if item.get("prefer_last_lesson"):
+        score += int(slot["hour"]) * 4
+    else:
+        score += max(0, 21 - int(slot["hour"]))
 
     if item["lesson_type"] == "lecture" and slot["hour"] <= 12:
         score += 3
@@ -713,6 +717,8 @@ def optimize_schedule(payload):
     audience_gap_penalty_vars = []
     teacher_building_penalty_vars = []
     audience_building_penalty_vars = []
+    prefer_last_lesson_penalty_vars = []
+    day_load_spread_penalty_vars = []
 
     if prefer_separate_subgroups_by_day:
         subgroup_items_by_signature = defaultdict(list)
@@ -761,6 +767,66 @@ def optimize_schedule(payload):
         slots_by_day[slot["day"]].append(slot)
     for day_slots in slots_by_day.values():
         day_slots.sort(key=lambda slot: int(slot["hour"]))
+
+    if days:
+        day_load_vars = []
+        for day in days:
+            day_vars = [
+                use_slot_vars[(item["id"], slot["id"])]
+                for item in items
+                for slot in slots
+                if slot["day"] == day and (item["id"], slot["id"]) in use_slot_vars
+            ]
+            day_load = model.NewIntVar(0, len(items) * max(1, max(item["lessons_per_week"] for item in items)), f"day_load__{day}")
+            if day_vars:
+                model.Add(day_load == sum(day_vars))
+            else:
+                model.Add(day_load == 0)
+            day_load_vars.append(day_load)
+        if len(day_load_vars) >= 2:
+            max_day_load = model.NewIntVar(0, len(items) * max(1, max(item["lessons_per_week"] for item in items)), "max_day_load")
+            min_day_load = model.NewIntVar(0, len(items) * max(1, max(item["lessons_per_week"] for item in items)), "min_day_load")
+            day_load_spread = model.NewIntVar(0, len(items) * max(1, max(item["lessons_per_week"] for item in items)), "day_load_spread")
+            model.AddMaxEquality(max_day_load, day_load_vars)
+            model.AddMinEquality(min_day_load, day_load_vars)
+            model.Add(day_load_spread == max_day_load - min_day_load)
+            day_load_spread_penalty_vars.append(day_load_spread)
+
+    for item in items:
+        if not item.get("prefer_last_lesson"):
+            continue
+        related_item_ids = {
+            related_item_id
+            for audience_key in item["audience_keys"]
+            for related_item_id in audience_to_items.get(audience_key, [])
+            if related_item_id != item["id"]
+        }
+        if not related_item_ids:
+            continue
+        for day, day_slots in slots_by_day.items():
+            for left_index, left_slot in enumerate(day_slots):
+                preferred_used = use_slot_vars.get((item["id"], left_slot["id"]))
+                if preferred_used is None:
+                    continue
+                for right_slot in day_slots[left_index + 1:]:
+                    later_vars = [
+                        use_slot_vars[(related_item_id, right_slot["id"])]
+                        for related_item_id in related_item_ids
+                        if (related_item_id, right_slot["id"]) in use_slot_vars
+                    ]
+                    if not later_vars:
+                        continue
+                    later_used = model.NewBoolVar(
+                        f"prefer_last_later_used__{item['id']}__{day}__{left_slot['hour']}__{right_slot['hour']}"
+                    )
+                    model.AddMaxEquality(later_used, later_vars)
+                    penalty_var = model.NewBoolVar(
+                        f"prefer_last_penalty__{item['id']}__{day}__{left_slot['hour']}__{right_slot['hour']}"
+                    )
+                    model.Add(penalty_var <= preferred_used)
+                    model.Add(penalty_var <= later_used)
+                    model.Add(penalty_var >= preferred_used + later_used - 1)
+                    prefer_last_lesson_penalty_vars.append(penalty_var)
 
     if enable_gap_penalties:
         for teacher in teachers:
@@ -970,6 +1036,10 @@ def optimize_schedule(payload):
         objective_terms.extend(-10 * var for var in teacher_building_penalty_vars)
     if audience_building_penalty_vars:
         objective_terms.extend(-8 * var for var in audience_building_penalty_vars)
+    if prefer_last_lesson_penalty_vars:
+        objective_terms.extend(-80 * var for var in prefer_last_lesson_penalty_vars)
+    if day_load_spread_penalty_vars:
+        objective_terms.extend(-35 * var for var in day_load_spread_penalty_vars)
 
     model.Maximize(sum(objective_terms))
 

@@ -3,12 +3,12 @@ import logging
 import re
 from difflib import SequenceMatcher
 
-from .collections import normalize_lesson_type, normalize_language, positive_int
-from .db import db_execute, insert_and_get_id, query_all, query_one
-from .errors import ApiError
+from ..collections.service import normalize_lesson_type, normalize_language, positive_int
+from ..core.db import db_execute, insert_and_get_id, query_all, query_one
+from ..core.errors import ApiError
 from .lesson_rules import requires_computers_for_component
-from .programme_utils import normalize_programme_text, same_programme
-from .teacher_utils import build_teacher_name_signature, normalize_teacher_name
+from ..programmes.utils import normalize_programme_text, same_programme
+from ..teachers.utils import build_teacher_name_signature, normalize_teacher_name
 
 LOGGER = logging.getLogger(__name__)
 

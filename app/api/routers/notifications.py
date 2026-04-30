@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Request
 
-from ...notification_service import (
+from ...notifications.service import (
     delete_all_notifications,
     delete_notification,
     list_notifications,
@@ -34,4 +34,3 @@ def notifications_read_one(notification_id: int, request: Request):
 @router.delete("/notifications/{notification_id}")
 def notifications_delete_one(notification_id: int, request: Request):
     return delete_notification(request.headers, notification_id)
-

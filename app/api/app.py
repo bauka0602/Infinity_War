@@ -6,10 +6,10 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
-from .api.common import json_error
-from .api.routers import admin, auth, collections, imports, notifications, public, schedules, system, teacher_preferences
-from .config import ALLOWED_ORIGINS
-from .errors import ApiError
+from .common import json_error
+from .routers import admin, auth, collections, imports, notifications, public, schedules, system, teacher_preferences
+from ..core.config import ALLOWED_ORIGINS
+from ..core.errors import ApiError
 
 LOGGER = logging.getLogger(__name__)
 

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from backend.app.import_service import (
+from backend.app.imports.service import (
     _extract_iup_metadata,
     _missing_first_year_base_courses,
     _missing_courses_for_study_year,
@@ -9,12 +9,12 @@ from backend.app.import_service import (
     _parse_iup_file,
     _normalize_rop_programme_name,
 )
-from backend.app.optimizer import HOURS_DEFAULT
-from backend.app.preference_service import VALID_HOURS
-from backend.app.section_generation import _is_first_year_base_iup_entry, _same_academic_programme, _same_study_course
-from backend.app.section_generation import _build_component_index, _match_component
-from backend.app.scheduling import _is_physical_education
-from backend.app.time_slots import format_lesson_time_range
+from backend.app.schedule.cp_sat_optimizer import HOURS_DEFAULT
+from backend.app.teachers.preferences import VALID_HOURS
+from backend.app.sections.generation import _is_first_year_base_iup_entry, _same_academic_programme, _same_study_course
+from backend.app.sections.generation import _build_component_index, _match_component
+from backend.app.schedule.service import _is_physical_education
+from backend.app.schedule.time_slots import format_lesson_time_range
 
 
 def test_rop_programme_uses_direction_from_file_name():

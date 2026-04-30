@@ -3,8 +3,8 @@ import json
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
-from ..auth_service import require_auth_user
-from ..errors import ApiError
+from ..auth.service import require_auth_user
+from ..core.errors import ApiError
 
 COLLECTION_ALIASES = {
     "disciplines": "courses",
@@ -75,4 +75,3 @@ def resolve_collection(raw_collection):
     if collection not in ALLOWED_COLLECTIONS:
         raise ApiError(404, "not_found", "Not found")
     return collection
-

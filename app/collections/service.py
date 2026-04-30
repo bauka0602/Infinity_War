@@ -3,23 +3,23 @@ from copy import deepcopy
 from datetime import date
 from math import ceil
 
-from .config import DB_ENGINE, TEACHER_EMAIL_DOMAIN
-from .db import db_execute, insert_and_get_id, query_all, query_one
-from .education_programmes import (
+from ..core.config import DB_ENGINE, TEACHER_EMAIL_DOMAIN
+from ..core.db import db_execute, insert_and_get_id, query_all, query_one
+from ..programmes.education import (
     get_home_room_programmes,
     resolve_education_group_value,
     room_matches_home_programmes,
 )
-from .errors import ApiError
-from .lesson_rules import requires_computers_for_component
-from .notification_service import create_schedule_change_notifications
-from .programme_utils import same_programme
-from .room_availability import (
+from ..core.errors import ApiError
+from ..sections.lesson_rules import requires_computers_for_component
+from ..notifications.service import create_schedule_change_notifications
+from ..programmes.utils import same_programme
+from ..rooms.availability import (
     get_room_blocked_slots,
     normalize_room_block_day,
     recompute_room_availability,
 )
-from .teacher_utils import build_teacher_name_signature, normalize_teacher_name
+from ..teachers.utils import build_teacher_name_signature, normalize_teacher_name
 
 LESSON_TYPE_ALIASES = {
     "lecture": "lecture",

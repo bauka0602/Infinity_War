@@ -1,8 +1,8 @@
-from .auth_service import require_auth_user
-from .config import DB_LOCK
-from .db import db_execute, get_connection
-from .errors import ApiError
-from .room_availability import recompute_room_availability
+from ..auth.service import require_auth_user
+from ..core.config import DB_LOCK
+from ..core.db import db_execute, get_connection
+from ..core.errors import ApiError
+from ..rooms.availability import recompute_room_availability
 
 CLEARABLE_COLLECTIONS = {"courses", "teachers", "students", "rooms", "groups", "sections"}
 

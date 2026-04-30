@@ -6,8 +6,8 @@ CURRENT_DIR = Path(__file__).resolve().parent
 if str(CURRENT_DIR) not in sys.path:
     sys.path.insert(0, str(CURRENT_DIR))
 
-from app.config import DB_ENGINE, DB_FALLBACK_REASON, DB_FILE, HOST, PORT, REQUESTED_DB_ENGINE
-from app.db import ensure_database
+from app.core.config import DB_ENGINE, DB_FALLBACK_REASON, DB_FILE, HOST, PORT, REQUESTED_DB_ENGINE
+from app.core.db import ensure_database
 
 
 def run():
@@ -20,7 +20,7 @@ def run():
         logging.warning(DB_FALLBACK_REASON)
 
     import uvicorn
-    from app.fastapi_app import app as fastapi_app
+    from app.api.app import app as fastapi_app
 
     print(f"Backend started at http://{HOST}:{PORT}")
     if DB_ENGINE == "postgres":

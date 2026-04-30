@@ -1,15 +1,15 @@
 from fastapi import APIRouter, Request
 
-from ...collections import (
+from ...collections.service import (
     create_collection_item,
     delete_collection_item,
     list_collection,
     update_collection_item,
 )
-from ...config import DB_LOCK
-from ...db import get_connection, query_one
-from ...errors import ApiError
-from ...notification_service import create_schedule_change_notifications
+from ...core.config import DB_LOCK
+from ...core.db import get_connection, query_one
+from ...core.errors import ApiError
+from ...notifications.service import create_schedule_change_notifications
 from ..common import (
     query_params_to_legacy_dict,
     read_json_body,
@@ -74,4 +74,3 @@ def collection_delete(raw_collection: str, item_id: int, request: Request):
             if collection == "schedules":
                 create_schedule_change_notifications(connection, before_item=existing)
             return {"success": True}
-

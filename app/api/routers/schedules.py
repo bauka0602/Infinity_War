@@ -2,13 +2,14 @@ from datetime import date
 
 from fastapi import APIRouter, Request
 
-from ...auth_service import require_auth_user
-from ...collections import generate_sections_from_components
-from ...config import DB_LOCK
-from ...db import get_connection
-from ...errors import ApiError
-from ...job_store import create_schedule_generation_job, get_schedule_generation_job
-from ...section_generation import (
+from ...auth.service import require_auth_user
+from ...collections.service import generate_sections_from_components
+from ...core.config import DB_LOCK
+from ...core.db import get_connection
+from ...core.errors import ApiError
+from ...schedule.jobs import create_schedule_generation_job, get_schedule_generation_job
+from ...schedule import DEFAULT_SCHEDULE_ALGORITHM, normalize_schedule_algorithm
+from ...sections.generation import (
     build_validation_report,
     generate_sections_from_iup,
     preview_sections_from_iup,
@@ -27,7 +28,7 @@ async def schedule_generate(request: Request):
     payload = await read_json_body(request)
     semester = int(payload.get("semester") or 1)
     year = int(payload.get("year") or date.today().year)
-    algorithm = payload.get("algorithm") or "cpsat"
+    algorithm = normalize_schedule_algorithm(payload.get("algorithm") or DEFAULT_SCHEDULE_ALGORITHM)
     return create_schedule_generation_job(semester, year, algorithm)
 
 

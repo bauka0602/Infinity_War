@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from ...config import DB_ENGINE
+from ...core.config import DB_ENGINE
 
 router = APIRouter()
 
@@ -8,4 +8,3 @@ router = APIRouter()
 @router.get("/health")
 def health():
     return {"status": "ok", "engine": DB_ENGINE}
-

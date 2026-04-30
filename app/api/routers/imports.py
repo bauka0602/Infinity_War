@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Request
 from fastapi.responses import Response
 
-from ...import_service import (
+from ...imports.service import (
     generate_schedule_export,
     import_iup_data,
     import_rop_data,
@@ -41,4 +41,3 @@ def export_schedule(request: Request, semester: int | None = None, year: int | N
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": 'attachment; filename="schedule-export.xlsx"'},
     )
-

@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from .auth_service import require_auth_user
-from .db import db_execute, get_connection, insert_and_get_id, query_all, query_one
-from .errors import ApiError
-from .time_slots import format_lesson_time_range
+from ..auth.service import require_auth_user
+from ..core.db import db_execute, get_connection, insert_and_get_id, query_all, query_one
+from ..core.errors import ApiError
+from ..schedule.time_slots import format_lesson_time_range
 
 
 def _utc_now_iso():

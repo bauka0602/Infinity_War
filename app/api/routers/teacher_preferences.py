@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Request
 
-from ...preference_service import (
+from ...teachers.preferences import (
     create_teacher_preference_request,
     delete_all_teacher_preference_requests,
     delete_teacher_preference_request,

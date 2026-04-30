@@ -2,7 +2,7 @@ import hashlib
 import hmac
 import secrets
 
-from .config import PASSWORD_PREFIX
+from ..core.config import PASSWORD_PREFIX
 
 PBKDF2_PREFIX = "pbkdf2_sha256$"
 PBKDF2_ITERATIONS = 260_000

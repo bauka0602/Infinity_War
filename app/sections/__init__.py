@@ -1,0 +1,1 @@
+"""Section generation domain package."""

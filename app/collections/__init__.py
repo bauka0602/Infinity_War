@@ -1,0 +1,2 @@
+"""Collection management domain package."""
+
