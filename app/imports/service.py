@@ -1505,13 +1505,124 @@ def import_rop_data(headers, payload):
     }
 
 
-def generate_schedule_export(headers, semester=None, year=None):
+EXPORT_TRANSLATIONS = {
+    "ru": {
+        "schedule": "Расписание",
+        "day": "Дни недели",
+        "discipline": "Дисциплина",
+        "lesson_type": "Тип дисциплины",
+        "teacher": "Имя препода",
+        "room": "Аудитория",
+        "monday": "Понедельник",
+        "tuesday": "Вторник",
+        "wednesday": "Среда",
+        "thursday": "Четверг",
+        "friday": "Пятница",
+        "saturday": "Суббота",
+        "sunday": "Воскресенье",
+        "lecture": "Лекция",
+        "practical": "Практика",
+        "lab": "Лаборатория",
+    },
+    "kk": {
+        "schedule": "Кесте",
+        "day": "Апта күндері",
+        "discipline": "Пән",
+        "lesson_type": "Пән түрі",
+        "teacher": "Оқытушы аты",
+        "room": "Аудитория",
+        "monday": "Дүйсенбі",
+        "tuesday": "Сейсенбі",
+        "wednesday": "Сәрсенбі",
+        "thursday": "Бейсенбі",
+        "friday": "Жұма",
+        "saturday": "Сенбі",
+        "sunday": "Жексенбі",
+        "lecture": "Лекция",
+        "practical": "Практика",
+        "lab": "Зертхана",
+    },
+    "en": {
+        "schedule": "Schedule",
+        "day": "Weekday",
+        "discipline": "Discipline",
+        "lesson_type": "Discipline type",
+        "teacher": "Teacher name",
+        "room": "Room",
+        "monday": "Monday",
+        "tuesday": "Tuesday",
+        "wednesday": "Wednesday",
+        "thursday": "Thursday",
+        "friday": "Friday",
+        "saturday": "Saturday",
+        "sunday": "Sunday",
+        "lecture": "Lecture",
+        "practical": "Practical",
+        "lab": "Laboratory",
+    },
+}
+
+
+def _export_translation(language, key):
+    translations = EXPORT_TRANSLATIONS.get(language) or EXPORT_TRANSLATIONS["ru"]
+    return translations.get(key) or EXPORT_TRANSLATIONS["ru"].get(key) or key
+
+
+def _export_weekday_key(day):
+    try:
+        from datetime import date
+
+        parsed = date.fromisoformat(str(day))
+    except (TypeError, ValueError):
+        return str(day or "")
+
+    return [
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+        "sunday",
+    ][parsed.weekday()]
+
+
+def _export_lesson_time(start_hour):
+    try:
+        hour = int(start_hour)
+    except (TypeError, ValueError):
+        return ""
+
+    return f"{hour:02d}:00-{hour:02d}:50"
+
+
+def _export_sheet_title(group_name, used_titles):
+    title = re.sub(r"[:\\/?*\[\]]", " ", str(group_name or "Group")).strip()
+    title = re.sub(r"\s+", " ", title) or "Group"
+    title = title[:31]
+    candidate = title
+    suffix = 2
+
+    while candidate in used_titles:
+        suffix_text = f" {suffix}"
+        candidate = f"{title[:31 - len(suffix_text)]}{suffix_text}"
+        suffix += 1
+
+    used_titles.add(candidate)
+    return candidate
+
+
+def generate_schedule_export(headers, semester=None, year=None, language=None):
     user = require_auth_user(headers)
     if user["role"] != "admin":
         raise ApiError(403, "forbidden", "Недостаточно прав")
+    normalized_language = str(language or "ru").lower()
+    if normalized_language not in EXPORT_TRANSLATIONS:
+        normalized_language = "ru"
 
     try:
         from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Font, PatternFill
     except ImportError as exc:
         raise ApiError(
             500,
@@ -1524,31 +1635,33 @@ def generate_schedule_export(headers, semester=None, year=None):
             clauses = []
             params = []
             if semester is not None:
-                clauses.append("semester = ?")
+                clauses.append("s.semester = ?")
                 params.append(semester)
             if year is not None:
-                clauses.append("year = ?")
+                clauses.append("s.year = ?")
                 params.append(year)
             where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
             schedules = query_all(
                 connection,
                 f"""
                 SELECT
-                    course_name,
-                    group_name,
-                    subgroup,
-                    teacher_name,
-                    room_number,
-                    day,
-                    start_hour,
-                    semester,
-                    year,
-                    algorithm,
-                    room_programme,
-                    room_programme_mismatch
-                FROM schedules
+                    s.course_name,
+                    s.group_name,
+                    s.subgroup,
+                    s.teacher_name,
+                    s.room_number,
+                    s.day,
+                    s.start_hour,
+                    s.semester,
+                    s.year,
+                    s.algorithm,
+                    s.room_programme,
+                    s.room_programme_mismatch,
+                    COALESCE(sec.lesson_type, 'lecture') AS lesson_type
+                FROM schedules s
+                LEFT JOIN sections sec ON sec.id = s.section_id
                 {where_sql}
-                ORDER BY day, start_hour, course_name, group_name, id
+                ORDER BY s.group_name, s.day, s.start_hour, s.course_name, s.id
                 """,
                 tuple(params),
             )
@@ -1557,9 +1670,10 @@ def generate_schedule_export(headers, semester=None, year=None):
         raise ApiError(400, "bad_request", "Расписание ещё не сгенерировано.")
 
     workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "Schedule"
-    sheet.append(
+    workbook.remove(workbook.active)
+
+    compatibility_sheet = workbook.create_sheet("Schedule")
+    compatibility_sheet.append(
         [
             "course_name",
             "group_name",
@@ -1575,9 +1689,8 @@ def generate_schedule_export(headers, semester=None, year=None):
             "room_programme_mismatch",
         ]
     )
-
     for item in schedules:
-        sheet.append(
+        compatibility_sheet.append(
             [
                 item.get("course_name", ""),
                 item.get("group_name", ""),
@@ -1593,6 +1706,75 @@ def generate_schedule_export(headers, semester=None, year=None):
                 item.get("room_programme_mismatch", ""),
             ]
         )
+
+    header_fill = PatternFill("solid", fgColor="014531")
+    header_font = Font(color="FFFFFF", bold=True)
+    title_font = Font(color="014531", bold=True, size=14)
+    center_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    text_alignment = Alignment(vertical="top", wrap_text=True)
+    used_titles = set()
+    schedules_by_group = {}
+
+    for item in schedules:
+        schedules_by_group.setdefault(item.get("group_name") or "Group", []).append(item)
+
+    for group_name, group_schedules in schedules_by_group.items():
+        sheet = workbook.create_sheet(_export_sheet_title(group_name, used_titles))
+        sheet.append([f"{_export_translation(normalized_language, 'schedule')} - {group_name}"])
+        sheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=5)
+        sheet["A1"].font = title_font
+        sheet["A1"].alignment = center_alignment
+        sheet.append(
+            [
+                _export_translation(normalized_language, "day"),
+                _export_translation(normalized_language, "discipline"),
+                _export_translation(normalized_language, "lesson_type"),
+                _export_translation(normalized_language, "teacher"),
+                _export_translation(normalized_language, "room"),
+            ]
+        )
+
+        for cell in sheet[2]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = center_alignment
+
+        for item in group_schedules:
+            weekday_key = _export_weekday_key(item.get("day"))
+            day_label = _export_translation(normalized_language, weekday_key)
+            time_label = _export_lesson_time(item.get("start_hour"))
+            subgroup = str(item.get("subgroup") or "").strip()
+            course_name = item.get("course_name") or ""
+
+            if subgroup:
+                course_name = f"{course_name} ({subgroup})"
+
+            sheet.append(
+                [
+                    f"{day_label} {time_label}".strip(),
+                    course_name,
+                    _export_translation(
+                        normalized_language,
+                        str(item.get("lesson_type") or "lecture").lower(),
+                    ),
+                    item.get("teacher_name", ""),
+                    item.get("room_number", ""),
+                ]
+            )
+
+        for column, width in {
+            "A": 24,
+            "B": 42,
+            "C": 20,
+            "D": 34,
+            "E": 18,
+        }.items():
+            sheet.column_dimensions[column].width = width
+
+        sheet.freeze_panes = "A3"
+        for row in sheet.iter_rows(min_row=3):
+            for cell in row:
+                cell.alignment = text_alignment
 
     buffer = BytesIO()
     workbook.save(buffer)

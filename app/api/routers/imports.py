@@ -34,8 +34,18 @@ async def import_iup(request: Request):
 
 
 @router.get("/export/schedule")
-def export_schedule(request: Request, semester: int | None = None, year: int | None = None):
-    export_bytes = generate_schedule_export(request.headers, semester=semester, year=year)
+def export_schedule(
+    request: Request,
+    semester: int | None = None,
+    year: int | None = None,
+    language: str | None = None,
+):
+    export_bytes = generate_schedule_export(
+        request.headers,
+        semester=semester,
+        year=year,
+        language=language,
+    )
     return Response(
         content=export_bytes,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

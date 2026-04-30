@@ -104,10 +104,11 @@ def clear_all_data(headers):
 def clear_schedule_data(headers, semester=None, year=None):
     _require_admin(headers)
 
+    deleted_count = 0
     with DB_LOCK:
         with get_connection() as connection:
             if semester is None and year is None:
-                db_execute(connection, "DELETE FROM schedules")
+                cursor = db_execute(connection, "DELETE FROM schedules")
             else:
                 clauses = []
                 params = []
@@ -118,7 +119,8 @@ def clear_schedule_data(headers, semester=None, year=None):
                     clauses.append("year = ?")
                     params.append(year)
                 where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-                db_execute(connection, f"DELETE FROM schedules {where_sql}", tuple(params))
+                cursor = db_execute(connection, f"DELETE FROM schedules {where_sql}", tuple(params))
+            deleted_count = max(0, int(getattr(cursor, "rowcount", 0) or 0))
             recompute_room_availability(connection)
             connection.commit()
 
@@ -127,4 +129,5 @@ def clear_schedule_data(headers, semester=None, year=None):
         "collection": "schedules",
         "semester": semester,
         "year": year,
+        "deleted": deleted_count,
     }
