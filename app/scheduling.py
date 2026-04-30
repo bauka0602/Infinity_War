@@ -743,7 +743,7 @@ def build_schedule(connection, semester, year, algorithm):
     rooms = query_all(
         connection,
         """
-        SELECT id, number, capacity, available, type, building, programme, computer_count
+        SELECT id, number, capacity, available, type, '' AS building, programme, computer_count
         FROM rooms
         WHERE coalesce(available, 1) = 1
         ORDER BY capacity, id

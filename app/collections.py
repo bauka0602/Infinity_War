@@ -927,7 +927,7 @@ def list_collection(connection, collection, query, user=None):
                 id,
                 number,
                 capacity,
-                building,
+                '' AS building,
                 type,
                 equipment,
                 programme,
@@ -1190,13 +1190,12 @@ def create_collection_item(connection, collection, payload):
         item_id = insert_and_get_id(
             connection,
             """
-            INSERT INTO rooms (number, capacity, building, type, equipment, programme, available, computer_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO rooms (number, capacity, type, equipment, programme, available, computer_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 normalized.get("number"),
                 normalized.get("capacity"),
-                normalized.get("building", ""),
                 normalized.get("type", ""),
                 normalized.get("equipment", ""),
                 normalized.get("programme", normalized.get("department", "")),
@@ -1212,7 +1211,7 @@ def create_collection_item(connection, collection, payload):
                 id,
                 number,
                 capacity,
-                building,
+                '' AS building,
                 type,
                 equipment,
                 programme,
@@ -1555,13 +1554,12 @@ def update_collection_item(connection, collection, item_id, payload):
             connection,
             """
             UPDATE rooms
-            SET number = ?, capacity = ?, building = ?, type = ?, equipment = ?, programme = ?, available = ?, computer_count = ?
+            SET number = ?, capacity = ?, type = ?, equipment = ?, programme = ?, available = ?, computer_count = ?
             WHERE id = ?
             """,
             (
                 normalized.get("number"),
                 normalized.get("capacity"),
-                normalized.get("building", ""),
                 normalized.get("type", ""),
                 normalized.get("equipment", ""),
                 normalized.get("programme", normalized.get("department", "")),
@@ -1578,7 +1576,7 @@ def update_collection_item(connection, collection, item_id, payload):
                 id,
                 number,
                 capacity,
-                building,
+                '' AS building,
                 type,
                 equipment,
                 programme,

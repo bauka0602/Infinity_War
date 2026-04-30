@@ -204,13 +204,12 @@ def seed_from_store(connection, store):
         db_execute(
             connection,
             """
-            INSERT INTO rooms (number, capacity, building, type, equipment, programme, available, computer_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO rooms (number, capacity, type, equipment, programme, available, computer_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 room["number"],
                 room["capacity"],
-                room.get("building", ""),
                 room.get("type", ""),
                 room.get("equipment", ""),
                 room.get("programme", room.get("department", "")),
@@ -417,7 +416,6 @@ def sqlite_schema():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             number TEXT NOT NULL,
             capacity INTEGER,
-            building TEXT,
             type TEXT,
             equipment TEXT,
             programme TEXT,
@@ -645,7 +643,6 @@ def postgres_schema():
             id SERIAL PRIMARY KEY,
             number TEXT NOT NULL,
             capacity INTEGER,
-            building TEXT,
             type TEXT,
             equipment TEXT,
             programme TEXT,
@@ -1030,6 +1027,7 @@ def ensure_database():
         ensure_column(connection, "students", "group_name", "TEXT")
         ensure_column(connection, "students", "subgroup", "TEXT")
         ensure_column(connection, "students", "language", "TEXT DEFAULT 'ru'")
+        ensure_column(connection, "rooms", "equipment", "TEXT")
         ensure_column(connection, "rooms", "programme", "TEXT")
         ensure_column(connection, "rooms", "available", "INTEGER DEFAULT 1")
         ensure_column(connection, "rooms", "computer_count", "INTEGER DEFAULT 0")
