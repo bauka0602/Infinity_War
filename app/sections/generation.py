@@ -698,6 +698,29 @@ def preview_sections_from_iup(connection, payload):
 
 def build_validation_report(connection):
     issues = []
+    sections = query_all(
+        connection,
+        """
+        SELECT
+            s.id, s.course_id, s.course_name, s.group_id, s.group_name,
+            s.lesson_type, s.classes_count, s.teacher_id, s.teacher_name,
+            s.requires_computers, g.student_count
+        FROM sections s
+        LEFT JOIN groups g ON g.id = s.group_id
+        ORDER BY s.id
+        """,
+    )
+    if not sections:
+        return {
+            "summary": {
+                "errors": 0,
+                "warnings": 0,
+                "info": 0,
+                "sections": 0,
+            },
+            "issues": [],
+        }
+
     components = _load_rop_components(connection, {})
     iup_entries = _load_iup_entries(connection, {})
     component_index, _by_lesson_period = _build_component_index(components)
@@ -739,18 +762,6 @@ def build_validation_report(connection):
                 academic_period=component.get("academic_period"),
             )
 
-    sections = query_all(
-        connection,
-        """
-        SELECT
-            s.id, s.course_id, s.course_name, s.group_id, s.group_name,
-            s.lesson_type, s.classes_count, s.teacher_id, s.teacher_name,
-            s.requires_computers, g.student_count
-        FROM sections s
-        LEFT JOIN groups g ON g.id = s.group_id
-        ORDER BY s.id
-        """,
-    )
     for section in sections:
         if not section.get("teacher_id"):
             add_issue(issues, "teacher_missing", "У section не назначен преподаватель.", "error", section_id=section["id"])
