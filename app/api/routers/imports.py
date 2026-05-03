@@ -39,12 +39,14 @@ def export_schedule(
     semester: int | None = None,
     year: int | None = None,
     language: str | None = None,
+    group_id: int | None = None,
 ):
     export_bytes = generate_schedule_export(
         request.headers,
         semester=semester,
         year=year,
         language=language,
+        group_id=group_id,
     )
     return Response(
         content=export_bytes,

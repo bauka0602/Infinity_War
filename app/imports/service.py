@@ -1602,10 +1602,11 @@ def import_rop_data(headers, payload):
 EXPORT_TRANSLATIONS = {
     "ru": {
         "schedule": "Расписание",
-        "day": "Дни недели",
-        "discipline": "Дисциплина",
-        "lesson_type": "Тип дисциплины",
-        "teacher": "Имя препода",
+        "day": "День недели",
+        "time": "Время занятия",
+        "discipline": "Название предмета",
+        "lesson_type": "Тип занятия",
+        "teacher": "ФИО преподавателя",
         "room": "Аудитория",
         "monday": "Понедельник",
         "tuesday": "Вторник",
@@ -1621,9 +1622,10 @@ EXPORT_TRANSLATIONS = {
     "kk": {
         "schedule": "Кесте",
         "day": "Апта күндері",
-        "discipline": "Пән",
-        "lesson_type": "Пән түрі",
-        "teacher": "Оқытушы аты",
+        "time": "Сабақ уақыты",
+        "discipline": "Пән атауы",
+        "lesson_type": "Сабақ түрі",
+        "teacher": "Оқытушы аты-жөні",
         "room": "Аудитория",
         "monday": "Дүйсенбі",
         "tuesday": "Сейсенбі",
@@ -1639,9 +1641,10 @@ EXPORT_TRANSLATIONS = {
     "en": {
         "schedule": "Schedule",
         "day": "Weekday",
-        "discipline": "Discipline",
-        "lesson_type": "Discipline type",
-        "teacher": "Teacher name",
+        "time": "Lesson time",
+        "discipline": "Subject name",
+        "lesson_type": "Lesson type",
+        "teacher": "Teacher full name",
         "room": "Room",
         "monday": "Monday",
         "tuesday": "Tuesday",
@@ -1706,7 +1709,7 @@ def _export_sheet_title(group_name, used_titles):
     return candidate
 
 
-def generate_schedule_export(headers, semester=None, year=None, language=None):
+def generate_schedule_export(headers, semester=None, year=None, language=None, group_id=None):
     user = require_auth_user(headers)
     if user["role"] != "admin":
         raise ApiError(403, "forbidden", "Недостаточно прав")
@@ -1734,6 +1737,9 @@ def generate_schedule_export(headers, semester=None, year=None, language=None):
             if year is not None:
                 clauses.append("s.year = ?")
                 params.append(year)
+            if group_id is not None:
+                clauses.append("s.group_id = ?")
+                params.append(group_id)
             where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
             schedules = query_all(
                 connection,
@@ -1815,12 +1821,14 @@ def generate_schedule_export(headers, semester=None, year=None, language=None):
     for group_name, group_schedules in schedules_by_group.items():
         sheet = workbook.create_sheet(_export_sheet_title(group_name, used_titles))
         sheet.append([f"{_export_translation(normalized_language, 'schedule')} - {group_name}"])
-        sheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=5)
+        sheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=6)
         sheet["A1"].font = title_font
         sheet["A1"].alignment = center_alignment
+        sheet.row_dimensions[1].height = 28
         sheet.append(
             [
                 _export_translation(normalized_language, "day"),
+                _export_translation(normalized_language, "time"),
                 _export_translation(normalized_language, "discipline"),
                 _export_translation(normalized_language, "lesson_type"),
                 _export_translation(normalized_language, "teacher"),
@@ -1845,7 +1853,8 @@ def generate_schedule_export(headers, semester=None, year=None, language=None):
 
             sheet.append(
                 [
-                    f"{day_label} {time_label}".strip(),
+                    day_label,
+                    time_label,
                     course_name,
                     _export_translation(
                         normalized_language,
@@ -1857,16 +1866,19 @@ def generate_schedule_export(headers, semester=None, year=None, language=None):
             )
 
         for column, width in {
-            "A": 24,
-            "B": 42,
-            "C": 20,
-            "D": 34,
-            "E": 18,
+            "A": 22,
+            "B": 18,
+            "C": 46,
+            "D": 20,
+            "E": 36,
+            "F": 18,
         }.items():
             sheet.column_dimensions[column].width = width
 
         sheet.freeze_panes = "A3"
+        sheet.row_dimensions[2].height = 24
         for row in sheet.iter_rows(min_row=3):
+            sheet.row_dimensions[row[0].row].height = 28
             for cell in row:
                 cell.alignment = text_alignment
 
