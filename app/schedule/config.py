@@ -3,7 +3,7 @@ import os
 
 SCHEDULE_ALGORITHMS = {"greedy", "cpsat", "hybrid"}
 DEFAULT_SCHEDULE_ALGORITHM = os.getenv("SCHEDULE_ALGORITHM", "greedy").strip().lower()
-CP_SAT_SOLVE_SECONDS = float(os.getenv("CP_SAT_SOLVE_SECONDS", "20"))
+CP_SAT_SOLVE_SECONDS = float(os.getenv("CP_SAT_SOLVE_SECONDS", "600"))
 
 if DEFAULT_SCHEDULE_ALGORITHM not in SCHEDULE_ALGORITHMS:
     DEFAULT_SCHEDULE_ALGORITHM = "greedy"

@@ -323,10 +323,10 @@ def _build_optimizer_payload(sections, teachers, rooms, teacher_preferences):
         "enforceLectureBeforeLab": True,
         "maxClassesPerDayForTeacher": 6,
         "maxClassesPerDayForAudience": 6,
-        # Render free instances are memory-constrained, so keep the solver lean by default.
+        # CP-SAT can need several minutes on dense real schedules.
         "enableGapPenalties": False,
         "enableBuildingTransitionPenalties": False,
-        "maxSolveTimeSeconds": 6,
+        "maxSolveTimeSeconds": CP_SAT_SOLVE_SECONDS,
         "numWorkers": 1,
         "teachers": [
             {
