@@ -627,7 +627,7 @@ def _insert_or_update_section(connection, section):
     existing = query_one(
         connection,
         """
-        SELECT id
+        SELECT id, teacher_id, teacher_name
         FROM sections
         WHERE course_id = ? AND group_id = ? AND lesson_type = ?
         LIMIT 1
@@ -657,7 +657,15 @@ def _insert_or_update_section(connection, section):
             UPDATE sections
             SET course_id = ?, course_name = ?, group_id = ?, group_name = ?,
                 classes_count = ?, lesson_type = ?, subgroup_mode = ?, subgroup_count = ?,
-                requires_computers = ?, teacher_id = ?, teacher_name = ?,
+                requires_computers = ?,
+                teacher_id = CASE
+                    WHEN teacher_id IS NULL THEN ?
+                    ELSE teacher_id
+                END,
+                teacher_name = CASE
+                    WHEN teacher_id IS NULL OR coalesce(teacher_name, '') = '' THEN ?
+                    ELSE teacher_name
+                END,
                 iup_entry_id = ?, source = ?, match_method = ?
             WHERE id = ?
             """,

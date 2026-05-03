@@ -241,30 +241,57 @@ def _upsert_rop_course(connection, course, offering):
     return "inserted", course_id
 
 
-def _replace_rop_course_components(connection, course_id, course, offering, lesson_components):
-    existing_teachers = {
-        (row["lesson_type"], row["academic_period"]): (row.get("teacher_id"), row.get("teacher_name", ""))
-        for row in query_all(
-            connection,
-            """
-            SELECT lesson_type, academic_period, teacher_id, teacher_name
-            FROM course_components
-            WHERE course_id = ?
-              AND teacher_id IS NOT NULL
-            """,
-            (course_id,),
-        )
-    }
-    db_execute(
+def _component_has_teacher(component):
+    return bool(component and component.get("teacher_id"))
+
+
+def _component_teacher(component):
+    if not _component_has_teacher(component):
+        return None, ""
+    return component.get("teacher_id"), component.get("teacher_name", "")
+
+
+def _find_rop_component_teacher(connection, course_id, component):
+    exact = query_one(
         connection,
         """
-        DELETE FROM course_components
-        WHERE course_id = ? AND academic_period = ?
+        SELECT teacher_id, teacher_name
+        FROM course_components
+        WHERE course_id = ?
+          AND lesson_type = ?
+          AND academic_period = ?
+          AND teacher_id IS NOT NULL
+        ORDER BY id
+        LIMIT 1
         """,
-        (course_id, offering["academicPeriod"]),
+        (course_id, component["lessonType"], component["academicPeriod"]),
     )
+    if exact:
+        return _component_teacher(exact)
+
+    same_lesson_type = query_one(
+        connection,
+        """
+        SELECT teacher_id, teacher_name
+        FROM course_components
+        WHERE course_id = ?
+          AND lesson_type = ?
+          AND teacher_id IS NOT NULL
+        ORDER BY
+          CASE WHEN academic_period IS NULL THEN 1 ELSE 0 END,
+          id
+        LIMIT 1
+        """,
+        (course_id, component["lessonType"]),
+    )
+    return _component_teacher(same_lesson_type)
+
+
+def _sync_rop_course_components(connection, course_id, course, offering, lesson_components):
+    seen_components = set()
 
     inserted = 0
+    updated = 0
     for component in lesson_components:
         if (
             component["courseCode"] != course["code"]
@@ -273,11 +300,71 @@ def _replace_rop_course_components(connection, course_id, course, offering, less
         ):
             continue
 
-        teacher_id, teacher_name = existing_teachers.get(
-            (component["lessonType"], component["academicPeriod"]),
-            (None, ""),
+        component_key = (component["lessonType"], component["academicPeriod"])
+        if component_key in seen_components:
+            continue
+        seen_components.add(component_key)
+
+        existing_component = query_one(
+            connection,
+            """
+            SELECT id, teacher_id, teacher_name
+            FROM course_components
+            WHERE course_id = ?
+              AND lesson_type = ?
+              AND academic_period = ?
+            ORDER BY id
+            LIMIT 1
+            """,
+            (course_id, component["lessonType"], component["academicPeriod"]),
         )
-        insert_and_get_id(
+
+        teacher_id, teacher_name = _component_teacher(existing_component)
+        if not teacher_id:
+            teacher_id, teacher_name = _find_rop_component_teacher(connection, course_id, component)
+
+        if existing_component:
+            db_execute(
+                connection,
+                """
+                UPDATE course_components
+                SET
+                    course_code = ?,
+                    course_name = ?,
+                    programme = ?,
+                    study_year = ?,
+                    semester = ?,
+                    hours = ?,
+                    weekly_classes = ?,
+                    requires_computers = ?,
+                    teacher_id = CASE
+                        WHEN teacher_id IS NULL THEN ?
+                        ELSE teacher_id
+                    END,
+                    teacher_name = CASE
+                        WHEN teacher_id IS NULL AND coalesce(teacher_name, '') = '' THEN ?
+                        ELSE teacher_name
+                    END
+                WHERE id = ?
+                """,
+                (
+                    component["courseCode"],
+                    component["courseName"],
+                    course.get("programme") or "",
+                    course.get("studyYear"),
+                    component["semester"],
+                    component["hours"],
+                    component["weeklyClasses"],
+                    1 if component.get("requiresComputers") else 0,
+                    teacher_id,
+                    teacher_name,
+                    existing_component["id"],
+                ),
+            )
+            updated += 1
+            continue
+
+        component_id = insert_and_get_id(
             connection,
             """
             INSERT INTO course_components (
@@ -305,7 +392,7 @@ def _replace_rop_course_components(connection, course_id, course, offering, less
         )
         inserted += 1
 
-    return inserted
+    return {"inserted": inserted, "updated": updated}
 
 
 def _load_rop_rows(file_name, file_bytes):
@@ -1183,16 +1270,18 @@ def _store_iup_entries(connection, parsed, create_missing_courses=False):
                 entry.get("semester"),
             )
             if course and course["id"] not in updated_courses:
-                db_execute(
+                course_update = db_execute(
                     connection,
                     """
                     UPDATE courses
                     SET instructor_id = ?, instructor_name = ?
                     WHERE id = ?
+                      AND (instructor_id IS NULL OR coalesce(instructor_name, '') = '')
                     """,
                     (teacher_id, teacher_name, course["id"]),
                 )
-                updated_courses.add(course["id"])
+                if max(0, getattr(course_update, "rowcount", 0) or 0):
+                    updated_courses.add(course["id"])
 
             if course:
                 component_update = db_execute(
@@ -1203,6 +1292,7 @@ def _store_iup_entries(connection, parsed, create_missing_courses=False):
                     WHERE course_id = ?
                       AND lesson_type = ?
                       AND (? IS NULL OR academic_period = ?)
+                      AND (teacher_id IS NULL OR coalesce(teacher_name, '') = '')
                     """,
                     (
                         teacher_id,
@@ -1222,6 +1312,7 @@ def _store_iup_entries(connection, parsed, create_missing_courses=False):
                         SET teacher_id = ?, teacher_name = ?
                         WHERE course_id = ?
                           AND lesson_type = ?
+                          AND (teacher_id IS NULL OR coalesce(teacher_name, '') = '')
                         """,
                         (
                             teacher_id,
@@ -1238,6 +1329,7 @@ def _store_iup_entries(connection, parsed, create_missing_courses=False):
                     SET teacher_id = ?, teacher_name = ?
                     WHERE course_id = ?
                       AND lesson_type = ?
+                      AND (teacher_id IS NULL OR coalesce(teacher_name, '') = '')
                     """,
                     (
                         teacher_id,
@@ -1447,7 +1539,7 @@ def import_rop_data(headers, payload):
     }
     summary = {
         "courses": {"inserted": 0, "updated": 0},
-        "courseComponents": {"inserted": 0},
+        "courseComponents": {"inserted": 0, "updated": 0},
     }
     course_lists = {
         "inserted": [],
@@ -1480,13 +1572,15 @@ def import_rop_data(headers, payload):
                             course.get("programme") or "",
                         )
                     )
-                summary["courseComponents"]["inserted"] += _replace_rop_course_components(
+                component_summary = _sync_rop_course_components(
                     connection,
                     course_id,
                     course,
                     offering,
                     preview["lessonComponents"],
                 )
+                summary["courseComponents"]["inserted"] += component_summary["inserted"]
+                summary["courseComponents"]["updated"] += component_summary["updated"]
             connection.commit()
 
     return {

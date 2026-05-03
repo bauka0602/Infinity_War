@@ -296,6 +296,411 @@ def test_rop_import_preserves_existing_course_instructor(client, admin_auth_head
     assert course["instructor_name"] == teacher["name"]
 
 
+def test_rop_reimport_preserves_component_teacher(client, admin_auth_headers, backend_modules):
+    teacher_response = client.post(
+        "/api/teachers",
+        headers=admin_auth_headers,
+        json={
+            "name": "Component Teacher",
+            "email": "component.teacher@kazatu.edu.kz",
+            "department": "B057 - Информационные технологии",
+            "teaching_languages": "ru,kk",
+        },
+    )
+    assert teacher_response.status_code == 201
+    teacher = teacher_response.json()
+
+    course_response = client.post(
+        "/api/disciplines",
+        headers=admin_auth_headers,
+        json={
+            "code": "Fil 2108",
+            "name": "Философия",
+            "credits": 4,
+            "hours": 120,
+            "year": 2,
+            "semester": 3,
+            "department": "B057 - Информационные технологии",
+            "programme": "Бизнес-информатика",
+        },
+    )
+    assert course_response.status_code == 201
+    course = course_response.json()
+
+    _app_module, db_module = backend_modules
+    with db_module.get_connection() as connection:
+        component_id = db_module.insert_and_get_id(
+            connection,
+            """
+            INSERT INTO course_components (
+                course_id, course_code, course_name, programme, study_year,
+                academic_period, semester, lesson_type, hours, weekly_classes,
+                requires_computers, teacher_id, teacher_name
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                course["id"],
+                course["code"],
+                course["name"],
+                course["programme"],
+                course["year"],
+                course["semester"],
+                course["semester"],
+                "lecture",
+                10,
+                1,
+                0,
+                teacher["id"],
+                teacher["name"],
+            ),
+        )
+        connection.commit()
+
+    first_response = client.post(
+        "/api/import/rop",
+        headers=admin_auth_headers,
+        json=_build_rop_preview_payload(),
+    )
+    assert first_response.status_code == 200
+
+    second_response = client.post(
+        "/api/import/rop",
+        headers=admin_auth_headers,
+        json=_build_rop_preview_payload(),
+    )
+    assert second_response.status_code == 200
+
+    with db_module.get_connection() as connection:
+        components = db_module.query_all(
+            connection,
+            """
+            SELECT id, lesson_type, hours, teacher_id, teacher_name
+            FROM course_components
+            WHERE course_id = ?
+            ORDER BY lesson_type
+            """,
+            (course["id"],),
+        )
+
+    lecture_components = [item for item in components if item["lesson_type"] == "lecture"]
+    assert len(lecture_components) == 1
+    lecture_component = lecture_components[0]
+    assert lecture_component["id"] == component_id
+    assert lecture_component["hours"] == 15
+    assert lecture_component["teacher_id"] == teacher["id"]
+    assert lecture_component["teacher_name"] == teacher["name"]
+    assert {item["lesson_type"] for item in components} == {"lecture", "practical", "practice", "srop"}
+
+
+def test_iup_import_fills_only_empty_teacher_assignments(backend_modules):
+    _app_module, db_module = backend_modules
+    imports_service = __import__("backend.app.imports.service", fromlist=["_store_iup_entries"])
+
+    with db_module.get_connection() as connection:
+        manual_teacher_id = db_module.insert_and_get_id(
+            connection,
+            """
+            INSERT INTO teachers (
+                name, email, password, token, avatar_data, phone, subject_taught, weekly_hours_limit, teaching_languages
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "Manual Teacher",
+                "manual.teacher@kazatu.edu.kz",
+                "",
+                "",
+                "",
+                "",
+                "CS",
+                20,
+                "ru,kk",
+            ),
+        )
+        empty_teacher_id = db_module.insert_and_get_id(
+            connection,
+            """
+            INSERT INTO teachers (
+                name, email, password, token, avatar_data, phone, subject_taught, weekly_hours_limit, teaching_languages
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "Existing IUP Teacher",
+                "existing.iup.teacher@kazatu.edu.kz",
+                "",
+                "",
+                "",
+                "",
+                "CS",
+                20,
+                "ru,kk",
+            ),
+        )
+        manual_course_id = db_module.insert_and_get_id(
+            connection,
+            """
+            INSERT INTO courses (
+                name, code, credits, hours, year, semester, department,
+                instructor_id, instructor_name, programme
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "Manual Course",
+                "MAN 1001",
+                5,
+                150,
+                1,
+                1,
+                "B057 - Информационные технологии",
+                manual_teacher_id,
+                "Manual Teacher",
+                "Бизнес-информатика",
+            ),
+        )
+        empty_course_id = db_module.insert_and_get_id(
+            connection,
+            """
+            INSERT INTO courses (
+                name, code, credits, hours, year, semester, department,
+                instructor_id, instructor_name, programme
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "Empty Course",
+                "EMP 1001",
+                5,
+                150,
+                1,
+                1,
+                "B057 - Информационные технологии",
+                None,
+                "",
+                "Бизнес-информатика",
+            ),
+        )
+        for course_id, code, name, teacher_id, teacher_name in (
+            (manual_course_id, "MAN 1001", "Manual Course", manual_teacher_id, "Manual Teacher"),
+            (empty_course_id, "EMP 1001", "Empty Course", None, ""),
+        ):
+            db_module.insert_and_get_id(
+                connection,
+                """
+                INSERT INTO course_components (
+                    course_id, course_code, course_name, programme, study_year,
+                    academic_period, semester, lesson_type, hours, weekly_classes,
+                    requires_computers, teacher_id, teacher_name
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    course_id,
+                    code,
+                    name,
+                    "Бизнес-информатика",
+                    1,
+                    1,
+                    1,
+                    "lecture",
+                    15,
+                    1,
+                    0,
+                    teacher_id,
+                    teacher_name,
+                ),
+            )
+        db_module.insert_and_get_id(
+            connection,
+            """
+            INSERT INTO sections (
+                course_id, course_name, group_name, classes_count, lesson_type,
+                teacher_id, teacher_name
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (manual_course_id, "Manual Course", "BI-24-01", 1, "lecture", manual_teacher_id, "Manual Teacher"),
+        )
+        db_module.insert_and_get_id(
+            connection,
+            """
+            INSERT INTO sections (
+                course_id, course_name, group_name, classes_count, lesson_type,
+                teacher_id, teacher_name
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (empty_course_id, "Empty Course", "BI-24-01", 1, "lecture", None, ""),
+        )
+        connection.commit()
+
+        parsed = {
+            "metadata": {
+                "fileName": "iup.pdf",
+                "groupName": "BI-24-01",
+                "programme": "Бизнес-информатика",
+                "language": "ru",
+                "academicYear": "2025-2026",
+            },
+            "entries": [
+                {
+                    "studyYear": 1,
+                    "academicPeriod": 1,
+                    "semester": 1,
+                    "component": "ОК",
+                    "courseCode": "MAN 1001",
+                    "courseName": "Manual Course",
+                    "credits": 5,
+                    "lessonType": "lecture",
+                    "teacherName": "Imported Teacher",
+                    "hours": 15,
+                },
+                {
+                    "studyYear": 1,
+                    "academicPeriod": 1,
+                    "semester": 1,
+                    "component": "ОК",
+                    "courseCode": "EMP 1001",
+                    "courseName": "Empty Course",
+                    "credits": 5,
+                    "lessonType": "lecture",
+                    "teacherName": "Existing IUP Teacher",
+                    "hours": 15,
+                },
+            ],
+            "courses": [],
+        }
+        result = imports_service._store_iup_entries(connection, parsed)
+        connection.commit()
+
+        manual_course = db_module.query_one(connection, "SELECT instructor_id, instructor_name FROM courses WHERE id = ?", (manual_course_id,))
+        empty_course = db_module.query_one(connection, "SELECT instructor_id, instructor_name FROM courses WHERE id = ?", (empty_course_id,))
+        manual_component = db_module.query_one(connection, "SELECT teacher_id, teacher_name FROM course_components WHERE course_id = ?", (manual_course_id,))
+        empty_component = db_module.query_one(connection, "SELECT teacher_id, teacher_name FROM course_components WHERE course_id = ?", (empty_course_id,))
+        manual_section = db_module.query_one(connection, "SELECT teacher_id, teacher_name FROM sections WHERE course_id = ?", (manual_course_id,))
+        empty_section = db_module.query_one(connection, "SELECT teacher_id, teacher_name FROM sections WHERE course_id = ?", (empty_course_id,))
+
+    assert result["coursesUpdated"] == 1
+    assert result["componentsUpdated"] == 1
+    assert manual_course["instructor_id"] == manual_teacher_id
+    assert manual_course["instructor_name"] == "Manual Teacher"
+    assert manual_component["teacher_id"] == manual_teacher_id
+    assert manual_component["teacher_name"] == "Manual Teacher"
+    assert manual_section["teacher_id"] == manual_teacher_id
+    assert manual_section["teacher_name"] == "Manual Teacher"
+    assert empty_course["instructor_id"] == empty_teacher_id
+    assert empty_course["instructor_name"] == "Existing IUP Teacher"
+    assert empty_component["teacher_id"] == empty_teacher_id
+    assert empty_component["teacher_name"] == "Existing IUP Teacher"
+    assert empty_section["teacher_id"] == empty_teacher_id
+    assert empty_section["teacher_name"] == "Existing IUP Teacher"
+
+
+def test_iup_section_regeneration_preserves_existing_teacher(backend_modules):
+    _app_module, db_module = backend_modules
+    generation_service = __import__("backend.app.sections.generation", fromlist=["_insert_or_update_section"])
+
+    with db_module.get_connection() as connection:
+        manual_teacher_id = db_module.insert_and_get_id(
+            connection,
+            """
+            INSERT INTO teachers (
+                name, email, password, token, avatar_data, phone, subject_taught, weekly_hours_limit, teaching_languages
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "Manual Section Teacher",
+                "manual.section.teacher@kazatu.edu.kz",
+                "",
+                "",
+                "",
+                "",
+                "CS",
+                20,
+                "ru,kk",
+            ),
+        )
+        imported_teacher_id = db_module.insert_and_get_id(
+            connection,
+            """
+            INSERT INTO teachers (
+                name, email, password, token, avatar_data, phone, subject_taught, weekly_hours_limit, teaching_languages
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "Imported Section Teacher",
+                "imported.section.teacher@kazatu.edu.kz",
+                "",
+                "",
+                "",
+                "",
+                "CS",
+                20,
+                "ru,kk",
+            ),
+        )
+        course_id = db_module.insert_and_get_id(
+            connection,
+            """
+            INSERT INTO courses (name, code, credits, hours, year, semester, department, programme)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("Section Course", "SEC 1001", 5, 150, 1, 1, "B057 - Информационные технологии", "Бизнес-информатика"),
+        )
+        group_id = db_module.insert_and_get_id(
+            connection,
+            """
+            INSERT INTO groups (name, student_count, has_subgroups, language, study_course)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            ("BI-24-99", 24, 0, "ru", 1),
+        )
+        section_id = db_module.insert_and_get_id(
+            connection,
+            """
+            INSERT INTO sections (
+                course_id, course_name, group_id, group_name, classes_count, lesson_type,
+                teacher_id, teacher_name
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (course_id, "Section Course", group_id, "BI-24-99", 1, "lecture", manual_teacher_id, "Manual Section Teacher"),
+        )
+        connection.commit()
+
+        updated_id, status = generation_service._insert_or_update_section(
+            connection,
+            {
+                "course_id": course_id,
+                "course_name": "Section Course",
+                "group_id": group_id,
+                "group_name": "BI-24-99",
+                "classes_count": 2,
+                "lesson_type": "lecture",
+                "subgroup_mode": "auto",
+                "subgroup_count": 1,
+                "requires_computers": 0,
+                "teacher_id": imported_teacher_id,
+                "teacher_name": "Imported Section Teacher",
+                "iup_entry_id": 10,
+                "source": "iup",
+                "match_method": "exact",
+            },
+        )
+        section = db_module.query_one(connection, "SELECT * FROM sections WHERE id = ?", (section_id,))
+
+    assert updated_id == section_id
+    assert status == "updated"
+    assert section["classes_count"] == 2
+    assert section["teacher_id"] == manual_teacher_id
+    assert section["teacher_name"] == "Manual Section Teacher"
+    assert section["iup_entry_id"] == 10
+
+
 def test_section_uses_teacher_from_matching_course_component(client, admin_auth_headers, backend_modules):
     lecture_teacher_response = client.post(
         "/api/teachers",
