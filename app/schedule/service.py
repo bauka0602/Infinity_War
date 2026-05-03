@@ -702,12 +702,23 @@ def build_schedule(connection, semester, year, algorithm):
             },
         )
 
+    preflight_issues = []
+    teacher_by_id = {teacher["id"]: teacher for teacher in teachers}
+
     for section in sections:
         if not section.get("instructor_id"):
-            raise ApiError(
-                400,
-                "bad_request",
-                f"Для курса '{section['course_name']}' не найден преподаватель.",
+            preflight_issues.append(
+                {
+                    "type": "teacher_missing",
+                    "sectionId": section.get("id"),
+                    "courseId": section.get("course_id"),
+                    "courseCode": section.get("course_code"),
+                    "courseName": section.get("course_name"),
+                    "groupId": section.get("group_id"),
+                    "groupName": section.get("group_name"),
+                    "lessonType": section.get("lesson_type"),
+                    "reason": f"Для курса '{section['course_name']}' не найден преподаватель.",
+                }
             )
 
     teacher_language_map = {}
@@ -721,25 +732,68 @@ def build_schedule(connection, semester, year, algorithm):
 
     for section in sections:
         if not section.get("study_course"):
-            raise ApiError(
-                400,
-                "bad_request",
-                f"Для группы '{section['group_name']}' не указан курс обучения.",
+            preflight_issues.append(
+                {
+                    "type": "study_course_missing",
+                    "sectionId": section.get("id"),
+                    "courseId": section.get("course_id"),
+                    "courseCode": section.get("course_code"),
+                    "courseName": section.get("course_name"),
+                    "groupId": section.get("group_id"),
+                    "groupName": section.get("group_name"),
+                    "reason": f"Для группы '{section['group_name']}' не указан курс обучения.",
+                }
             )
+            continue
         if int(section.get("study_course")) != int(section.get("year") or 0):
-            raise ApiError(
-                400,
-                "bad_request",
-                f"Дисциплина '{section['course_name']}' предназначена для {section['year']} курса, а группа '{section['group_name']}' указана как {section['study_course']} курс.",
+            preflight_issues.append(
+                {
+                    "type": "study_course_mismatch",
+                    "sectionId": section.get("id"),
+                    "courseId": section.get("course_id"),
+                    "courseCode": section.get("course_code"),
+                    "courseName": section.get("course_name"),
+                    "courseYear": section.get("year"),
+                    "groupId": section.get("group_id"),
+                    "groupName": section.get("group_name"),
+                    "groupStudyCourse": section.get("study_course"),
+                    "reason": f"Дисциплина '{section['course_name']}' предназначена для {section['year']} курса, а группа '{section['group_name']}' указана как {section['study_course']} курс.",
+                }
             )
         group_language = str(section.get("group_language") or "ru").strip().lower()
         teacher_languages = teacher_language_map.get(section["instructor_id"], {"ru", "kk"})
-        if group_language not in teacher_languages:
-            raise ApiError(
-                400,
-                "bad_request",
-                f"Преподаватель курса '{section['course_name']}' не поддерживает язык группы '{group_language}'.",
+        if section.get("instructor_id") and group_language not in teacher_languages:
+            teacher = teacher_by_id.get(section["instructor_id"], {})
+            preflight_issues.append(
+                {
+                    "type": "teacher_language_mismatch",
+                    "sectionId": section.get("id"),
+                    "courseId": section.get("course_id"),
+                    "courseCode": section.get("course_code"),
+                    "courseName": section.get("course_name"),
+                    "groupId": section.get("group_id"),
+                    "groupName": section.get("group_name"),
+                    "groupLanguage": group_language,
+                    "teacherId": section.get("instructor_id"),
+                    "teacherName": section.get("instructor_name") or teacher.get("name"),
+                    "teacherLanguages": sorted(teacher_languages),
+                    "field": "teaching_languages",
+                    "reason": f"Преподаватель курса '{section['course_name']}' не поддерживает язык группы '{group_language}'.",
+                }
             )
+
+    if preflight_issues:
+        raise ApiError(
+            400,
+            "schedule_preflight_failed",
+            "Перед генерацией найдены ошибки в данных.",
+            details={
+                "semester": semester,
+                "academicPeriods": list(academic_periods),
+                "year": year,
+                "issues": preflight_issues,
+            },
+        )
 
     teacher_preference_rows = get_approved_teacher_preferences(connection)
     teacher_preferences = {}
