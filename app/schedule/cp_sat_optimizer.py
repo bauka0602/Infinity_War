@@ -1046,6 +1046,7 @@ def optimize_schedule(payload):
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = float(payload.get("maxSolveTimeSeconds", 10))
     solver.parameters.num_search_workers = int(payload.get("numWorkers", 8))
+    solver.parameters.stop_after_first_solution = bool(payload.get("stopAfterFirstSolution"))
 
     status = solver.Solve(model)
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):

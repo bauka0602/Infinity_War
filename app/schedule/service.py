@@ -556,11 +556,13 @@ def _generate_schedule_rows_by_batches(sections, teachers, rooms, teacher_prefer
             continue
         payload = _build_optimizer_payload(batch_sections, teachers, deepcopy(rooms), teacher_preferences)
         payload = _apply_batch_occupancy(payload, occupied)
-        if selected_algorithm in {"cpsat", "hybrid"}:
+        if selected_algorithm in {"cpsat", "cpsat_fast", "hybrid"}:
             payload["maxSolveTimeSeconds"] = CP_SAT_SOLVE_SECONDS
+        if selected_algorithm == "cpsat_fast":
+            payload["stopAfterFirstSolution"] = True
         if selected_algorithm == "greedy":
             optimization_result = optimize_greedy_schedule(payload)
-        elif selected_algorithm == "cpsat":
+        elif selected_algorithm in {"cpsat", "cpsat_fast"}:
             optimization_result = optimize_schedule(payload)
         else:
             try:
