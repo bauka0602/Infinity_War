@@ -137,3 +137,43 @@ def test_schedule_generation_job_fails_cleanly_without_data(client, admin_auth_h
     final_job = wait_for_job_completion(client, admin_auth_headers, job_id)
     assert final_job["status"] == "failed"
     assert final_job["errorCode"] in {"schedule_generation_requires_data", "optimizer_requires_teachers"}
+
+
+def test_schedule_generation_worker_mode_processes_queued_job(
+    client,
+    admin_auth_headers,
+    orm,
+    monkeypatch,
+):
+    from backend.app.schedule import jobs as schedule_jobs
+
+    monkeypatch.setattr(schedule_jobs, "_EXECUTION_MODE", "worker")
+
+    generate_response = client.post(
+        "/api/schedules/generate",
+        headers=admin_auth_headers,
+        json={"semester": 1, "year": 2026, "algorithm": "greedy"},
+    )
+
+    assert generate_response.status_code == 202
+    job_id = generate_response.json()["jobId"]
+    queued_job = client.get(
+        f"/api/schedules/generate/{job_id}",
+        headers=admin_auth_headers,
+    ).json()
+    assert queued_job["status"] == "queued"
+
+    assert schedule_jobs.run_schedule_generation_worker_once("pytest-worker") is True
+
+    final_job = client.get(
+        f"/api/schedules/generate/{job_id}",
+        headers=admin_auth_headers,
+    ).json()
+    assert final_job["status"] == "failed"
+    assert final_job["errorCode"] in {"schedule_generation_requires_data", "optimizer_requires_teachers"}
+
+    persisted_job = orm.get("ScheduleGenerationJob", job_id)
+    assert persisted_job.status == "failed"
+    assert persisted_job.worker_id == "pytest-worker"
+    assert persisted_job.started_at
+    assert persisted_job.finished_at

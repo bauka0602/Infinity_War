@@ -97,77 +97,51 @@ def test_admin_can_create_course_with_credits_and_hours(client, admin_auth_heade
 def test_admin_clear_all_removes_course_components(
     client,
     admin_auth_headers,
-    backend_modules,
+    orm,
 ):
-    _app_module, db_module = backend_modules
-    with db_module.get_connection() as connection:
-        course_id = db_module.insert_and_get_id(
-            connection,
-            """
-            INSERT INTO courses (
-                name, code, credits, hours, description, year, semester,
-                department, instructor_id, instructor_name, programme,
-                module_type, module_name, cycle, component, language,
-                academic_year, entry_year, requires_computers
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "Algorithms",
-                "ALG101",
-                5,
-                150,
-                "",
-                1,
-                1,
-                "B057 - Информационные технологии",
-                None,
-                "",
-                "Бизнес-информатика",
-                "",
-                "",
-                "",
-                "ОК",
-                "ru",
-                "",
-                "",
-                0,
-            ),
-        )
-        db_module.insert_and_get_id(
-            connection,
-            """
-            INSERT INTO course_components (
-                course_id, course_code, course_name, programme, study_year,
-                academic_period, semester, lesson_type, hours, weekly_classes,
-                requires_computers, teacher_id, teacher_name
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                course_id,
-                "ALG101",
-                "Algorithms",
-                "Бизнес-информатика",
-                1,
-                1,
-                1,
-                "lecture",
-                30,
-                1,
-                0,
-                None,
-                "",
-            ),
-        )
-        connection.commit()
+    course = orm.add(
+        "Course",
+        name="Algorithms",
+        code="ALG101",
+        credits=5,
+        hours=150,
+        description="",
+        year=1,
+        semester=1,
+        department="B057 - Информационные технологии",
+        instructor_id=None,
+        instructor_name="",
+        programme="Бизнес-информатика",
+        module_type="",
+        module_name="",
+        cycle="",
+        component="ОК",
+        language="ru",
+        academic_year="",
+        entry_year="",
+        requires_computers=0,
+    )
+    orm.add(
+        "CourseComponent",
+        course_id=course.id,
+        course_code="ALG101",
+        course_name="Algorithms",
+        programme="Бизнес-информатика",
+        study_year=1,
+        academic_period=1,
+        semester=1,
+        lesson_type="lecture",
+        hours=30,
+        weekly_classes=1,
+        requires_computers=0,
+        teacher_id=None,
+        teacher_name="",
+    )
 
     response = client.post("/api/admin/clear-all", headers=admin_auth_headers)
     assert response.status_code == 200
 
-    with db_module.get_connection() as connection:
-        remaining = db_module.query_one(connection, "SELECT COUNT(*) AS count FROM course_components")
-        assert remaining["count"] == 0
+    assert orm.count("CourseComponent") == 0
 
 
 def test_teacher_preference_admin_delete_endpoints(

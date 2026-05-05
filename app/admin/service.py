@@ -1,10 +1,33 @@
 from ..auth.service import require_auth_user
 from ..core.config import DB_LOCK
-from ..core.db import db_execute, get_connection
 from ..core.errors import ApiError
-from ..rooms.availability import recompute_room_availability
+from ..core.orm import SessionLocal
+from sqlalchemy import delete, update
+from ..models import (
+    Course,
+    CourseComponent,
+    Group,
+    IupEntry,
+    Notification,
+    Room,
+    RoomBlock,
+    Schedule,
+    Section,
+    Student,
+    Teacher,
+    TeacherPreferenceRequest,
+)
 
 CLEARABLE_COLLECTIONS = {"courses", "teachers", "students", "rooms", "groups", "sections"}
+
+COLLECTION_MODELS = {
+    "courses": Course,
+    "teachers": Teacher,
+    "students": Student,
+    "rooms": Room,
+    "groups": Group,
+    "sections": Section,
+}
 
 
 def _require_admin(headers):
@@ -12,6 +35,18 @@ def _require_admin(headers):
     if user["role"] != "admin":
         raise ApiError(403, "forbidden", "Недостаточно прав")
     return user
+
+
+def _delete_all(session, model):
+    session.execute(delete(model))
+
+
+def _recompute_room_availability(session):
+    session.execute(
+        update(Room)
+        .where(Room.available.is_(None))
+        .values(available=1)
+    )
 
 
 def clear_collection_data(headers, collection):
@@ -28,36 +63,35 @@ def clear_collection_data(headers, collection):
         raise ApiError(400, "bad_request", "Неподдерживаемая коллекция")
 
     with DB_LOCK:
-        with get_connection() as connection:
+        with SessionLocal() as session:
             if collection == "courses":
-                db_execute(connection, "DELETE FROM schedules")
-                db_execute(connection, "DELETE FROM sections")
-                db_execute(connection, "DELETE FROM course_components")
-                db_execute(connection, "DELETE FROM iup_entries")
+                _delete_all(session, Schedule)
+                _delete_all(session, Section)
+                _delete_all(session, CourseComponent)
+                _delete_all(session, IupEntry)
             elif collection == "groups":
-                db_execute(connection, "DELETE FROM schedules")
-                db_execute(connection, "DELETE FROM sections")
-                db_execute(connection, "DELETE FROM iup_entries")
-                db_execute(
-                    connection,
-                    "UPDATE students SET group_id = NULL, group_name = '', subgroup = ''",
+                _delete_all(session, Schedule)
+                _delete_all(session, Section)
+                _delete_all(session, IupEntry)
+                session.execute(
+                    update(Student).values(group_id=None, group_name="", subgroup="")
                 )
             elif collection in {"teachers", "rooms"}:
-                db_execute(connection, "DELETE FROM schedules")
+                _delete_all(session, Schedule)
                 if collection == "teachers":
-                    db_execute(connection, "UPDATE courses SET instructor_id = NULL, instructor_name = ''")
-                    db_execute(connection, "UPDATE course_components SET teacher_id = NULL, teacher_name = ''")
-                    db_execute(connection, "UPDATE sections SET teacher_id = NULL, teacher_name = ''")
-                    db_execute(connection, "DELETE FROM teacher_preference_requests")
-                    db_execute(connection, "DELETE FROM notifications WHERE recipient_role = 'teacher'")
+                    session.execute(update(Course).values(instructor_id=None, instructor_name=""))
+                    session.execute(update(CourseComponent).values(teacher_id=None, teacher_name=""))
+                    session.execute(update(Section).values(teacher_id=None, teacher_name=""))
+                    _delete_all(session, TeacherPreferenceRequest)
+                    session.execute(delete(Notification).where(Notification.recipient_role == "teacher"))
                 else:
-                    db_execute(connection, "DELETE FROM room_blocks")
+                    _delete_all(session, RoomBlock)
             elif collection == "students":
-                db_execute(connection, "DELETE FROM notifications WHERE recipient_role = 'student'")
-            db_execute(connection, f"DELETE FROM {collection}")
+                session.execute(delete(Notification).where(Notification.recipient_role == "student"))
+            _delete_all(session, COLLECTION_MODELS[collection])
             if collection in {"courses", "teachers", "groups", "schedules", "sections"}:
-                recompute_room_availability(connection)
-            connection.commit()
+                _recompute_room_availability(session)
+            session.commit()
 
     return {"success": True, "collection": collection}
 
@@ -66,23 +100,23 @@ def clear_all_data(headers):
     _require_admin(headers)
 
     with DB_LOCK:
-        with get_connection() as connection:
-            for collection in (
-                "notifications",
-                "schedules",
-                "sections",
-                "teacher_preference_requests",
-                "room_blocks",
-                "iup_entries",
-                "course_components",
-                "courses",
-                "teachers",
-                "students",
-                "rooms",
-                "groups",
+        with SessionLocal() as session:
+            for model in (
+                Notification,
+                Schedule,
+                Section,
+                TeacherPreferenceRequest,
+                RoomBlock,
+                IupEntry,
+                CourseComponent,
+                Course,
+                Teacher,
+                Student,
+                Room,
+                Group,
             ):
-                db_execute(connection, f"DELETE FROM {collection}")
-            connection.commit()
+                _delete_all(session, model)
+            session.commit()
 
     return {
         "success": True,
@@ -106,23 +140,19 @@ def clear_schedule_data(headers, semester=None, year=None):
 
     deleted_count = 0
     with DB_LOCK:
-        with get_connection() as connection:
+        with SessionLocal() as session:
+            statement = delete(Schedule)
             if semester is None and year is None:
-                cursor = db_execute(connection, "DELETE FROM schedules")
+                result = session.execute(statement)
             else:
-                clauses = []
-                params = []
                 if semester is not None:
-                    clauses.append("semester = ?")
-                    params.append(semester)
+                    statement = statement.where(Schedule.semester == semester)
                 if year is not None:
-                    clauses.append("year = ?")
-                    params.append(year)
-                where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-                cursor = db_execute(connection, f"DELETE FROM schedules {where_sql}", tuple(params))
-            deleted_count = max(0, int(getattr(cursor, "rowcount", 0) or 0))
-            recompute_room_availability(connection)
-            connection.commit()
+                    statement = statement.where(Schedule.year == year)
+                result = session.execute(statement)
+            deleted_count = max(0, int(getattr(result, "rowcount", 0) or 0))
+            _recompute_room_availability(session)
+            session.commit()
 
     return {
         "success": True,

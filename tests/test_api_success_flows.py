@@ -296,7 +296,7 @@ def test_rop_import_preserves_existing_course_instructor(client, admin_auth_head
     assert course["instructor_name"] == teacher["name"]
 
 
-def test_rop_reimport_preserves_component_teacher(client, admin_auth_headers, backend_modules):
+def test_rop_reimport_preserves_component_teacher(client, admin_auth_headers, orm):
     teacher_response = client.post(
         "/api/teachers",
         headers=admin_auth_headers,
@@ -327,35 +327,22 @@ def test_rop_reimport_preserves_component_teacher(client, admin_auth_headers, ba
     assert course_response.status_code == 201
     course = course_response.json()
 
-    _app_module, db_module = backend_modules
-    with db_module.get_connection() as connection:
-        component_id = db_module.insert_and_get_id(
-            connection,
-            """
-            INSERT INTO course_components (
-                course_id, course_code, course_name, programme, study_year,
-                academic_period, semester, lesson_type, hours, weekly_classes,
-                requires_computers, teacher_id, teacher_name
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                course["id"],
-                course["code"],
-                course["name"],
-                course["programme"],
-                course["year"],
-                course["semester"],
-                course["semester"],
-                "lecture",
-                10,
-                1,
-                0,
-                teacher["id"],
-                teacher["name"],
-            ),
-        )
-        connection.commit()
+    component = orm.add(
+        "CourseComponent",
+        course_id=course["id"],
+        course_code=course["code"],
+        course_name=course["name"],
+        programme=course["programme"],
+        study_year=course["year"],
+        academic_period=course["semester"],
+        semester=course["semester"],
+        lesson_type="lecture",
+        hours=10,
+        weekly_classes=1,
+        requires_computers=0,
+        teacher_id=teacher["id"],
+        teacher_name=teacher["name"],
+    )
 
     first_response = client.post(
         "/api/import/rop",
@@ -371,337 +358,261 @@ def test_rop_reimport_preserves_component_teacher(client, admin_auth_headers, ba
     )
     assert second_response.status_code == 200
 
-    with db_module.get_connection() as connection:
-        components = db_module.query_all(
-            connection,
-            """
-            SELECT id, lesson_type, hours, teacher_id, teacher_name
-            FROM course_components
-            WHERE course_id = ?
-            ORDER BY lesson_type
-            """,
-            (course["id"],),
-        )
+    components = orm.list("CourseComponent", "lesson_type", course_id=course["id"])
 
-    lecture_components = [item for item in components if item["lesson_type"] == "lecture"]
+    lecture_components = [item for item in components if item.lesson_type == "lecture"]
     assert len(lecture_components) == 1
     lecture_component = lecture_components[0]
-    assert lecture_component["id"] == component_id
-    assert lecture_component["hours"] == 15
-    assert lecture_component["teacher_id"] == teacher["id"]
-    assert lecture_component["teacher_name"] == teacher["name"]
-    assert {item["lesson_type"] for item in components} == {"lecture", "practical", "practice", "srop"}
+    assert lecture_component.id == component.id
+    assert lecture_component.hours == 15
+    assert lecture_component.teacher_id == teacher["id"]
+    assert lecture_component.teacher_name == teacher["name"]
+    assert {item.lesson_type for item in components} == {"lecture", "practical", "practice", "srop"}
 
 
-def test_iup_import_fills_only_empty_teacher_assignments(backend_modules):
-    _app_module, db_module = backend_modules
+def test_iup_import_fills_only_empty_teacher_assignments(orm):
     imports_service = __import__("backend.app.imports.service", fromlist=["_store_iup_entries"])
 
-    with db_module.get_connection() as connection:
-        manual_teacher_id = db_module.insert_and_get_id(
-            connection,
-            """
-            INSERT INTO teachers (
-                name, email, password, token, avatar_data, phone, subject_taught, weekly_hours_limit, teaching_languages
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "Manual Teacher",
-                "manual.teacher@kazatu.edu.kz",
-                "",
-                "",
-                "",
-                "",
-                "CS",
-                20,
-                "ru,kk",
-            ),
+    manual_teacher = orm.add(
+        "Teacher",
+        name="Manual Teacher",
+        email="manual.teacher@kazatu.edu.kz",
+        password="",
+        token="",
+        avatar_data="",
+        phone="",
+        subject_taught="CS",
+        weekly_hours_limit=20,
+        teaching_languages="ru,kk",
+    )
+    empty_teacher = orm.add(
+        "Teacher",
+        name="Existing IUP Teacher",
+        email="existing.iup.teacher@kazatu.edu.kz",
+        password="",
+        token="",
+        avatar_data="",
+        phone="",
+        subject_taught="CS",
+        weekly_hours_limit=20,
+        teaching_languages="ru,kk",
+    )
+    manual_course = orm.add(
+        "Course",
+        name="Manual Course",
+        code="MAN 1001",
+        credits=5,
+        hours=150,
+        year=1,
+        semester=1,
+        department="B057 - Информационные технологии",
+        instructor_id=manual_teacher.id,
+        instructor_name="Manual Teacher",
+        programme="Бизнес-информатика",
+    )
+    empty_course = orm.add(
+        "Course",
+        name="Empty Course",
+        code="EMP 1001",
+        credits=5,
+        hours=150,
+        year=1,
+        semester=1,
+        department="B057 - Информационные технологии",
+        instructor_id=None,
+        instructor_name="",
+        programme="Бизнес-информатика",
+    )
+    for course, code, name, teacher_id, teacher_name in (
+        (manual_course, "MAN 1001", "Manual Course", manual_teacher.id, "Manual Teacher"),
+        (empty_course, "EMP 1001", "Empty Course", None, ""),
+    ):
+        orm.add(
+            "CourseComponent",
+            course_id=course.id,
+            course_code=code,
+            course_name=name,
+            programme="Бизнес-информатика",
+            study_year=1,
+            academic_period=1,
+            semester=1,
+            lesson_type="lecture",
+            hours=15,
+            weekly_classes=1,
+            requires_computers=0,
+            teacher_id=teacher_id,
+            teacher_name=teacher_name,
         )
-        empty_teacher_id = db_module.insert_and_get_id(
-            connection,
-            """
-            INSERT INTO teachers (
-                name, email, password, token, avatar_data, phone, subject_taught, weekly_hours_limit, teaching_languages
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "Existing IUP Teacher",
-                "existing.iup.teacher@kazatu.edu.kz",
-                "",
-                "",
-                "",
-                "",
-                "CS",
-                20,
-                "ru,kk",
-            ),
-        )
-        manual_course_id = db_module.insert_and_get_id(
-            connection,
-            """
-            INSERT INTO courses (
-                name, code, credits, hours, year, semester, department,
-                instructor_id, instructor_name, programme
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "Manual Course",
-                "MAN 1001",
-                5,
-                150,
-                1,
-                1,
-                "B057 - Информационные технологии",
-                manual_teacher_id,
-                "Manual Teacher",
-                "Бизнес-информатика",
-            ),
-        )
-        empty_course_id = db_module.insert_and_get_id(
-            connection,
-            """
-            INSERT INTO courses (
-                name, code, credits, hours, year, semester, department,
-                instructor_id, instructor_name, programme
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "Empty Course",
-                "EMP 1001",
-                5,
-                150,
-                1,
-                1,
-                "B057 - Информационные технологии",
-                None,
-                "",
-                "Бизнес-информатика",
-            ),
-        )
-        for course_id, code, name, teacher_id, teacher_name in (
-            (manual_course_id, "MAN 1001", "Manual Course", manual_teacher_id, "Manual Teacher"),
-            (empty_course_id, "EMP 1001", "Empty Course", None, ""),
-        ):
-            db_module.insert_and_get_id(
-                connection,
-                """
-                INSERT INTO course_components (
-                    course_id, course_code, course_name, programme, study_year,
-                    academic_period, semester, lesson_type, hours, weekly_classes,
-                    requires_computers, teacher_id, teacher_name
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    course_id,
-                    code,
-                    name,
-                    "Бизнес-информатика",
-                    1,
-                    1,
-                    1,
-                    "lecture",
-                    15,
-                    1,
-                    0,
-                    teacher_id,
-                    teacher_name,
-                ),
-            )
-        db_module.insert_and_get_id(
-            connection,
-            """
-            INSERT INTO sections (
-                course_id, course_name, group_name, classes_count, lesson_type,
-                teacher_id, teacher_name
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (manual_course_id, "Manual Course", "BI-24-01", 1, "lecture", manual_teacher_id, "Manual Teacher"),
-        )
-        db_module.insert_and_get_id(
-            connection,
-            """
-            INSERT INTO sections (
-                course_id, course_name, group_name, classes_count, lesson_type,
-                teacher_id, teacher_name
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (empty_course_id, "Empty Course", "BI-24-01", 1, "lecture", None, ""),
-        )
-        connection.commit()
+    orm.add(
+        "Section",
+        course_id=manual_course.id,
+        course_name="Manual Course",
+        group_name="BI-24-01",
+        classes_count=1,
+        lesson_type="lecture",
+        teacher_id=manual_teacher.id,
+        teacher_name="Manual Teacher",
+    )
+    orm.add(
+        "Section",
+        course_id=empty_course.id,
+        course_name="Empty Course",
+        group_name="BI-24-01",
+        classes_count=1,
+        lesson_type="lecture",
+        teacher_id=None,
+        teacher_name="",
+    )
 
-        parsed = {
-            "metadata": {
-                "fileName": "iup.pdf",
-                "groupName": "BI-24-01",
-                "programme": "Бизнес-информатика",
-                "language": "ru",
-                "academicYear": "2025-2026",
+    parsed = {
+        "metadata": {
+            "fileName": "iup.pdf",
+            "groupName": "BI-24-01",
+            "programme": "Бизнес-информатика",
+            "language": "ru",
+            "academicYear": "2025-2026",
+        },
+        "entries": [
+            {
+                "studyYear": 1,
+                "academicPeriod": 1,
+                "semester": 1,
+                "component": "ОК",
+                "courseCode": "MAN 1001",
+                "courseName": "Manual Course",
+                "credits": 5,
+                "lessonType": "lecture",
+                "teacherName": "Imported Teacher",
+                "hours": 15,
             },
-            "entries": [
-                {
-                    "studyYear": 1,
-                    "academicPeriod": 1,
-                    "semester": 1,
-                    "component": "ОК",
-                    "courseCode": "MAN 1001",
-                    "courseName": "Manual Course",
-                    "credits": 5,
-                    "lessonType": "lecture",
-                    "teacherName": "Imported Teacher",
-                    "hours": 15,
-                },
-                {
-                    "studyYear": 1,
-                    "academicPeriod": 1,
-                    "semester": 1,
-                    "component": "ОК",
-                    "courseCode": "EMP 1001",
-                    "courseName": "Empty Course",
-                    "credits": 5,
-                    "lessonType": "lecture",
-                    "teacherName": "Existing IUP Teacher",
-                    "hours": 15,
-                },
-            ],
-            "courses": [],
-        }
-        result = imports_service._store_iup_entries(connection, parsed)
-        connection.commit()
+            {
+                "studyYear": 1,
+                "academicPeriod": 1,
+                "semester": 1,
+                "component": "ОК",
+                "courseCode": "EMP 1001",
+                "courseName": "Empty Course",
+                "credits": 5,
+                "lessonType": "lecture",
+                "teacherName": "Existing IUP Teacher",
+                "hours": 15,
+            },
+        ],
+        "courses": [],
+    }
+    result = imports_service._store_iup_entries(None, parsed)
 
-        manual_course = db_module.query_one(connection, "SELECT instructor_id, instructor_name FROM courses WHERE id = ?", (manual_course_id,))
-        empty_course = db_module.query_one(connection, "SELECT instructor_id, instructor_name FROM courses WHERE id = ?", (empty_course_id,))
-        manual_component = db_module.query_one(connection, "SELECT teacher_id, teacher_name FROM course_components WHERE course_id = ?", (manual_course_id,))
-        empty_component = db_module.query_one(connection, "SELECT teacher_id, teacher_name FROM course_components WHERE course_id = ?", (empty_course_id,))
-        manual_section = db_module.query_one(connection, "SELECT teacher_id, teacher_name FROM sections WHERE course_id = ?", (manual_course_id,))
-        empty_section = db_module.query_one(connection, "SELECT teacher_id, teacher_name FROM sections WHERE course_id = ?", (empty_course_id,))
+    manual_course = orm.get("Course", manual_course.id)
+    empty_course = orm.get("Course", empty_course.id)
+    manual_component = orm.one("CourseComponent", course_id=manual_course.id, lesson_type="lecture")
+    empty_component = orm.one("CourseComponent", course_id=empty_course.id, lesson_type="lecture")
+    manual_section = orm.one("Section", course_id=manual_course.id, lesson_type="lecture")
+    empty_section = orm.one("Section", course_id=empty_course.id, lesson_type="lecture")
 
     assert result["coursesUpdated"] == 1
     assert result["componentsUpdated"] == 1
-    assert manual_course["instructor_id"] == manual_teacher_id
-    assert manual_course["instructor_name"] == "Manual Teacher"
-    assert manual_component["teacher_id"] == manual_teacher_id
-    assert manual_component["teacher_name"] == "Manual Teacher"
-    assert manual_section["teacher_id"] == manual_teacher_id
-    assert manual_section["teacher_name"] == "Manual Teacher"
-    assert empty_course["instructor_id"] == empty_teacher_id
-    assert empty_course["instructor_name"] == "Existing IUP Teacher"
-    assert empty_component["teacher_id"] == empty_teacher_id
-    assert empty_component["teacher_name"] == "Existing IUP Teacher"
-    assert empty_section["teacher_id"] == empty_teacher_id
-    assert empty_section["teacher_name"] == "Existing IUP Teacher"
+    assert manual_course.instructor_id == manual_teacher.id
+    assert manual_course.instructor_name == "Manual Teacher"
+    assert manual_component.teacher_id == manual_teacher.id
+    assert manual_component.teacher_name == "Manual Teacher"
+    assert manual_section.teacher_id == manual_teacher.id
+    assert manual_section.teacher_name == "Manual Teacher"
+    assert empty_course.instructor_id == empty_teacher.id
+    assert empty_course.instructor_name == "Existing IUP Teacher"
+    assert empty_component.teacher_id == empty_teacher.id
+    assert empty_component.teacher_name == "Existing IUP Teacher"
+    assert empty_section.teacher_id == empty_teacher.id
+    assert empty_section.teacher_name == "Existing IUP Teacher"
 
 
-def test_iup_section_regeneration_preserves_existing_teacher(backend_modules):
-    _app_module, db_module = backend_modules
+def test_iup_section_regeneration_preserves_existing_teacher(orm):
     generation_service = __import__("backend.app.sections.generation", fromlist=["_insert_or_update_section"])
 
-    with db_module.get_connection() as connection:
-        manual_teacher_id = db_module.insert_and_get_id(
-            connection,
-            """
-            INSERT INTO teachers (
-                name, email, password, token, avatar_data, phone, subject_taught, weekly_hours_limit, teaching_languages
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "Manual Section Teacher",
-                "manual.section.teacher@kazatu.edu.kz",
-                "",
-                "",
-                "",
-                "",
-                "CS",
-                20,
-                "ru,kk",
-            ),
-        )
-        imported_teacher_id = db_module.insert_and_get_id(
-            connection,
-            """
-            INSERT INTO teachers (
-                name, email, password, token, avatar_data, phone, subject_taught, weekly_hours_limit, teaching_languages
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "Imported Section Teacher",
-                "imported.section.teacher@kazatu.edu.kz",
-                "",
-                "",
-                "",
-                "",
-                "CS",
-                20,
-                "ru,kk",
-            ),
-        )
-        course_id = db_module.insert_and_get_id(
-            connection,
-            """
-            INSERT INTO courses (name, code, credits, hours, year, semester, department, programme)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            ("Section Course", "SEC 1001", 5, 150, 1, 1, "B057 - Информационные технологии", "Бизнес-информатика"),
-        )
-        group_id = db_module.insert_and_get_id(
-            connection,
-            """
-            INSERT INTO groups (name, student_count, has_subgroups, language, study_course)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            ("BI-24-99", 24, 0, "ru", 1),
-        )
-        section_id = db_module.insert_and_get_id(
-            connection,
-            """
-            INSERT INTO sections (
-                course_id, course_name, group_id, group_name, classes_count, lesson_type,
-                teacher_id, teacher_name
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (course_id, "Section Course", group_id, "BI-24-99", 1, "lecture", manual_teacher_id, "Manual Section Teacher"),
-        )
-        connection.commit()
+    manual_teacher = orm.add(
+        "Teacher",
+        name="Manual Section Teacher",
+        email="manual.section.teacher@kazatu.edu.kz",
+        password="",
+        token="",
+        avatar_data="",
+        phone="",
+        subject_taught="CS",
+        weekly_hours_limit=20,
+        teaching_languages="ru,kk",
+    )
+    imported_teacher = orm.add(
+        "Teacher",
+        name="Imported Section Teacher",
+        email="imported.section.teacher@kazatu.edu.kz",
+        password="",
+        token="",
+        avatar_data="",
+        phone="",
+        subject_taught="CS",
+        weekly_hours_limit=20,
+        teaching_languages="ru,kk",
+    )
+    course = orm.add(
+        "Course",
+        name="Section Course",
+        code="SEC 1001",
+        credits=5,
+        hours=150,
+        year=1,
+        semester=1,
+        department="B057 - Информационные технологии",
+        programme="Бизнес-информатика",
+    )
+    group = orm.add(
+        "Group",
+        name="BI-24-99",
+        student_count=24,
+        has_subgroups=0,
+        language="ru",
+        study_course=1,
+    )
+    existing_section = orm.add(
+        "Section",
+        course_id=course.id,
+        course_name="Section Course",
+        group_id=group.id,
+        group_name="BI-24-99",
+        classes_count=1,
+        lesson_type="lecture",
+        teacher_id=manual_teacher.id,
+        teacher_name="Manual Section Teacher",
+    )
 
-        updated_id, status = generation_service._insert_or_update_section(
-            connection,
-            {
-                "course_id": course_id,
-                "course_name": "Section Course",
-                "group_id": group_id,
-                "group_name": "BI-24-99",
-                "classes_count": 2,
-                "lesson_type": "lecture",
-                "subgroup_mode": "auto",
-                "subgroup_count": 1,
-                "requires_computers": 0,
-                "teacher_id": imported_teacher_id,
-                "teacher_name": "Imported Section Teacher",
-                "iup_entry_id": 10,
-                "source": "iup",
-                "match_method": "exact",
-            },
-        )
-        section = db_module.query_one(connection, "SELECT * FROM sections WHERE id = ?", (section_id,))
+    updated_id, status = generation_service._insert_or_update_section(
+        None,
+        {
+            "course_id": course.id,
+            "course_name": "Section Course",
+            "group_id": group.id,
+            "group_name": "BI-24-99",
+            "classes_count": 2,
+            "lesson_type": "lecture",
+            "subgroup_mode": "auto",
+            "subgroup_count": 1,
+            "requires_computers": 0,
+            "teacher_id": imported_teacher.id,
+            "teacher_name": "Imported Section Teacher",
+            "iup_entry_id": 10,
+            "source": "iup",
+            "match_method": "exact",
+        },
+    )
+    section = orm.get("Section", existing_section.id)
 
-    assert updated_id == section_id
+    assert updated_id == existing_section.id
     assert status == "updated"
-    assert section["classes_count"] == 2
-    assert section["teacher_id"] == manual_teacher_id
-    assert section["teacher_name"] == "Manual Section Teacher"
-    assert section["iup_entry_id"] == 10
+    assert section.classes_count == 2
+    assert section.teacher_id == manual_teacher.id
+    assert section.teacher_name == "Manual Section Teacher"
+    assert section.iup_entry_id == 10
 
 
-def test_section_uses_teacher_from_matching_course_component(client, admin_auth_headers, backend_modules):
+def test_section_uses_teacher_from_matching_course_component(client, admin_auth_headers, orm):
     lecture_teacher_response = client.post(
         "/api/teachers",
         headers=admin_auth_headers,
@@ -747,35 +658,22 @@ def test_section_uses_teacher_from_matching_course_component(client, admin_auth_
     assert course_response.status_code == 201
     course = course_response.json()
 
-    _app_module, db_module = backend_modules
-    with db_module.get_connection() as connection:
-        db_module.insert_and_get_id(
-            connection,
-            """
-            INSERT INTO course_components (
-                course_id, course_code, course_name, programme, study_year,
-                academic_period, semester, lesson_type, hours, weekly_classes,
-                requires_computers, teacher_id, teacher_name
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                course["id"],
-                course["code"],
-                course["name"],
-                course["programme"],
-                course["year"],
-                course["semester"],
-                course["semester"],
-                "practical",
-                30,
-                2,
-                1,
-                practical_teacher["id"],
-                practical_teacher["name"],
-            ),
-        )
-        connection.commit()
+    orm.add(
+        "CourseComponent",
+        course_id=course["id"],
+        course_code=course["code"],
+        course_name=course["name"],
+        programme=course["programme"],
+        study_year=course["year"],
+        academic_period=course["semester"],
+        semester=course["semester"],
+        lesson_type="practical",
+        hours=30,
+        weekly_classes=2,
+        requires_computers=1,
+        teacher_id=practical_teacher["id"],
+        teacher_name=practical_teacher["name"],
+    )
 
     group_response = client.post(
         "/api/groups",
@@ -896,7 +794,7 @@ def test_generate_sections_without_filters_uses_all_matching_data(client, admin_
     }
 
 
-def test_schedule_generation_success_flow_with_export(client, admin_auth_headers):
+def test_schedule_generation_success_flow_with_export(client, admin_auth_headers, orm):
     _seed_schedule_data(client, admin_auth_headers)
 
     generate_response = client.post(
@@ -911,6 +809,9 @@ def test_schedule_generation_success_flow_with_export(client, admin_auth_headers
     final_job = _wait_for_job_completion(client, admin_auth_headers, job_id)
     assert final_job["status"] == "completed"
     assert final_job["result"]["scheduleCount"] == 2
+    persisted_job = orm.get("ScheduleGenerationJob", job_id)
+    assert persisted_job.status == "completed"
+    assert '"scheduleCount": 2' in persisted_job.result
 
     schedules_response = client.get("/api/schedules", headers=admin_auth_headers)
     assert schedules_response.status_code == 200

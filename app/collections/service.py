@@ -1,193 +1,95 @@
-import re
-from copy import deepcopy
-from datetime import date
 from math import ceil
 
-from ..core.config import DB_ENGINE, TEACHER_EMAIL_DOMAIN
-from ..core.db import db_execute, insert_and_get_id, query_all, query_one
+from sqlalchemy import delete, func, or_, select, update
+
+from ..core.orm import SessionLocal
+from ..models import (
+    Course,
+    CourseComponent,
+    Group,
+    IupEntry,
+    Notification,
+    Room,
+    RoomBlock,
+    Schedule,
+    Section,
+    Student,
+    Teacher,
+    TeacherPreferenceRequest,
+    User,
+)
 from ..programmes.education import (
     get_home_room_programmes,
     resolve_education_group_value,
     room_matches_home_programmes,
 )
 from ..core.errors import ApiError
-from ..sections.lesson_rules import requires_computers_for_component
 from ..notifications.service import create_schedule_change_notifications
 from ..programmes.utils import same_programme
 from ..rooms.availability import (
-    get_room_blocked_slots,
     normalize_room_block_day,
     recompute_room_availability,
 )
 from ..teachers.utils import build_teacher_name_signature, normalize_teacher_name
-
-LESSON_TYPE_ALIASES = {
-    "lecture": "lecture",
-    "лекция": "lecture",
-    "дәріс": "lecture",
-    "practical": "practical",
-    "practice": "practical",
-    "practical lesson": "practical",
-    "практика": "practical",
-    "практический": "practical",
-    "практикалық": "practical",
-    "lab": "lab",
-    "laboratory": "lab",
-    "лаборатория": "lab",
-    "зертхана": "lab",
-    "seminar": "seminar",
-    "семинар": "seminar",
-}
-
-GROUP_SUBGROUPS_AGGREGATE_SQL = (
-    """
-    COALESCE(
-        (
-            SELECT string_agg(subgroup_value, ',' ORDER BY subgroup_value)
-            FROM (
-                SELECT DISTINCT upper(trim(s.subgroup)) AS subgroup_value
-                FROM schedules s
-                WHERE s.group_id = g.id
-                  AND trim(coalesce(s.subgroup, '')) <> ''
-            ) subgroup_values
-        ),
-        ''
-    ) AS generated_subgroups
-    """
-    if DB_ENGINE == "postgres"
-    else
-    """
-    COALESCE(
-        (
-            SELECT group_concat(subgroup_value, ',')
-            FROM (
-                SELECT DISTINCT upper(trim(s.subgroup)) AS subgroup_value
-                FROM schedules s
-                WHERE s.group_id = g.id
-                  AND trim(coalesce(s.subgroup, '')) <> ''
-                ORDER BY subgroup_value
-            )
-        ),
-        ''
-    ) AS generated_subgroups
-    """
+from .normalization import (
+    MIN_COMPUTER_COUNT,
+    infer_group_entry_year,
+    infer_study_course,
+    is_physical_education_course,
+    is_physical_education_room,
+    normalize_language,
+    normalize_lesson_type,
+    normalize_number_fields,
+    normalize_programme,
+    normalize_room_block_interval,
+    normalize_room_type,
+    normalize_specialty,
+    normalize_subgroup,
+    normalize_subgroup_mode,
+    normalize_teaching_languages,
+    positive_int,
+    schedule_room_type_matches,
+    section_requires_computers,
+    validate_teacher_email,
 )
-
-SPECIALTY_PROGRAMME_ALIASES = {
-    "би": "Бизнес-информатика",
-    "бизи": "Бизнес-информатика",
-    "ки": "Компьютерная инженерия",
-    "ки сопр": "Компьютерная инженерия (СОПР)",
-    "сопр": "Компьютерная инженерия (СОПР)",
-}
-MIN_COMPUTER_COUNT = 10
-PHYSICAL_EDUCATION_ROOM_NUMBER = "орленок"
-
-
-def normalize_number_fields(payload, fields):
-    normalized = deepcopy(payload)
-    for field in fields:
-        if field in normalized and normalized[field] not in ("", None):
-            try:
-                normalized[field] = int(normalized[field])
-            except (TypeError, ValueError):
-                pass
-    return normalized
-
-
-def positive_int(value, default=1):
-    try:
-        return max(1, int(value))
-    except (TypeError, ValueError):
-        return default
-
-
-def normalize_room_block_interval(payload):
-    normalized = normalize_number_fields(payload, ["room_id", "start_hour", "end_hour", "semester", "year"])
-    day = str(normalized.get("day") or "").strip()
-    start_hour = normalized.get("start_hour")
-    end_hour = normalized.get("end_hour")
-    if not normalized.get("room_id") or not day or start_hour in (None, ""):
-        raise ApiError(400, "fill_required_fields", "Заполните поля: room_id, day, start_hour")
-    if end_hour in (None, ""):
-        end_hour = int(start_hour) + 1
-    if int(end_hour) <= int(start_hour):
-        raise ApiError(400, "bad_request", "В блокировке аудитории end_hour должен быть больше start_hour")
-    normalized["day"] = day
-    normalized["start_hour"] = int(start_hour)
-    normalized["end_hour"] = int(end_hour)
-    return normalized
-
-
-def normalize_lesson_type(value):
-    if value in (None, ""):
-        return "lecture"
-    normalized = str(value).strip().lower().replace("_", " ")
-    compact = normalized.replace(" ", "_")
-    return LESSON_TYPE_ALIASES.get(compact, LESSON_TYPE_ALIASES.get(normalized, str(value).strip().lower()))
-
-
-def normalize_subgroup_mode(value, lesson_type="lecture"):
-    if lesson_type == "lecture":
-        return "none"
-    normalized = str(value or "auto").strip().lower()
-    return normalized if normalized in {"none", "auto", "forced"} else "auto"
-
-
-def section_requires_computers(lesson_type, course_code="", course_name="", study_year=None):
-    return 1 if requires_computers_for_component(lesson_type, course_code, course_name, study_year) else 0
-
-
-def is_physical_education_course(course_name="", course_code=""):
-    text = f"{course_name or ''} {course_code or ''}".strip().lower()
-    return (
-        "физическая культура" in text
-        or "дене шынықтыру" in text
-        or "fk " in f"{text} "
-    )
-
-
-def is_physical_education_room(room_number):
-    return PHYSICAL_EDUCATION_ROOM_NUMBER in str(room_number or "").strip().lower()
 
 
 def _teacher_disciplines_map(connection):
-    rows = query_all(
-        connection,
-        """
-        SELECT teacher_id, discipline_name
-        FROM (
-            SELECT teacher_id, course_name AS discipline_name
-            FROM course_components
-            WHERE teacher_id IS NOT NULL
-              AND trim(coalesce(course_name, '')) <> ''
-
-            UNION
-
-            SELECT instructor_id AS teacher_id, name AS discipline_name
-            FROM courses
-            WHERE instructor_id IS NOT NULL
-              AND trim(coalesce(name, '')) <> ''
-
-            UNION
-
-            SELECT teacher_id, course_name AS discipline_name
-            FROM sections
-            WHERE teacher_id IS NOT NULL
-              AND trim(coalesce(course_name, '')) <> ''
-        ) assigned
-        ORDER BY teacher_id, discipline_name
-        """,
-    )
     disciplines_by_teacher = {}
-    for row in rows:
-        teacher_id = row.get("teacher_id")
-        discipline_name = str(row.get("discipline_name") or "").strip()
-        if not teacher_id or not discipline_name:
-            continue
-        disciplines = disciplines_by_teacher.setdefault(teacher_id, [])
-        if discipline_name not in disciplines:
-            disciplines.append(discipline_name)
+    with SessionLocal() as session:
+        sources = [
+            session.execute(
+                select(CourseComponent.teacher_id, CourseComponent.course_name)
+                .where(
+                    CourseComponent.teacher_id.is_not(None),
+                    func.trim(func.coalesce(CourseComponent.course_name, "")) != "",
+                )
+            ).all(),
+            session.execute(
+                select(Course.instructor_id, Course.name)
+                .where(
+                    Course.instructor_id.is_not(None),
+                    func.trim(func.coalesce(Course.name, "")) != "",
+                )
+            ).all(),
+            session.execute(
+                select(Section.teacher_id, Section.course_name)
+                .where(
+                    Section.teacher_id.is_not(None),
+                    func.trim(func.coalesce(Section.course_name, "")) != "",
+                )
+            ).all(),
+        ]
+    for rows in sources:
+        for teacher_id, discipline_name in rows:
+            discipline_name = str(discipline_name or "").strip()
+            if not teacher_id or not discipline_name:
+                continue
+            disciplines = disciplines_by_teacher.setdefault(teacher_id, [])
+            if discipline_name not in disciplines:
+                disciplines.append(discipline_name)
+    for disciplines in disciplines_by_teacher.values():
+        disciplines.sort()
     return disciplines_by_teacher
 
 
@@ -201,44 +103,51 @@ def _serialize_teacher(row, disciplines_by_teacher=None):
     }
 
 
-def resolve_section_teacher(connection, course_id, lesson_type, payload):
+def _resolve_section_teacher_in_session(session, course_id, lesson_type, payload):
     teacher_id = payload.get("teacher_id")
     teacher_name = payload.get("teacher_name", "")
 
     if teacher_id:
-        teacher = query_one(
-            connection,
-            "SELECT id, name FROM teachers WHERE id = ?",
-            (teacher_id,),
-        )
+        teacher = session.get(Teacher, int(teacher_id))
         if teacher:
-            return teacher["id"], teacher["name"]
+            return teacher.id, teacher.name
 
-    component_teacher = query_one(
-        connection,
-        """
-        SELECT teacher_id, teacher_name
-        FROM course_components
-        WHERE course_id = ?
-          AND lesson_type = ?
-          AND teacher_id IS NOT NULL
-        ORDER BY academic_period, id
-        LIMIT 1
-        """,
-        (course_id, lesson_type),
-    )
+    component_teacher = session.execute(
+        select(
+            CourseComponent.teacher_id.label("teacher_id"),
+            CourseComponent.teacher_name.label("teacher_name"),
+        )
+        .where(
+            CourseComponent.course_id == course_id,
+            CourseComponent.lesson_type == lesson_type,
+            CourseComponent.teacher_id.is_not(None),
+        )
+        .order_by(CourseComponent.academic_period, CourseComponent.id)
+        .limit(1)
+    ).mappings().first()
     if component_teacher:
         return component_teacher["teacher_id"], component_teacher.get("teacher_name", "")
 
-    course_teacher = query_one(
-        connection,
-        "SELECT instructor_id, instructor_name FROM courses WHERE id = ?",
-        (course_id,),
-    )
+    course_teacher = session.execute(
+        select(
+            Course.instructor_id.label("instructor_id"),
+            Course.instructor_name.label("instructor_name"),
+        ).where(Course.id == course_id)
+    ).mappings().first()
     if course_teacher:
         return course_teacher.get("instructor_id"), course_teacher.get("instructor_name", "")
 
     return None, teacher_name
+
+
+def resolve_section_teacher(connection, course_id, lesson_type, payload):
+    with SessionLocal() as session:
+        return _resolve_section_teacher_in_session(
+            session,
+            course_id,
+            lesson_type,
+            payload,
+        )
 
 
 def _same_programme(left, right):
@@ -260,168 +169,157 @@ def generate_sections_from_components(connection, payload):
 
     semester = int(semester) if semester else None
     study_course = int(study_course) if study_course else None
-    all_groups = query_all(
-        connection,
-        """
-        SELECT id, name, programme, specialty_code, study_course
-        FROM groups
-        WHERE programme IS NOT NULL
-          AND programme != ''
-          AND study_course IS NOT NULL
-        ORDER BY study_course, programme, name
-        """,
-    )
-    groups = [
-        group
-        for group in all_groups
-        if (not study_course or int(group.get("study_course") or 0) == study_course)
-        and (
-            not programme
-            or _same_education_group(group.get("programme"), group.get("specialty_code"), programme, "")
-        )
-    ]
-    component_clauses = ["cc.lesson_type IN ('lecture', 'practical', 'lab')"]
-    component_params = []
-    if semester:
-        component_clauses.append("cc.academic_period = ?")
-        component_params.append(semester)
-    if study_course:
-        component_clauses.append("c.year = ?")
-        component_params.append(study_course)
-    where_sql = " AND ".join(component_clauses)
-    components = [
-        component
-        for component in query_all(
-            connection,
-            f"""
-            SELECT
-                cc.course_id,
-                cc.course_name,
-                cc.lesson_type,
-                cc.weekly_classes,
-                cc.requires_computers,
-                c.programme,
-                c.year,
-                c.semester
-            FROM course_components cc
-            JOIN courses c ON c.id = cc.course_id
-            WHERE {where_sql}
-            ORDER BY c.year, c.programme, c.name, cc.lesson_type
-            """,
-            tuple(component_params),
-        )
-        if (not programme or _same_education_group(component.get("programme"), "", programme, ""))
-    ]
-
-    if not groups or not components:
-        return {
-            "inserted": 0,
-            "updated": 0,
-            "skipped": 0,
-            "missing": {
-                "groups": len(groups) == 0,
-                "components": len(components) == 0,
-            },
-            "sections": [],
-        }
-
-    inserted = 0
-    updated = 0
-    generated_sections = []
-    for component in components:
-        matching_groups = [
-            group
-            for group in groups
-            if _same_education_group(
-                group.get("programme"),
-                group.get("specialty_code"),
-                component.get("programme"),
-                "",
-            )
-            and int(group.get("study_course") or 0) == int(component.get("year") or 0)
+    with SessionLocal() as session:
+        all_groups = [
+            dict(row)
+            for row in session.execute(
+                select(
+                    Group.id.label("id"),
+                    Group.name.label("name"),
+                    Group.programme.label("programme"),
+                    Group.specialty_code.label("specialty_code"),
+                    Group.study_course.label("study_course"),
+                )
+                .where(
+                    Group.programme.is_not(None),
+                    Group.programme != "",
+                    Group.study_course.is_not(None),
+                )
+                .order_by(Group.study_course, Group.programme, Group.name)
+            ).mappings().all()
         ]
-        for group in matching_groups:
-            lesson_type = normalize_lesson_type(component["lesson_type"])
-            classes_count = positive_int(component.get("weekly_classes"), 1)
-            subgroup_mode = normalize_subgroup_mode("none" if lesson_type == "lecture" else "auto", lesson_type)
-            subgroup_count = 1
-            requires_computers = 1 if component.get("requires_computers") else 0
-            teacher_id, teacher_name = resolve_section_teacher(
-                connection,
-                component["course_id"],
-                lesson_type,
-                {},
+        groups = [
+            group
+            for group in all_groups
+            if (not study_course or int(group.get("study_course") or 0) == study_course)
+            and (
+                not programme
+                or _same_education_group(group.get("programme"), group.get("specialty_code"), programme, "")
             )
-            existing = query_one(
-                connection,
-                """
-                SELECT id
-                FROM sections
-                WHERE course_id = ?
-                  AND group_id = ?
-                  AND lesson_type = ?
-                LIMIT 1
-                """,
-                (component["course_id"], group["id"], lesson_type),
-            )
-            params = (
-                component["course_id"],
-                component["course_name"],
-                group["id"],
-                group["name"],
-                classes_count,
-                lesson_type,
-                subgroup_mode,
-                subgroup_count,
-                requires_computers,
-                teacher_id,
-                teacher_name or "",
-            )
+        ]
 
-            if existing:
-                db_execute(
-                    connection,
-                    """
-                    UPDATE sections
-                    SET course_id = ?, course_name = ?, group_id = ?, group_name = ?,
-                        classes_count = ?, lesson_type = ?, subgroup_mode = ?, subgroup_count = ?,
-                        requires_computers = ?, teacher_id = ?, teacher_name = ?
-                    WHERE id = ?
-                    """,
-                    (*params, existing["id"]),
+        component_filters = [CourseComponent.lesson_type.in_(("lecture", "practical", "lab"))]
+        if semester:
+            component_filters.append(CourseComponent.academic_period == semester)
+        if study_course:
+            component_filters.append(Course.year == study_course)
+        components = [
+            dict(row)
+            for row in session.execute(
+                select(
+                    CourseComponent.course_id.label("course_id"),
+                    CourseComponent.course_name.label("course_name"),
+                    CourseComponent.lesson_type.label("lesson_type"),
+                    CourseComponent.weekly_classes.label("weekly_classes"),
+                    CourseComponent.requires_computers.label("requires_computers"),
+                    Course.programme.label("programme"),
+                    Course.year.label("year"),
+                    Course.semester.label("semester"),
                 )
-                section_id = existing["id"]
-                updated += 1
-            else:
-                section_id = insert_and_get_id(
-                    connection,
-                    """
-                    INSERT INTO sections (
-                        course_id, course_name, group_id, group_name, classes_count,
-                        lesson_type, subgroup_mode, subgroup_count, requires_computers,
-                        teacher_id, teacher_name
+                .join(Course, Course.id == CourseComponent.course_id)
+                .where(*component_filters)
+                .order_by(Course.year, Course.programme, Course.name, CourseComponent.lesson_type)
+            ).mappings().all()
+            if (not programme or _same_education_group(row.get("programme"), "", programme, ""))
+        ]
+
+        if not groups or not components:
+            return {
+                "inserted": 0,
+                "updated": 0,
+                "skipped": 0,
+                "missing": {
+                    "groups": len(groups) == 0,
+                    "components": len(components) == 0,
+                },
+                "sections": [],
+            }
+
+        inserted = 0
+        updated = 0
+        generated_sections = []
+        for component in components:
+            matching_groups = [
+                group
+                for group in groups
+                if _same_education_group(
+                    group.get("programme"),
+                    group.get("specialty_code"),
+                    component.get("programme"),
+                    "",
+                )
+                and int(group.get("study_course") or 0) == int(component.get("year") or 0)
+            ]
+            for group in matching_groups:
+                lesson_type = normalize_lesson_type(component["lesson_type"])
+                classes_count = positive_int(component.get("weekly_classes"), 1)
+                subgroup_mode = normalize_subgroup_mode("none" if lesson_type == "lecture" else "auto", lesson_type)
+                subgroup_count = 1
+                requires_computers = 1 if component.get("requires_computers") else 0
+                teacher_id, teacher_name = _resolve_section_teacher_in_session(
+                    session,
+                    component["course_id"],
+                    lesson_type,
+                    {},
+                )
+                existing = session.scalar(
+                    select(Section)
+                    .where(
+                        Section.course_id == component["course_id"],
+                        Section.group_id == group["id"],
+                        Section.lesson_type == lesson_type,
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    params,
+                    .limit(1)
                 )
-                inserted += 1
 
-            generated_sections.append(
-                {
-                    "id": section_id,
-                    "course_id": component["course_id"],
-                    "course_name": component["course_name"],
-                    "group_id": group["id"],
-                    "group_name": group["name"],
-                    "classes_count": classes_count,
-                    "lesson_type": lesson_type,
-                    "teacher_id": teacher_id,
-                    "teacher_name": teacher_name or "",
-                }
-            )
+                if existing:
+                    existing.course_id = component["course_id"]
+                    existing.course_name = component["course_name"]
+                    existing.group_id = group["id"]
+                    existing.group_name = group["name"]
+                    existing.classes_count = classes_count
+                    existing.lesson_type = lesson_type
+                    existing.subgroup_mode = subgroup_mode
+                    existing.subgroup_count = subgroup_count
+                    existing.requires_computers = requires_computers
+                    existing.teacher_id = teacher_id
+                    existing.teacher_name = teacher_name or ""
+                    section_id = existing.id
+                    updated += 1
+                else:
+                    row = Section(
+                        course_id=component["course_id"],
+                        course_name=component["course_name"],
+                        group_id=group["id"],
+                        group_name=group["name"],
+                        classes_count=classes_count,
+                        lesson_type=lesson_type,
+                        subgroup_mode=subgroup_mode,
+                        subgroup_count=subgroup_count,
+                        requires_computers=requires_computers,
+                        teacher_id=teacher_id,
+                        teacher_name=teacher_name or "",
+                    )
+                    session.add(row)
+                    session.flush()
+                    section_id = row.id
+                    inserted += 1
 
-    connection.commit()
+                generated_sections.append(
+                    {
+                        "id": section_id,
+                        "course_id": component["course_id"],
+                        "course_name": component["course_name"],
+                        "group_id": group["id"],
+                        "group_name": group["name"],
+                        "classes_count": classes_count,
+                        "lesson_type": lesson_type,
+                        "teacher_id": teacher_id,
+                        "teacher_name": teacher_name or "",
+                    }
+                )
+
+        session.commit()
     return {
         "inserted": inserted,
         "updated": updated,
@@ -431,79 +329,39 @@ def generate_sections_from_components(connection, payload):
     }
 
 
-def validate_teacher_email(email):
-    normalized_email = (email or "").strip().lower()
-    if not normalized_email.endswith(TEACHER_EMAIL_DOMAIN):
-        raise ApiError(
-            400,
-            "teacher_email_domain_required",
-            "Для преподавателя нужен email, оканчивающийся на @kazatu.edu.kz",
-        )
-
-
-def normalize_language(value, default="ru"):
-    normalized = str(value or "").strip().lower()
-    return normalized if normalized in {"ru", "kk"} else default
-
-
-def normalize_teaching_languages(value):
-    raw_values = value.split(",") if isinstance(value, str) else (value or [])
-    result = []
-    for raw in raw_values:
-        normalized = normalize_language(raw, "")
-        if normalized and normalized not in result:
-            result.append(normalized)
-    return result or ["ru", "kk"]
-
-
-def normalize_specialty(value):
-    normalized = re.sub(r"\s+", " ", str(value or "").strip().lower())
-    return normalized.upper() if normalized else ""
-
-
-def normalize_programme(value):
-    normalized = re.sub(r"\s+", " ", str(value or "").strip().lower())
-    return SPECIALTY_PROGRAMME_ALIASES.get(normalized, str(value or "").strip())
-
-
-def infer_group_entry_year(group_name):
-    match = re.search(r"\b05-057-(\d{2})-", str(group_name or ""))
-    if not match:
-        return None
-    year_suffix = int(match.group(1))
-    return 2000 + year_suffix
-
-
-def current_academic_year_start():
-    today = date.today()
-    return today.year if today.month >= 9 else today.year - 1
-
-
-def infer_study_course(entry_year):
-    if not entry_year:
-        return None
-    return max(1, current_academic_year_start() - int(entry_year) + 1)
-
-
-def normalize_subgroup(value):
-    normalized = str(value or "").strip().upper()
-    return normalized if normalized in {"A", "B"} else ""
-
-
-def normalize_room_type(value):
-    return str(value or "").strip().lower()
-
-
-def schedule_room_type_matches(room_type, lesson_type, requires_computers=False):
-    normalized_room_type = normalize_room_type(room_type)
-    normalized_lesson_type = normalize_lesson_type(lesson_type)
-    if normalized_lesson_type == "lecture":
-        return normalized_room_type == "lecture"
-    if normalized_lesson_type == "practical":
-        return normalized_room_type in {"practical", "lecture"}
-    if normalized_lesson_type == "lab":
-        return normalized_room_type == "practical"
-    return normalized_room_type == "practical"
+def _room_blocked_slots_from_session(session, semester=None, year=None):
+    conditions = []
+    if semester is not None:
+        conditions.append(or_(RoomBlock.semester == semester, RoomBlock.semester.is_(None)))
+    if year is not None:
+        conditions.append(or_(RoomBlock.year == year, RoomBlock.year.is_(None)))
+    statement = select(
+        RoomBlock.room_id.label("room_id"),
+        RoomBlock.day.label("day"),
+        RoomBlock.start_hour.label("start_hour"),
+        RoomBlock.end_hour.label("end_hour"),
+    )
+    if conditions:
+        statement = statement.where(*conditions)
+    rows = session.execute(
+        statement.order_by(RoomBlock.room_id, RoomBlock.day, RoomBlock.start_hour)
+    ).mappings().all()
+    blocked_by_room = {}
+    for row in rows:
+        room_id = row.get("room_id")
+        day = normalize_room_block_day(row.get("day"))
+        start_hour = row.get("start_hour")
+        end_hour = row.get("end_hour")
+        if not room_id or not day or start_hour in (None, ""):
+            continue
+        start_value = int(start_hour)
+        end_value = int(end_hour) if end_hour not in (None, "") else start_value + 1
+        if end_value <= start_value:
+            end_value = start_value + 1
+        room_slots = blocked_by_room.setdefault(room_id, set())
+        for hour in range(start_value, end_value):
+            room_slots.add((day, hour))
+    return blocked_by_room
 
 
 def schedule_student_count_for_room(section, group, subgroup):
@@ -544,18 +402,25 @@ def _room_candidate_score(room, schedule_row):
     return score
 
 
-def _find_alternative_room_for_schedule(connection, schedule_row, blocked_slots_by_room=None, excluded_room_ids=None):
+def _find_alternative_room_for_schedule(session, schedule_row, blocked_slots_by_room=None, excluded_room_ids=None):
     blocked_slots_by_room = blocked_slots_by_room or {}
     excluded_room_ids = set(excluded_room_ids or [])
-    rooms = query_all(
-        connection,
-        """
-        SELECT id, number, capacity, type, available, computer_count, programme
-        FROM rooms
-        WHERE coalesce(available, 1) = 1
-        ORDER BY id
-        """,
-    )
+    rooms = [
+        dict(row)
+        for row in session.execute(
+            select(
+                Room.id.label("id"),
+                Room.number.label("number"),
+                Room.capacity.label("capacity"),
+                Room.type.label("type"),
+                Room.available.label("available"),
+                Room.computer_count.label("computer_count"),
+                Room.programme.label("programme"),
+            )
+            .where(func.coalesce(Room.available, 1) == 1)
+            .order_by(Room.id)
+        ).mappings().all()
+    ]
     normalized_day = normalize_room_block_day(schedule_row.get("day"))
     lesson_type = normalize_lesson_type(schedule_row.get("lesson_type"))
     requires_computers = bool(schedule_row.get("requires_computers")) or lesson_type == "lab"
@@ -574,15 +439,15 @@ def _find_alternative_room_for_schedule(connection, schedule_row, blocked_slots_
             continue
         if requires_computers and int(room.get("computer_count") or 0) < MIN_COMPUTER_COUNT:
             continue
-        if query_one(
-            connection,
-            """
-            SELECT id
-            FROM schedules
-            WHERE room_id = ? AND day = ? AND start_hour = ? AND id <> ?
-            LIMIT 1
-            """,
-            (room["id"], schedule_row.get("day"), schedule_row.get("start_hour"), schedule_row["id"]),
+        if session.scalar(
+            select(Schedule.id)
+            .where(
+                Schedule.room_id == room["id"],
+                Schedule.day == schedule_row.get("day"),
+                Schedule.start_hour == schedule_row.get("start_hour"),
+                Schedule.id != schedule_row["id"],
+            )
+            .limit(1)
         ):
             continue
         if (normalized_day, int(schedule_row.get("start_hour") or 0)) in blocked_slots_by_room.get(room["id"], set()):
@@ -595,134 +460,127 @@ def _find_alternative_room_for_schedule(connection, schedule_row, blocked_slots_
 
 
 def _relocate_conflicting_room_schedules(connection, room_block, exclude_block_id=None):
-    blocked_slots_by_room = get_room_blocked_slots(connection, room_block.get("semester"), room_block.get("year"))
-    conflicting_schedules = [
-        row
-        for row in query_all(
-            connection,
-            """
-            SELECT
-                sc.id,
-                sc.section_id,
-                sc.course_id,
-                sc.course_name,
-                sc.teacher_id,
-                sc.teacher_name,
-                sc.room_id,
-                sc.room_number,
-                sc.room_programme,
-                sc.room_programme_mismatch,
-                sc.day,
-                sc.start_hour,
-                sc.semester,
-                sc.year,
-                sc.group_id,
-                sc.group_name,
-                sc.subgroup,
-                sec.lesson_type,
-                sec.subgroup_count,
-                sec.requires_computers,
-                c.code AS course_code,
-                grp.student_count,
-                grp.has_subgroups,
-                grp.programme AS group_programme,
-                grp.specialty_code
-            FROM schedules sc
-            JOIN sections sec ON sec.id = sc.section_id
-            JOIN courses c ON c.id = sc.course_id
-            JOIN groups grp ON grp.id = sc.group_id
-            WHERE sc.room_id = ?
-            """,
-            (room_block.get("room_id"),),
-        )
-        if (room_block.get("semester") in (None, "") or row.get("semester") == room_block.get("semester"))
-        and (room_block.get("year") in (None, "") or row.get("year") == room_block.get("year"))
-        and normalize_room_block_day(row.get("day")) == normalize_room_block_day(room_block.get("day"))
-        and int(room_block.get("start_hour") or 0) <= int(row.get("start_hour") or 0) < int(room_block.get("end_hour") or 0)
-    ]
     relocated = []
-    for schedule_row in conflicting_schedules:
-        schedule_row["effective_student_count"] = schedule_student_count_for_room(
-            schedule_row,
-            schedule_row,
-            normalize_subgroup(schedule_row.get("subgroup")),
+    notification_pairs = []
+    with SessionLocal() as session:
+        blocked_slots_by_room = _room_blocked_slots_from_session(
+            session,
+            room_block.get("semester"),
+            room_block.get("year"),
         )
-        alternative_room = _find_alternative_room_for_schedule(
-            connection,
-            schedule_row,
-            blocked_slots_by_room=blocked_slots_by_room,
-            excluded_room_ids={room_block.get("room_id")},
-        )
-        if alternative_room is None:
-            raise ApiError(
-                400,
-                "bad_request",
-                "Не удалось перенести одно из конфликтующих занятий в другую аудиторию.",
-                details={
+        schedule_rows = [
+            dict(row)
+            for row in session.execute(
+                select(
+                    Schedule.id.label("id"),
+                    Schedule.section_id.label("section_id"),
+                    Schedule.course_id.label("course_id"),
+                    Schedule.course_name.label("course_name"),
+                    Schedule.teacher_id.label("teacher_id"),
+                    Schedule.teacher_name.label("teacher_name"),
+                    Schedule.room_id.label("room_id"),
+                    Schedule.room_number.label("room_number"),
+                    Schedule.room_programme.label("room_programme"),
+                    Schedule.room_programme_mismatch.label("room_programme_mismatch"),
+                    Schedule.day.label("day"),
+                    Schedule.start_hour.label("start_hour"),
+                    Schedule.semester.label("semester"),
+                    Schedule.year.label("year"),
+                    Schedule.group_id.label("group_id"),
+                    Schedule.group_name.label("group_name"),
+                    Schedule.subgroup.label("subgroup"),
+                    Section.lesson_type.label("lesson_type"),
+                    Section.subgroup_count.label("subgroup_count"),
+                    Section.requires_computers.label("requires_computers"),
+                    Course.code.label("course_code"),
+                    Group.student_count.label("student_count"),
+                    Group.has_subgroups.label("has_subgroups"),
+                    Group.programme.label("group_programme"),
+                    Group.specialty_code.label("specialty_code"),
+                )
+                .join(Section, Section.id == Schedule.section_id)
+                .join(Course, Course.id == Schedule.course_id)
+                .join(Group, Group.id == Schedule.group_id)
+                .where(Schedule.room_id == room_block.get("room_id"))
+            ).mappings().all()
+        ]
+        conflicting_schedules = [
+            row
+            for row in schedule_rows
+            if (room_block.get("semester") in (None, "") or row.get("semester") == room_block.get("semester"))
+            and (room_block.get("year") in (None, "") or row.get("year") == room_block.get("year"))
+            and normalize_room_block_day(row.get("day")) == normalize_room_block_day(room_block.get("day"))
+            and int(room_block.get("start_hour") or 0) <= int(row.get("start_hour") or 0) < int(room_block.get("end_hour") or 0)
+        ]
+        for schedule_row in conflicting_schedules:
+            schedule_row["effective_student_count"] = schedule_student_count_for_room(
+                schedule_row,
+                schedule_row,
+                normalize_subgroup(schedule_row.get("subgroup")),
+            )
+            alternative_room = _find_alternative_room_for_schedule(
+                session,
+                schedule_row,
+                blocked_slots_by_room=blocked_slots_by_room,
+                excluded_room_ids={room_block.get("room_id")},
+            )
+            if alternative_room is None:
+                raise ApiError(
+                    400,
+                    "bad_request",
+                    "Не удалось перенести одно из конфликтующих занятий в другую аудиторию.",
+                    details={
+                        "scheduleId": schedule_row["id"],
+                        "groupName": schedule_row.get("group_name"),
+                        "day": schedule_row.get("day"),
+                        "startHour": schedule_row.get("start_hour"),
+                    },
+                )
+            room_programme, room_programme_mismatch = _resolve_schedule_room_programme_meta_in_session(
+                session,
+                schedule_row["section_id"],
+                alternative_room["id"],
+            )
+            row = session.get(Schedule, schedule_row["id"])
+            row.room_id = alternative_room["id"]
+            row.room_number = alternative_room.get("number", "")
+            row.room_programme = room_programme
+            row.room_programme_mismatch = room_programme_mismatch
+            row.relocated_from_room_number = schedule_row.get("room_number", "")
+            row.relocation_reason = room_block.get("reason", "") or "room_block"
+            before_schedule = {
+                **schedule_row,
+                "room_programme": schedule_row.get("room_programme", ""),
+                "room_programme_mismatch": schedule_row.get("room_programme_mismatch", 0),
+                "relocated_from_room_number": "",
+                "relocation_reason": "",
+            }
+            after_schedule = {
+                **before_schedule,
+                "room_id": alternative_room["id"],
+                "room_number": alternative_room.get("number", ""),
+                "room_programme": room_programme,
+                "room_programme_mismatch": room_programme_mismatch,
+                "relocated_from_room_number": schedule_row.get("room_number", ""),
+                "relocation_reason": room_block.get("reason", "") or "room_block",
+            }
+            notification_pairs.append((before_schedule, after_schedule))
+            relocated.append(
+                {
                     "scheduleId": schedule_row["id"],
-                    "groupName": schedule_row.get("group_name"),
+                    "fromRoomId": schedule_row.get("room_id"),
+                    "fromRoomNumber": schedule_row.get("room_number"),
+                    "toRoomId": alternative_room["id"],
+                    "toRoomNumber": alternative_room.get("number", ""),
                     "day": schedule_row.get("day"),
                     "startHour": schedule_row.get("start_hour"),
-                },
+                    "groupName": schedule_row.get("group_name"),
+                    "relocationReason": room_block.get("reason", "") or "room_block",
+                }
             )
-        room_programme, room_programme_mismatch = resolve_schedule_room_programme_meta(
-            connection,
-            schedule_row["section_id"],
-            alternative_room["id"],
-        )
-        db_execute(
-            connection,
-            """
-            UPDATE schedules
-            SET
-                room_id = ?,
-                room_number = ?,
-                room_programme = ?,
-                room_programme_mismatch = ?,
-                relocated_from_room_number = ?,
-                relocation_reason = ?
-            WHERE id = ?
-            """,
-            (
-                alternative_room["id"],
-                alternative_room.get("number", ""),
-                room_programme,
-                room_programme_mismatch,
-                schedule_row.get("room_number", ""),
-                room_block.get("reason", "") or "room_block",
-                schedule_row["id"],
-            ),
-        )
-        before_schedule = {
-            **schedule_row,
-            "room_programme": schedule_row.get("room_programme", ""),
-            "room_programme_mismatch": schedule_row.get("room_programme_mismatch", 0),
-            "relocated_from_room_number": "",
-            "relocation_reason": "",
-        }
-        after_schedule = {
-            **before_schedule,
-            "room_id": alternative_room["id"],
-            "room_number": alternative_room.get("number", ""),
-            "room_programme": room_programme,
-            "room_programme_mismatch": room_programme_mismatch,
-            "relocated_from_room_number": schedule_row.get("room_number", ""),
-            "relocation_reason": room_block.get("reason", "") or "room_block",
-        }
+        session.commit()
+    for before_schedule, after_schedule in notification_pairs:
         create_schedule_change_notifications(connection, before_item=before_schedule, after_item=after_schedule)
-        relocated.append(
-            {
-                "scheduleId": schedule_row["id"],
-                "fromRoomId": schedule_row.get("room_id"),
-                "fromRoomNumber": schedule_row.get("room_number"),
-                "toRoomId": alternative_room["id"],
-                "toRoomNumber": alternative_room.get("number", ""),
-                "day": schedule_row.get("day"),
-                "startHour": schedule_row.get("start_hour"),
-                "groupName": schedule_row.get("group_name"),
-                "relocationReason": room_block.get("reason", "") or "room_block",
-            }
-        )
     return relocated
 
 
@@ -737,331 +595,532 @@ def validate_schedule_payload(connection, payload, exclude_schedule_id=None):
     if not section_id or not room_id or not teacher_id or not day or start_hour in (None, ""):
         raise ApiError(400, "fill_required_fields", "Заполните поля расписания")
 
-    section = query_one(
-        connection,
-        """
-        SELECT
-            s.id, s.course_id, s.course_name, s.group_id, s.group_name,
-            s.lesson_type, s.subgroup_mode, s.subgroup_count, s.requires_computers,
-            COALESCE(s.teacher_id, c.instructor_id) AS teacher_id,
-            COALESCE(NULLIF(s.teacher_name, ''), c.instructor_name, '') AS teacher_name,
-            c.code AS course_code,
-            c.year AS course_year,
-            c.programme AS course_programme,
-            g.student_count, g.has_subgroups, g.study_course
-        FROM sections s
-        JOIN courses c ON c.id = s.course_id
-        JOIN groups g ON g.id = s.group_id
-        WHERE s.id = ?
-        """,
-        (section_id,),
-    )
-    if section is None:
-        raise ApiError(400, "bad_request", "Для расписания не найдена секция")
+    with SessionLocal() as session:
+        section = session.execute(
+            select(
+                Section.id.label("id"),
+                Section.course_id.label("course_id"),
+                Section.course_name.label("course_name"),
+                Section.group_id.label("group_id"),
+                Section.group_name.label("group_name"),
+                Section.lesson_type.label("lesson_type"),
+                Section.subgroup_mode.label("subgroup_mode"),
+                Section.subgroup_count.label("subgroup_count"),
+                Section.requires_computers.label("requires_computers"),
+                func.coalesce(Section.teacher_id, Course.instructor_id).label("teacher_id"),
+                func.coalesce(func.nullif(Section.teacher_name, ""), Course.instructor_name, "").label("teacher_name"),
+                Course.code.label("course_code"),
+                Course.year.label("course_year"),
+                Course.programme.label("course_programme"),
+                Group.student_count.label("student_count"),
+                Group.has_subgroups.label("has_subgroups"),
+                Group.study_course.label("study_course"),
+            )
+            .join(Course, Course.id == Section.course_id)
+            .join(Group, Group.id == Section.group_id)
+            .where(Section.id == section_id)
+        ).mappings().first()
+        if section is None:
+            raise ApiError(400, "bad_request", "Для расписания не найдена секция")
 
-    room = query_one(
-        connection,
-        """
-        SELECT id, number, capacity, type, available, computer_count, programme
-        FROM rooms
-        WHERE id = ?
-        """,
-        (room_id,),
-    )
-    if room is None:
-        raise ApiError(400, "bad_request", "Для расписания не найдена аудитория")
-    if not int(room.get("available") or 0):
-        raise ApiError(400, "bad_request", "Аудитория отключена и недоступна для расписания")
+        room = session.execute(
+            select(
+                Room.id.label("id"),
+                Room.number.label("number"),
+                Room.capacity.label("capacity"),
+                Room.type.label("type"),
+                Room.available.label("available"),
+                Room.computer_count.label("computer_count"),
+                Room.programme.label("programme"),
+            ).where(Room.id == room_id)
+        ).mappings().first()
+        if room is None:
+            raise ApiError(400, "bad_request", "Для расписания не найдена аудитория")
+        if not int(room.get("available") or 0):
+            raise ApiError(400, "bad_request", "Аудитория отключена и недоступна для расписания")
 
-    if int(payload.get("course_id") or section["course_id"]) != int(section["course_id"]):
-        raise ApiError(400, "bad_request", "Дисциплина не совпадает с выбранной секцией")
-    if int(payload.get("group_id") or section["group_id"]) != int(section["group_id"]):
-        raise ApiError(400, "bad_request", "Группа не совпадает с выбранной секцией")
-    if int(teacher_id) != int(section.get("teacher_id") or 0):
-        raise ApiError(400, "bad_request", "Преподаватель не совпадает с выбранной секцией")
-    if section.get("study_course") and int(section.get("study_course")) != int(section.get("course_year") or 0):
-        raise ApiError(400, "bad_request", "Курс группы не совпадает с курсом дисциплины")
-    lesson_type = normalize_lesson_type(section.get("lesson_type"))
-    requires_computers = bool(section.get("requires_computers")) or lesson_type == "lab"
-    if not schedule_room_type_matches(room.get("type"), lesson_type, requires_computers):
-        raise ApiError(400, "bad_request", "Аудитория не подходит для типа занятия")
-    if is_physical_education_room(room.get("number")) and not is_physical_education_course(
-        section.get("course_name"),
-        section.get("course_code"),
-    ):
-        raise ApiError(400, "bad_request", "В аудитории Орленок можно проводить только физкультуру")
+        if int(payload.get("course_id") or section["course_id"]) != int(section["course_id"]):
+            raise ApiError(400, "bad_request", "Дисциплина не совпадает с выбранной секцией")
+        if int(payload.get("group_id") or section["group_id"]) != int(section["group_id"]):
+            raise ApiError(400, "bad_request", "Группа не совпадает с выбранной секцией")
+        if int(teacher_id) != int(section.get("teacher_id") or 0):
+            raise ApiError(400, "bad_request", "Преподаватель не совпадает с выбранной секцией")
+        if section.get("study_course") and int(section.get("study_course")) != int(section.get("course_year") or 0):
+            raise ApiError(400, "bad_request", "Курс группы не совпадает с курсом дисциплины")
+        lesson_type = normalize_lesson_type(section.get("lesson_type"))
+        requires_computers = bool(section.get("requires_computers")) or lesson_type == "lab"
+        if not schedule_room_type_matches(room.get("type"), lesson_type, requires_computers):
+            raise ApiError(400, "bad_request", "Аудитория не подходит для типа занятия")
+        if is_physical_education_room(room.get("number")) and not is_physical_education_course(
+            section.get("course_name"),
+            section.get("course_code"),
+        ):
+            raise ApiError(400, "bad_request", "В аудитории Орленок можно проводить только физкультуру")
 
-    effective_student_count = schedule_student_count_for_room(section, section, subgroup)
-    room_capacity = int(room.get("capacity") or 0)
-    if room_capacity and effective_student_count and room_capacity < effective_student_count:
-        raise ApiError(400, "bad_request", "Вместимость аудитории меньше количества студентов")
+        effective_student_count = schedule_student_count_for_room(section, section, subgroup)
+        room_capacity = int(room.get("capacity") or 0)
+        if room_capacity and effective_student_count and room_capacity < effective_student_count:
+            raise ApiError(400, "bad_request", "Вместимость аудитории меньше количества студентов")
 
-    pc_count = int(room.get("computer_count") or 0)
-    if requires_computers and pc_count < MIN_COMPUTER_COUNT:
-        raise ApiError(
-            400,
-            "bad_request",
-            f"Для этого занятия в аудитории должно быть минимум {MIN_COMPUTER_COUNT} компьютеров",
+        pc_count = int(room.get("computer_count") or 0)
+        if requires_computers and pc_count < MIN_COMPUTER_COUNT:
+            raise ApiError(
+                400,
+                "bad_request",
+                f"Для этого занятия в аудитории должно быть минимум {MIN_COMPUTER_COUNT} компьютеров",
+            )
+
+        room_conflict = select(Schedule.id).where(
+            Schedule.room_id == room_id,
+            Schedule.day == day,
+            Schedule.start_hour == start_hour,
         )
+        teacher_conflict = select(Schedule.id).where(
+            Schedule.teacher_id == teacher_id,
+            Schedule.day == day,
+            Schedule.start_hour == start_hour,
+        )
+        group_conflict = select(Schedule.id).where(
+            Schedule.group_id == section["group_id"],
+            Schedule.day == day,
+            Schedule.start_hour == start_hour,
+            or_(
+                func.coalesce(Schedule.subgroup, "") == "",
+                subgroup == "",
+                func.upper(Schedule.subgroup) == subgroup,
+            ),
+        )
+        if exclude_schedule_id is not None:
+            room_conflict = room_conflict.where(Schedule.id != exclude_schedule_id)
+            teacher_conflict = teacher_conflict.where(Schedule.id != exclude_schedule_id)
+            group_conflict = group_conflict.where(Schedule.id != exclude_schedule_id)
 
-    exclude_clause = "AND id <> ?" if exclude_schedule_id is not None else ""
-    exclude_params = [exclude_schedule_id] if exclude_schedule_id is not None else []
+        if session.scalar(room_conflict.limit(1)):
+            raise ApiError(400, "bad_request", "Аудитория уже занята в это время")
 
-    room_conflict = query_one(
-        connection,
-        f"""
-        SELECT id
-        FROM schedules
-        WHERE room_id = ? AND day = ? AND start_hour = ?
-        {exclude_clause}
-        LIMIT 1
-        """,
-        tuple([room_id, day, start_hour, *exclude_params]),
-    )
-    if room_conflict:
-        raise ApiError(400, "bad_request", "Аудитория уже занята в это время")
+        room_blocked_slots = _room_blocked_slots_from_session(
+            session,
+            payload.get("semester"),
+            payload.get("year"),
+        )
+        if (normalize_room_block_day(day), int(start_hour)) in room_blocked_slots.get(room_id, set()):
+            raise ApiError(400, "bad_request", "Аудитория недоступна в этот временной слот")
 
-    room_blocked_slots = get_room_blocked_slots(
-        connection,
-        payload.get("semester"),
-        payload.get("year"),
-    )
-    if (normalize_room_block_day(day), int(start_hour)) in room_blocked_slots.get(room_id, set()):
-        raise ApiError(400, "bad_request", "Аудитория недоступна в этот временной слот")
+        if session.scalar(teacher_conflict.limit(1)):
+            raise ApiError(400, "bad_request", "Преподаватель уже занят в это время")
 
-    teacher_conflict = query_one(
-        connection,
-        f"""
-        SELECT id
-        FROM schedules
-        WHERE teacher_id = ? AND day = ? AND start_hour = ?
-        {exclude_clause}
-        LIMIT 1
-        """,
-        tuple([teacher_id, day, start_hour, *exclude_params]),
-    )
-    if teacher_conflict:
-        raise ApiError(400, "bad_request", "Преподаватель уже занят в это время")
+        if session.scalar(group_conflict.limit(1)):
+            raise ApiError(400, "bad_request", "Группа или подгруппа уже занята в это время")
 
-    group_conflict = query_one(
-        connection,
-        f"""
-        SELECT id
-        FROM schedules
-        WHERE group_id = ? AND day = ? AND start_hour = ?
-          AND (coalesce(subgroup, '') = '' OR ? = '' OR upper(subgroup) = ?)
-        {exclude_clause}
-        LIMIT 1
-        """,
-        tuple([section["group_id"], day, start_hour, subgroup, subgroup, *exclude_params]),
-    )
-    if group_conflict:
-        raise ApiError(400, "bad_request", "Группа или подгруппа уже занята в это время")
+
+def _generated_subgroups_by_group(session):
+    rows = session.execute(
+        select(Schedule.group_id, Schedule.subgroup)
+        .where(Schedule.subgroup.is_not(None), Schedule.subgroup != "")
+    ).all()
+    subgroups = {}
+    for group_id, subgroup in rows:
+        value = str(subgroup or "").strip().upper()
+        if value:
+            subgroups.setdefault(group_id, set()).add(value)
+    return subgroups
+
+
+def _course_to_dict(row):
+    return {
+        "id": row.id,
+        "name": row.name,
+        "code": row.code,
+        "credits": row.credits,
+        "hours": row.hours,
+        "description": row.description,
+        "year": row.year,
+        "semester": row.semester,
+        "department": row.department,
+        "instructor_id": row.instructor_id,
+        "instructor_name": row.instructor_name,
+        "programme": row.programme,
+        "module_type": row.module_type,
+        "module_name": row.module_name,
+        "cycle": row.cycle,
+        "component": row.component,
+        "language": row.language,
+        "academic_year": row.academic_year,
+        "entry_year": row.entry_year,
+        "requires_computers": row.requires_computers,
+    }
+
+
+def _course_component_to_dict(row):
+    return {
+        "id": row.id,
+        "course_id": row.course_id,
+        "course_code": row.course_code,
+        "course_name": row.course_name,
+        "programme": row.programme,
+        "study_year": row.study_year,
+        "academic_period": row.academic_period,
+        "semester": row.semester,
+        "lesson_type": row.lesson_type,
+        "hours": row.hours,
+        "weekly_classes": row.weekly_classes,
+        "requires_computers": row.requires_computers,
+        "teacher_id": row.teacher_id,
+        "teacher_name": row.teacher_name,
+    }
+
+
+def _room_to_dict(row):
+    return {
+        "id": row.id,
+        "number": row.number,
+        "capacity": row.capacity,
+        "building": "",
+        "type": row.type,
+        "equipment": row.equipment,
+        "programme": row.programme,
+        "available": row.available,
+        "computer_count": row.computer_count,
+    }
+
+
+def _room_block_to_dict(row):
+    return {
+        "id": row.id,
+        "room_id": row.room_id,
+        "day": row.day,
+        "start_hour": row.start_hour,
+        "end_hour": row.end_hour,
+        "semester": row.semester,
+        "year": row.year,
+        "reason": row.reason,
+    }
+
+
+def _group_to_dict(row):
+    return {
+        "id": row.id,
+        "name": row.name,
+        "student_count": row.student_count,
+        "has_subgroups": row.has_subgroups,
+        "language": row.language,
+        "programme": row.programme,
+        "specialty_code": row.specialty_code,
+        "entry_year": row.entry_year,
+        "study_course": row.study_course,
+    }
+
+
+def _section_to_dict(row):
+    return {
+        "id": row.id,
+        "course_id": row.course_id,
+        "course_name": row.course_name,
+        "group_id": row.group_id,
+        "group_name": row.group_name,
+        "classes_count": row.classes_count,
+        "lesson_type": row.lesson_type,
+        "subgroup_mode": row.subgroup_mode,
+        "subgroup_count": row.subgroup_count,
+        "requires_computers": row.requires_computers,
+        "teacher_id": row.teacher_id,
+        "teacher_name": row.teacher_name,
+        "iup_entry_id": row.iup_entry_id,
+        "source": row.source,
+        "match_method": row.match_method,
+    }
+
+
+def _schedule_to_dict(row):
+    return {
+        "id": row.id,
+        "section_id": row.section_id,
+        "course_id": row.course_id,
+        "course_name": row.course_name,
+        "teacher_id": row.teacher_id,
+        "teacher_name": row.teacher_name,
+        "room_id": row.room_id,
+        "room_number": row.room_number,
+        "group_id": row.group_id,
+        "group_name": row.group_name,
+        "subgroup": row.subgroup,
+        "day": row.day,
+        "start_hour": row.start_hour,
+        "semester": row.semester,
+        "year": row.year,
+        "algorithm": row.algorithm,
+        "room_programme": row.room_programme,
+        "room_programme_mismatch": row.room_programme_mismatch,
+        "relocated_from_room_number": row.relocated_from_room_number,
+        "relocation_reason": row.relocation_reason,
+    }
+
+
+def get_collection_item(collection, item_id):
+    model_map = {
+        "courses": Course,
+        "course_components": CourseComponent,
+        "groups": Group,
+        "iup_entries": IupEntry,
+        "rooms": Room,
+        "room_blocks": RoomBlock,
+        "schedules": Schedule,
+        "sections": Section,
+        "students": Student,
+        "teachers": Teacher,
+        "users": User,
+    }
+    model = model_map.get(collection)
+    if model is None:
+        raise ApiError(400, "unsupported_collection", "Unsupported collection")
+
+    with SessionLocal() as session:
+        row = session.get(model, item_id)
+        if row is None:
+            return None
+        if collection == "courses":
+            return _course_to_dict(row)
+        if collection == "course_components":
+            return _course_component_to_dict(row)
+        if collection == "groups":
+            return _group_to_dict(row)
+        if collection == "rooms":
+            return _room_to_dict(row)
+        if collection == "room_blocks":
+            return _room_block_to_dict(row)
+        if collection == "schedules":
+            return _schedule_to_dict(row)
+        if collection == "sections":
+            return _section_to_dict(row)
+        if collection == "teachers":
+            return {
+                "id": row.id,
+                "name": row.name,
+                "email": row.email,
+                "phone": row.phone,
+                "subject_taught": row.subject_taught,
+                "weekly_hours_limit": row.weekly_hours_limit,
+                "teaching_languages": row.teaching_languages,
+            }
+        if collection == "students":
+            return {
+                "id": row.id,
+                "name": row.name,
+                "email": row.email,
+                "department": row.department,
+                "programme": row.programme,
+                "group_id": row.group_id,
+                "group_name": row.group_name,
+                "subgroup": row.subgroup,
+                "language": row.language,
+            }
+        if collection == "users":
+            return {
+                "id": row.id,
+                "email": row.email,
+                "full_name": row.full_name,
+                "role": row.role,
+                "token": row.token,
+            }
+        return {
+            column.name: getattr(row, column.name)
+            for column in row.__table__.columns
+        }
 
 
 def list_collection(connection, collection, query, user=None):
     if collection == "users":
-        return query_all(
-            connection,
-            """
-            SELECT id, email, full_name AS displayName, role, token
-            FROM users
-            ORDER BY id
-            """,
-        )
+        with SessionLocal() as session:
+            return [
+                {
+                    "id": row.id,
+                    "email": row.email,
+                    "displayName": row.full_name,
+                    "role": row.role,
+                    "token": row.token,
+                }
+                for row in session.scalars(select(User).order_by(User.id)).all()
+            ]
 
     if collection == "courses":
-        return query_all(
-            connection,
-            """
-            SELECT
-                id, name, code, credits, hours, description,
-                year, semester, department, instructor_id, instructor_name, programme,
-                module_type, module_name, cycle, component, language, academic_year, entry_year,
-                requires_computers
-            FROM courses
-            ORDER BY id
-            """,
-        )
+        with SessionLocal() as session:
+            return [_course_to_dict(row) for row in session.scalars(select(Course).order_by(Course.id)).all()]
 
     if collection == "course_components":
-        clauses = []
-        params = []
         course_id = query.get("course_id", [None])[0]
         academic_period = query.get("academic_period", [None])[0]
+        statement = select(CourseComponent)
         if course_id is not None:
-            clauses.append("course_id = ?")
-            params.append(course_id)
+            statement = statement.where(CourseComponent.course_id == course_id)
         if academic_period is not None:
-            clauses.append("academic_period = ?")
-            params.append(academic_period)
-        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        return query_all(
-            connection,
-            f"""
-            SELECT
-                id, course_id, course_code, course_name, programme, study_year,
-                academic_period, semester, lesson_type, hours, weekly_classes,
-                requires_computers, teacher_id, teacher_name
-            FROM course_components
-            {where_sql}
-            ORDER BY academic_period, course_name, lesson_type, id
-            """,
-            tuple(params),
+            statement = statement.where(CourseComponent.academic_period == academic_period)
+        statement = statement.order_by(
+            CourseComponent.academic_period,
+            CourseComponent.course_name,
+            CourseComponent.lesson_type,
+            CourseComponent.id,
         )
+        with SessionLocal() as session:
+            return [_course_component_to_dict(row) for row in session.scalars(statement).all()]
 
     if collection == "iup_entries":
-        return query_all(
-            connection,
-            """
-            SELECT
-                id, file_name, group_name, programme, study_course,
-                language, academic_year, academic_period, semester, component,
-                course_code, course_name, credits, lesson_type, teacher_id,
-                teacher_name, hours
-            FROM iup_entries
-            ORDER BY file_name, academic_period, course_name, lesson_type, id
-            """,
-        )
+        with SessionLocal() as session:
+            return [
+                {
+                    "id": row.id,
+                    "file_name": row.file_name,
+                    "group_name": row.group_name,
+                    "programme": row.programme,
+                    "study_course": row.study_course,
+                    "language": row.language,
+                    "academic_year": row.academic_year,
+                    "academic_period": row.academic_period,
+                    "semester": row.semester,
+                    "component": row.component,
+                    "course_code": row.course_code,
+                    "course_name": row.course_name,
+                    "credits": row.credits,
+                    "lesson_type": row.lesson_type,
+                    "teacher_id": row.teacher_id,
+                    "teacher_name": row.teacher_name,
+                    "hours": row.hours,
+                }
+                for row in session.scalars(
+                    select(IupEntry).order_by(
+                        IupEntry.file_name,
+                        IupEntry.academic_period,
+                        IupEntry.course_name,
+                        IupEntry.lesson_type,
+                        IupEntry.id,
+                    )
+                ).all()
+            ]
 
     if collection == "teachers":
-        teachers = query_all(
-            connection,
-            """
-            SELECT id, name, email, phone, subject_taught, weekly_hours_limit, teaching_languages
-            FROM teachers
-            ORDER BY id
-            """,
-        )
+        with SessionLocal() as session:
+            teachers = session.execute(
+                select(
+                    Teacher.id.label("id"),
+                    Teacher.name.label("name"),
+                    Teacher.email.label("email"),
+                    Teacher.phone.label("phone"),
+                    Teacher.subject_taught.label("subject_taught"),
+                    Teacher.weekly_hours_limit.label("weekly_hours_limit"),
+                    Teacher.teaching_languages.label("teaching_languages"),
+                ).order_by(Teacher.id)
+            ).mappings().all()
         disciplines_by_teacher = _teacher_disciplines_map(connection)
         return [_serialize_teacher(row, disciplines_by_teacher) for row in teachers]
 
     if collection == "students":
-        return query_all(
-            connection,
-            """
-            SELECT id, name, email, department, programme, group_id, group_name, subgroup, language
-            FROM students
-            ORDER BY id
-            """,
-        )
+        with SessionLocal() as session:
+            return [
+                {
+                    "id": row.id,
+                    "name": row.name,
+                    "email": row.email,
+                    "department": row.department,
+                    "programme": row.programme,
+                    "group_id": row.group_id,
+                    "group_name": row.group_name,
+                    "subgroup": row.subgroup,
+                    "language": row.language,
+                }
+                for row in session.scalars(select(Student).order_by(Student.id)).all()
+            ]
 
     if collection == "rooms":
-        return query_all(
-            connection,
-            """
-            SELECT
-                id,
-                number,
-                capacity,
-                '' AS building,
-                type,
-                equipment,
-                programme,
-                available,
-                computer_count
-            FROM rooms
-            ORDER BY id
-            """,
-        )
+        with SessionLocal() as session:
+            return [_room_to_dict(row) for row in session.scalars(select(Room).order_by(Room.id)).all()]
 
     if collection == "room_blocks":
-        return query_all(
-            connection,
-            """
-            SELECT id, room_id, day, start_hour, end_hour, semester, year, reason
-            FROM room_blocks
-            ORDER BY room_id, day, start_hour, id
-            """,
-        )
+        with SessionLocal() as session:
+            return [
+                _room_block_to_dict(row)
+                for row in session.scalars(
+                    select(RoomBlock).order_by(
+                        RoomBlock.room_id,
+                        RoomBlock.day,
+                        RoomBlock.start_hour,
+                        RoomBlock.id,
+                    )
+                ).all()
+            ]
 
     if collection == "groups":
-        return query_all(
-            connection,
-            """
-            SELECT
-                g.id,
-                g.name,
-                g.student_count,
-                g.has_subgroups,
-                g.language,
-                g.programme,
-                g.specialty_code,
-                g.entry_year,
-                g.study_course,
-                CASE
-                    WHEN EXISTS (
-                        SELECT 1
-                        FROM schedules s
-                        WHERE s.group_id = g.id
-                          AND trim(coalesce(s.subgroup, '')) <> ''
-                    )
-                    THEN 1
-                    ELSE 0
-                END AS auto_has_subgroups,
-                {GROUP_SUBGROUPS_AGGREGATE_SQL}
-            FROM groups g
-            ORDER BY g.id
-            """.format(GROUP_SUBGROUPS_AGGREGATE_SQL=GROUP_SUBGROUPS_AGGREGATE_SQL),
-        )
+        with SessionLocal() as session:
+            groups = session.scalars(select(Group).order_by(Group.id)).all()
+            subgroups_by_group = _generated_subgroups_by_group(session)
+            return [
+                {
+                    **_group_to_dict(row),
+                    "auto_has_subgroups": 1 if subgroups_by_group.get(row.id) else 0,
+                    "generated_subgroups": ",".join(sorted(subgroups_by_group.get(row.id, set()))),
+                }
+                for row in groups
+            ]
 
     if collection == "sections":
-        return query_all(
-            connection,
-            """
-            SELECT
-                id, course_id, course_name, group_id, group_name, classes_count,
-                lesson_type, subgroup_mode, subgroup_count, requires_computers,
-                teacher_id, teacher_name, iup_entry_id, source, match_method
-            FROM sections
-            ORDER BY id
-            """,
-        )
+        with SessionLocal() as session:
+            return [_section_to_dict(row) for row in session.scalars(select(Section).order_by(Section.id)).all()]
 
     clauses = []
-    params = []
     semester = query.get("semester", [None])[0]
     year = query.get("year", [None])[0]
-    from_sql = "FROM schedules s LEFT JOIN sections sec ON sec.id = s.section_id"
+    statement = (
+        select(
+            Schedule.id.label("id"),
+            Schedule.section_id.label("section_id"),
+            Schedule.course_id.label("course_id"),
+            Schedule.course_name.label("course_name"),
+            Schedule.teacher_id.label("teacher_id"),
+            Schedule.teacher_name.label("teacher_name"),
+            Schedule.room_id.label("room_id"),
+            Schedule.room_number.label("room_number"),
+            Schedule.group_id.label("group_id"),
+            Schedule.group_name.label("group_name"),
+            Schedule.subgroup.label("subgroup"),
+            Schedule.day.label("day"),
+            Schedule.start_hour.label("start_hour"),
+            Schedule.semester.label("semester"),
+            Schedule.year.label("year"),
+            Schedule.algorithm.label("algorithm"),
+            func.coalesce(Section.lesson_type, "lecture").label("lesson_type"),
+            Schedule.room_programme.label("room_programme"),
+            Schedule.room_programme_mismatch.label("room_programme_mismatch"),
+            Schedule.relocated_from_room_number.label("relocated_from_room_number"),
+            Schedule.relocation_reason.label("relocation_reason"),
+        )
+        .select_from(Schedule)
+        .outerjoin(Section, Section.id == Schedule.section_id)
+    )
     if semester is not None:
-        clauses.append("s.semester = ?")
-        params.append(semester)
+        statement = statement.where(Schedule.semester == semester)
     if year is not None:
-        clauses.append("s.year = ?")
-        params.append(year)
+        statement = statement.where(Schedule.year == year)
     if collection == "schedules" and user and user.get("role") == "student":
         if not user.get("group_id"):
             return []
-        clauses.append("s.group_id = ?")
-        params.append(user["group_id"])
+        statement = statement.where(Schedule.group_id == user["group_id"])
         if user.get("subgroup") in {"A", "B"}:
-            clauses.append("(coalesce(s.subgroup, '') = '' OR upper(s.subgroup) = ?)")
-            params.append(user["subgroup"])
+            statement = statement.where(
+                (func.coalesce(Schedule.subgroup, "") == "")
+                | (func.upper(Schedule.subgroup) == user["subgroup"])
+            )
         else:
-            clauses.append("coalesce(s.subgroup, '') = ''")
+            statement = statement.where(func.coalesce(Schedule.subgroup, "") == "")
     elif collection == "schedules" and user and user.get("role") == "teacher":
-        from_sql += " LEFT JOIN teachers t ON t.id = s.teacher_id"
-        clauses.append(
-            "(lower(coalesce(t.email, '')) = lower(?) OR lower(coalesce(s.teacher_name, '')) = lower(?))"
+        statement = statement.outerjoin(Teacher, Teacher.id == Schedule.teacher_id)
+        statement = statement.where(
+            (func.lower(func.coalesce(Teacher.email, "")) == str(user.get("email", "")).lower())
+            | (
+                func.lower(func.coalesce(Schedule.teacher_name, ""))
+                == str(user.get("full_name", "")).lower()
+            )
         )
-        params.append(user.get("email", ""))
-        params.append(user.get("full_name", ""))
-
-    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    return query_all(
-        connection,
-        f"""
-        SELECT
-            s.id, s.section_id, s.course_id, s.course_name, s.teacher_id, s.teacher_name, s.room_id, s.room_number,
-            s.group_id, s.group_name, s.subgroup, s.day, s.start_hour, s.semester, s.year, s.algorithm,
-            COALESCE(sec.lesson_type, 'lecture') AS lesson_type,
-            s.room_programme, s.room_programme_mismatch, s.relocated_from_room_number, s.relocation_reason
-        {from_sql}
-        {where_sql}
-        ORDER BY s.day, s.start_hour, s.id
-        """,
-        tuple(params),
-    )
+    statement = statement.order_by(Schedule.day, Schedule.start_hour, Schedule.id)
+    with SessionLocal() as session:
+        return [dict(row) for row in session.execute(statement).mappings().all()]
 
 
 def create_collection_item(connection, collection, payload):
@@ -1069,53 +1128,31 @@ def create_collection_item(connection, collection, payload):
         normalized = normalize_number_fields(payload, ["credits", "hours", "year", "study_year", "semester", "instructor_id", "requires_computers"])
         course_name = normalized.get("name")
         course_code = normalized.get("code") or course_name
-        item_id = insert_and_get_id(
-            connection,
-            """
-            INSERT INTO courses (
-                name, code, credits, hours, description,
-                year, semester, department, instructor_id, instructor_name, programme,
-                module_type, module_name, cycle, component, language, academic_year, entry_year,
-                requires_computers
+        with SessionLocal() as session:
+            row = Course(
+                name=course_name,
+                code=course_code,
+                credits=normalized.get("credits"),
+                hours=normalized.get("hours"),
+                description=normalized.get("description", ""),
+                year=normalized.get("year", normalized.get("study_year")),
+                semester=normalized.get("semester"),
+                department=normalized.get("department", ""),
+                instructor_id=normalized.get("instructor_id"),
+                instructor_name=normalized.get("instructor_name", ""),
+                programme=normalized.get("programme", normalized.get("programme_name", "")),
+                module_type=normalized.get("module_type", ""),
+                module_name=normalized.get("module_name", ""),
+                cycle=normalized.get("cycle", ""),
+                component=normalized.get("component", ""),
+                language=normalized.get("language", ""),
+                academic_year=normalized.get("academic_year", ""),
+                entry_year=normalized.get("entry_year", ""),
+                requires_computers=1 if normalized.get("requires_computers", 0) else 0,
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                course_name,
-                course_code,
-                normalized.get("credits"),
-                normalized.get("hours"),
-                normalized.get("description", ""),
-                normalized.get("year", normalized.get("study_year")),
-                normalized.get("semester"),
-                normalized.get("department", ""),
-                normalized.get("instructor_id"),
-                normalized.get("instructor_name", ""),
-                normalized.get("programme", normalized.get("programme_name", "")),
-                normalized.get("module_type", ""),
-                normalized.get("module_name", ""),
-                normalized.get("cycle", ""),
-                normalized.get("component", ""),
-                normalized.get("language", ""),
-                normalized.get("academic_year", ""),
-                normalized.get("entry_year", ""),
-                1 if normalized.get("requires_computers", 0) else 0,
-            ),
-        )
-        connection.commit()
-        return query_one(
-            connection,
-            """
-            SELECT
-                id, name, code, credits, hours, description,
-                year, semester, department, instructor_id, instructor_name, programme,
-                module_type, module_name, cycle, component, language, academic_year, entry_year,
-                requires_computers
-            FROM courses
-            WHERE id = ?
-            """,
-            (item_id,),
-        )
+            session.add(row)
+            session.commit()
+            return _course_to_dict(row)
 
     if collection == "course_components":
         normalized = normalize_number_fields(
@@ -1132,155 +1169,91 @@ def create_collection_item(connection, collection, payload):
             ],
         )
         lesson_type = normalize_lesson_type(normalized.get("lesson_type"))
-        item_id = insert_and_get_id(
-            connection,
-            """
-            INSERT INTO course_components (
-                course_id, course_code, course_name, programme, study_year,
-                academic_period, semester, lesson_type, hours, weekly_classes,
-                requires_computers, teacher_id, teacher_name
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                normalized.get("course_id"),
-                normalized.get("course_code", ""),
-                normalized.get("course_name", ""),
-                normalized.get("programme", ""),
-                normalized.get("study_year"),
-                normalized.get("academic_period"),
-                normalized.get("semester"),
-                lesson_type,
-                normalized.get("hours"),
-                normalized.get("weekly_classes"),
-                section_requires_computers(
+        with SessionLocal() as session:
+            row = CourseComponent(
+                course_id=normalized.get("course_id"),
+                course_code=normalized.get("course_code", ""),
+                course_name=normalized.get("course_name", ""),
+                programme=normalized.get("programme", ""),
+                study_year=normalized.get("study_year"),
+                academic_period=normalized.get("academic_period"),
+                semester=normalized.get("semester"),
+                lesson_type=lesson_type,
+                hours=normalized.get("hours"),
+                weekly_classes=normalized.get("weekly_classes"),
+                requires_computers=section_requires_computers(
                     lesson_type,
                     normalized.get("course_code", ""),
                     normalized.get("course_name", ""),
                     normalized.get("study_year"),
                 ),
-                normalized.get("teacher_id"),
-                normalized.get("teacher_name", ""),
-            ),
-        )
-        connection.commit()
-        return query_one(
-            connection,
-            """
-            SELECT
-                id, course_id, course_code, course_name, programme, study_year,
-                academic_period, semester, lesson_type, hours, weekly_classes,
-                requires_computers, teacher_id, teacher_name
-            FROM course_components
-            WHERE id = ?
-            """,
-            (item_id,),
-        )
+                teacher_id=normalized.get("teacher_id"),
+                teacher_name=normalized.get("teacher_name", ""),
+            )
+            session.add(row)
+            session.commit()
+            return _course_component_to_dict(row)
 
     if collection == "teachers":
         normalized = normalize_number_fields(payload, ["weekly_hours_limit", "max_hours_per_week"])
         validate_teacher_email(normalized.get("email"))
         teaching_languages = ",".join(normalize_teaching_languages(normalized.get("teaching_languages")))
-        item_id = insert_and_get_id(
-            connection,
-            """
-            INSERT INTO teachers (
-                name, email, phone, subject_taught, weekly_hours_limit, teaching_languages,
-                name_normalized, name_signature
+        with SessionLocal() as session:
+            row = Teacher(
+                name=normalized.get("name"),
+                email=normalized.get("email"),
+                phone=normalized.get("phone", ""),
+                subject_taught=normalized.get("subject_taught", normalized.get("department", normalized.get("specialization", ""))),
+                weekly_hours_limit=normalized.get("weekly_hours_limit", normalized.get("max_hours_per_week")),
+                teaching_languages=teaching_languages,
+                name_normalized=normalize_teacher_name(normalized.get("name")),
+                name_signature=build_teacher_name_signature(normalized.get("name")),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                normalized.get("name"),
-                normalized.get("email"),
-                normalized.get("phone", ""),
-                normalized.get("subject_taught", normalized.get("department", normalized.get("specialization", ""))),
-                normalized.get("weekly_hours_limit", normalized.get("max_hours_per_week")),
-                teaching_languages,
-                normalize_teacher_name(normalized.get("name")),
-                build_teacher_name_signature(normalized.get("name")),
-            ),
-        )
-        connection.commit()
-        teacher = query_one(
-            connection,
-            """
-            SELECT id, name, email, phone, subject_taught, weekly_hours_limit, teaching_languages
-            FROM teachers
-            WHERE id = ?
-            """,
-            (item_id,),
-        )
+            session.add(row)
+            session.commit()
+            teacher = {
+                "id": row.id,
+                "name": row.name,
+                "email": row.email,
+                "phone": row.phone,
+                "subject_taught": row.subject_taught,
+                "weekly_hours_limit": row.weekly_hours_limit,
+                "teaching_languages": row.teaching_languages,
+            }
         return _serialize_teacher(teacher, _teacher_disciplines_map(connection))
 
     if collection == "rooms":
         normalized = normalize_number_fields(payload, ["capacity", "available", "is_available", "computer_count"])
-        item_id = insert_and_get_id(
-            connection,
-            """
-            INSERT INTO rooms (number, capacity, type, equipment, programme, available, computer_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                normalized.get("number"),
-                normalized.get("capacity"),
-                normalized.get("type", ""),
-                normalized.get("equipment", ""),
-                normalized.get("programme", normalized.get("department", "")),
-                1 if normalized.get("available", normalized.get("is_available", 1)) else 0,
-                normalized.get("computer_count", 0),
-            ),
-        )
-        connection.commit()
-        return query_one(
-            connection,
-            """
-            SELECT
-                id,
-                number,
-                capacity,
-                '' AS building,
-                type,
-                equipment,
-                programme,
-                available,
-                computer_count
-            FROM rooms
-            WHERE id = ?
-            """,
-            (item_id,),
-        )
+        with SessionLocal() as session:
+            row = Room(
+                number=normalized.get("number"),
+                capacity=normalized.get("capacity"),
+                type=normalized.get("type", ""),
+                equipment=normalized.get("equipment", ""),
+                programme=normalized.get("programme", normalized.get("department", "")),
+                available=1 if normalized.get("available", normalized.get("is_available", 1)) else 0,
+                computer_count=normalized.get("computer_count", 0),
+            )
+            session.add(row)
+            session.commit()
+            return _room_to_dict(row)
 
     if collection == "room_blocks":
         normalized = normalize_room_block_interval(payload)
         relocated = _relocate_conflicting_room_schedules(connection, normalized)
-        item_id = insert_and_get_id(
-            connection,
-            """
-            INSERT INTO room_blocks (room_id, day, start_hour, end_hour, semester, year, reason)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                normalized.get("room_id"),
-                normalized.get("day"),
-                normalized.get("start_hour"),
-                normalized.get("end_hour"),
-                normalized.get("semester"),
-                normalized.get("year"),
-                normalized.get("reason", ""),
-            ),
-        )
-        connection.commit()
-        row = query_one(
-            connection,
-            """
-            SELECT id, room_id, day, start_hour, end_hour, semester, year, reason
-            FROM room_blocks
-            WHERE id = ?
-            """,
-            (item_id,),
-        )
-        return {**row, "relocatedSchedules": relocated}
+        with SessionLocal() as session:
+            row = RoomBlock(
+                room_id=normalized.get("room_id"),
+                day=normalized.get("day"),
+                start_hour=normalized.get("start_hour"),
+                end_hour=normalized.get("end_hour"),
+                semester=normalized.get("semester"),
+                year=normalized.get("year"),
+                reason=normalized.get("reason", ""),
+            )
+            session.add(row)
+            session.commit()
+            return {**_room_block_to_dict(row), "relocatedSchedules": relocated}
 
     if collection == "groups":
         normalized = normalize_number_fields(payload, ["student_count", "has_subgroups", "entry_year", "study_course"])
@@ -1292,33 +1265,20 @@ def create_collection_item(connection, collection, payload):
         ) or normalize_programme(specialty_code)
         entry_year = normalized.get("entry_year") or infer_group_entry_year(normalized.get("name"))
         study_course = normalized.get("study_course") or infer_study_course(entry_year)
-        item_id = insert_and_get_id(
-            connection,
-            """
-            INSERT INTO groups (name, student_count, has_subgroups, language, programme, specialty_code, entry_year, study_course)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                normalized.get("name"),
-                normalized.get("student_count") or 0,
-                1 if normalized.get("has_subgroups", 0) else 0,
-                group_language,
-                programme,
-                specialty_code,
-                entry_year,
-                study_course,
-            ),
-        )
-        connection.commit()
-        return query_one(
-            connection,
-            """
-            SELECT id, name, student_count, has_subgroups, language, programme, specialty_code, entry_year, study_course
-            FROM groups
-            WHERE id = ?
-            """,
-            (item_id,),
-        )
+        with SessionLocal() as session:
+            row = Group(
+                name=normalized.get("name"),
+                student_count=normalized.get("student_count") or 0,
+                has_subgroups=1 if normalized.get("has_subgroups", 0) else 0,
+                language=group_language,
+                programme=programme,
+                specialty_code=specialty_code,
+                entry_year=entry_year,
+                study_course=study_course,
+            )
+            session.add(row)
+            session.commit()
+            return _group_to_dict(row)
 
     if collection == "sections":
         normalized = normalize_number_fields(payload, ["course_id", "group_id", "classes_count", "class_count", "subgroup_count", "requires_computers", "teacher_id", "iup_entry_id"])
@@ -1335,46 +1295,26 @@ def create_collection_item(connection, collection, payload):
             normalized["lesson_type"],
             normalized,
         )
-        item_id = insert_and_get_id(
-            connection,
-            """
-            INSERT INTO sections (
-                course_id, course_name, group_id, group_name, classes_count,
-                lesson_type, subgroup_mode, subgroup_count, requires_computers,
-                teacher_id, teacher_name, iup_entry_id, source, match_method
+        with SessionLocal() as session:
+            row = Section(
+                course_id=normalized.get("course_id"),
+                course_name=normalized.get("course_name"),
+                group_id=normalized.get("group_id"),
+                group_name=normalized.get("group_name", ""),
+                classes_count=normalized.get("classes_count", normalized.get("class_count")),
+                lesson_type=normalized["lesson_type"],
+                subgroup_mode=normalized["subgroup_mode"],
+                subgroup_count=normalized["subgroup_count"],
+                requires_computers=requires_computers,
+                teacher_id=teacher_id,
+                teacher_name=teacher_name,
+                iup_entry_id=normalized.get("iup_entry_id"),
+                source=normalized.get("source", "manual"),
+                match_method=normalized.get("match_method", "manual"),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                normalized.get("course_id"),
-                normalized.get("course_name"),
-                normalized.get("group_id"),
-                normalized.get("group_name", ""),
-                normalized.get("classes_count", normalized.get("class_count")),
-                normalized["lesson_type"],
-                normalized["subgroup_mode"],
-                normalized["subgroup_count"],
-                requires_computers,
-                teacher_id,
-                teacher_name,
-                normalized.get("iup_entry_id"),
-                normalized.get("source", "manual"),
-                normalized.get("match_method", "manual"),
-            ),
-        )
-        connection.commit()
-        return query_one(
-            connection,
-            """
-            SELECT
-                id, course_id, course_name, group_id, group_name, classes_count,
-                lesson_type, subgroup_mode, subgroup_count, requires_computers,
-                teacher_id, teacher_name, iup_entry_id, source, match_method
-            FROM sections
-            WHERE id = ?
-            """,
-            (item_id,),
-        )
+            session.add(row)
+            session.commit()
+            return _section_to_dict(row)
 
     if collection == "schedules":
         normalized = normalize_number_fields(
@@ -1388,73 +1328,51 @@ def create_collection_item(connection, collection, payload):
             normalized.get("section_id"),
             normalized.get("room_id"),
         )
-        item_id = insert_and_get_id(
-            connection,
-            """
-            INSERT INTO schedules (
-                section_id, course_id, course_name, teacher_id, teacher_name, room_id, room_number,
-                group_id, group_name, subgroup, day, start_hour, semester, year, algorithm,
-                room_programme, room_programme_mismatch, relocated_from_room_number, relocation_reason
+        with SessionLocal() as session:
+            row = Schedule(
+                section_id=normalized.get("section_id"),
+                course_id=normalized.get("course_id"),
+                course_name=normalized.get("course_name"),
+                teacher_id=normalized.get("teacher_id"),
+                teacher_name=normalized.get("teacher_name"),
+                room_id=normalized.get("room_id"),
+                room_number=normalized.get("room_number"),
+                group_id=normalized.get("group_id"),
+                group_name=normalized.get("group_name"),
+                subgroup=normalized.get("subgroup", ""),
+                day=normalized.get("day"),
+                start_hour=normalized.get("start_hour"),
+                semester=normalized.get("semester"),
+                year=normalized.get("year"),
+                algorithm=normalized.get("algorithm"),
+                room_programme=room_programme,
+                room_programme_mismatch=room_programme_mismatch,
+                relocated_from_room_number=normalized.get("relocated_from_room_number", ""),
+                relocation_reason=normalized.get("relocation_reason", ""),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                normalized.get("section_id"),
-                normalized.get("course_id"),
-                normalized.get("course_name"),
-                normalized.get("teacher_id"),
-                normalized.get("teacher_name"),
-                normalized.get("room_id"),
-                normalized.get("room_number"),
-                normalized.get("group_id"),
-                normalized.get("group_name"),
-                normalized.get("subgroup", ""),
-                normalized.get("day"),
-                normalized.get("start_hour"),
-                normalized.get("semester"),
-                normalized.get("year"),
-                normalized.get("algorithm"),
-                room_programme,
-                room_programme_mismatch,
-                normalized.get("relocated_from_room_number", ""),
-                normalized.get("relocation_reason", ""),
-            ),
-        )
+            session.add(row)
+            session.commit()
+            result = _schedule_to_dict(row)
         recompute_room_availability(connection)
-        connection.commit()
-        return query_one(
-            connection,
-            """
-            SELECT
-                id, section_id, course_id, course_name, teacher_id, teacher_name, room_id, room_number,
-                group_id, group_name, subgroup, day, start_hour, semester, year, algorithm,
-                room_programme, room_programme_mismatch, relocated_from_room_number, relocation_reason
-            FROM schedules
-            WHERE id = ?
-            """,
-            (item_id,),
-        )
+        return result
 
     raise ApiError(400, "unsupported_collection", "Unsupported collection")
 
 
-def resolve_schedule_room_programme_meta(connection, section_id, room_id):
-    row = query_one(
-        connection,
-        """
-        SELECT
-            c.programme AS course_programme,
-            g.programme AS group_programme,
-            g.specialty_code AS specialty_code,
-            r.programme AS room_programme
-        FROM sections s
-        JOIN courses c ON c.id = s.course_id
-        JOIN groups g ON g.id = s.group_id
-        JOIN rooms r ON r.id = ?
-        WHERE s.id = ?
-        """,
-        (room_id, section_id),
-    )
+def _resolve_schedule_room_programme_meta_in_session(session, section_id, room_id):
+    row = session.execute(
+        select(
+            Course.programme.label("course_programme"),
+            Group.programme.label("group_programme"),
+            Group.specialty_code.label("specialty_code"),
+            Room.programme.label("room_programme"),
+        )
+        .select_from(Section)
+        .join(Course, Course.id == Section.course_id)
+        .join(Group, Group.id == Section.group_id)
+        .join(Room, Room.id == room_id)
+        .where(Section.id == section_id)
+    ).mappings().first()
     if not row:
         return "", 0
 
@@ -1478,176 +1396,104 @@ def resolve_schedule_room_programme_meta(connection, section_id, room_id):
     return room_programme, 1 if mismatch else 0
 
 
+def resolve_schedule_room_programme_meta(connection, section_id, room_id):
+    with SessionLocal() as session:
+        return _resolve_schedule_room_programme_meta_in_session(session, section_id, room_id)
+
+
 def update_collection_item(connection, collection, item_id, payload):
     if collection == "courses":
         normalized = normalize_number_fields(payload, ["credits", "hours", "year", "study_year", "semester", "instructor_id", "requires_computers"])
         course_name = normalized.get("name")
         course_code = normalized.get("code") or course_name
-        db_execute(
-            connection,
-            """
-            UPDATE courses
-            SET
-                name = ?, code = ?, credits = ?, hours = ?, description = ?,
-                year = ?, semester = ?, department = ?, instructor_id = ?, instructor_name = ?,
-                programme = ?, module_type = ?, module_name = ?, cycle = ?, component = ?,
-                language = ?, academic_year = ?, entry_year = ?, requires_computers = ?
-            WHERE id = ?
-            """,
-            (
-                course_name,
-                course_code,
-                normalized.get("credits"),
-                normalized.get("hours"),
-                normalized.get("description", ""),
-                normalized.get("year", normalized.get("study_year")),
-                normalized.get("semester"),
-                normalized.get("department", ""),
-                normalized.get("instructor_id"),
-                normalized.get("instructor_name", ""),
-                normalized.get("programme", normalized.get("programme_name", "")),
-                normalized.get("module_type", ""),
-                normalized.get("module_name", ""),
-                normalized.get("cycle", ""),
-                normalized.get("component", ""),
-                normalized.get("language", ""),
-                normalized.get("academic_year", ""),
-                normalized.get("entry_year", ""),
-                1 if normalized.get("requires_computers", 0) else 0,
-                item_id,
-            ),
-        )
+        with SessionLocal() as session:
+            row = session.get(Course, item_id)
+            if row is None:
+                raise ApiError(404, "record_not_found", "Запись не найдена")
+            row.name = course_name
+            row.code = course_code
+            row.credits = normalized.get("credits")
+            row.hours = normalized.get("hours")
+            row.description = normalized.get("description", "")
+            row.year = normalized.get("year", normalized.get("study_year"))
+            row.semester = normalized.get("semester")
+            row.department = normalized.get("department", "")
+            row.instructor_id = normalized.get("instructor_id")
+            row.instructor_name = normalized.get("instructor_name", "")
+            row.programme = normalized.get("programme", normalized.get("programme_name", ""))
+            row.module_type = normalized.get("module_type", "")
+            row.module_name = normalized.get("module_name", "")
+            row.cycle = normalized.get("cycle", "")
+            row.component = normalized.get("component", "")
+            row.language = normalized.get("language", "")
+            row.academic_year = normalized.get("academic_year", "")
+            row.entry_year = normalized.get("entry_year", "")
+            row.requires_computers = 1 if normalized.get("requires_computers", 0) else 0
+            session.commit()
+            result = _course_to_dict(row)
         recompute_room_availability(connection)
-        connection.commit()
-        return query_one(
-            connection,
-            """
-            SELECT
-                id, name, code, credits, hours, description,
-                year, semester, department, instructor_id, instructor_name, programme,
-                module_type, module_name, cycle, component, language, academic_year, entry_year,
-                requires_computers
-            FROM courses
-            WHERE id = ?
-            """,
-            (item_id,),
-        )
+        return result
 
     if collection == "teachers":
         normalized = normalize_number_fields(payload, ["weekly_hours_limit", "max_hours_per_week"])
         validate_teacher_email(normalized.get("email"))
         teaching_languages = ",".join(normalize_teaching_languages(normalized.get("teaching_languages")))
-        db_execute(
-            connection,
-            """
-            UPDATE teachers
-            SET
-                name = ?,
-                email = ?,
-                phone = ?,
-                subject_taught = ?,
-                weekly_hours_limit = ?,
-                teaching_languages = ?,
-                name_normalized = ?,
-                name_signature = ?
-            WHERE id = ?
-            """,
-            (
-                normalized.get("name"),
-                normalized.get("email"),
-                normalized.get("phone", ""),
-                normalized.get("subject_taught", normalized.get("department", normalized.get("specialization", ""))),
-                normalized.get("weekly_hours_limit", normalized.get("max_hours_per_week")),
-                teaching_languages,
-                normalize_teacher_name(normalized.get("name")),
-                build_teacher_name_signature(normalized.get("name")),
-                item_id,
-            ),
-        )
-        connection.commit()
-        teacher = query_one(
-            connection,
-            """
-            SELECT id, name, email, phone, subject_taught, weekly_hours_limit, teaching_languages
-            FROM teachers
-            WHERE id = ?
-            """,
-            (item_id,),
-        )
+        with SessionLocal() as session:
+            row = session.get(Teacher, item_id)
+            if row is None:
+                raise ApiError(404, "record_not_found", "Запись не найдена")
+            row.name = normalized.get("name")
+            row.email = normalized.get("email")
+            row.phone = normalized.get("phone", "")
+            row.subject_taught = normalized.get("subject_taught", normalized.get("department", normalized.get("specialization", "")))
+            row.weekly_hours_limit = normalized.get("weekly_hours_limit", normalized.get("max_hours_per_week"))
+            row.teaching_languages = teaching_languages
+            row.name_normalized = normalize_teacher_name(normalized.get("name"))
+            row.name_signature = build_teacher_name_signature(normalized.get("name"))
+            session.commit()
+            teacher = {
+                "id": row.id,
+                "name": row.name,
+                "email": row.email,
+                "phone": row.phone,
+                "subject_taught": row.subject_taught,
+                "weekly_hours_limit": row.weekly_hours_limit,
+                "teaching_languages": row.teaching_languages,
+            }
         return _serialize_teacher(teacher, _teacher_disciplines_map(connection))
 
     if collection == "rooms":
         normalized = normalize_number_fields(payload, ["capacity", "available", "is_available", "computer_count"])
-        db_execute(
-            connection,
-            """
-            UPDATE rooms
-            SET number = ?, capacity = ?, type = ?, equipment = ?, programme = ?, available = ?, computer_count = ?
-            WHERE id = ?
-            """,
-            (
-                normalized.get("number"),
-                normalized.get("capacity"),
-                normalized.get("type", ""),
-                normalized.get("equipment", ""),
-                normalized.get("programme", normalized.get("department", "")),
-                1 if normalized.get("available", normalized.get("is_available", 1)) else 0,
-                normalized.get("computer_count", 0),
-                item_id,
-            ),
-        )
-        connection.commit()
-        return query_one(
-            connection,
-            """
-            SELECT
-                id,
-                number,
-                capacity,
-                '' AS building,
-                type,
-                equipment,
-                programme,
-                available,
-                computer_count
-            FROM rooms
-            WHERE id = ?
-            """,
-            (item_id,),
-        )
+        with SessionLocal() as session:
+            row = session.get(Room, item_id)
+            if row is None:
+                raise ApiError(404, "record_not_found", "Запись не найдена")
+            row.number = normalized.get("number")
+            row.capacity = normalized.get("capacity")
+            row.type = normalized.get("type", "")
+            row.equipment = normalized.get("equipment", "")
+            row.programme = normalized.get("programme", normalized.get("department", ""))
+            row.available = 1 if normalized.get("available", normalized.get("is_available", 1)) else 0
+            row.computer_count = normalized.get("computer_count", 0)
+            session.commit()
+            return _room_to_dict(row)
 
     if collection == "room_blocks":
         normalized = normalize_room_block_interval(payload)
         relocated = _relocate_conflicting_room_schedules(connection, normalized, exclude_block_id=item_id)
-        db_execute(
-            connection,
-            """
-            UPDATE room_blocks
-            SET room_id = ?, day = ?, start_hour = ?, end_hour = ?, semester = ?, year = ?, reason = ?
-            WHERE id = ?
-            """,
-            (
-                normalized.get("room_id"),
-                normalized.get("day"),
-                normalized.get("start_hour"),
-                normalized.get("end_hour"),
-                normalized.get("semester"),
-                normalized.get("year"),
-                normalized.get("reason", ""),
-                item_id,
-            ),
-        )
-        connection.commit()
-        row = query_one(
-            connection,
-            """
-            SELECT id, room_id, day, start_hour, end_hour, semester, year, reason
-            FROM room_blocks
-            WHERE id = ?
-            """,
-            (item_id,),
-        )
-        return {**row, "relocatedSchedules": relocated}
+        with SessionLocal() as session:
+            row = session.get(RoomBlock, item_id)
+            if row is None:
+                raise ApiError(404, "record_not_found", "Запись не найдена")
+            row.room_id = normalized.get("room_id")
+            row.day = normalized.get("day")
+            row.start_hour = normalized.get("start_hour")
+            row.end_hour = normalized.get("end_hour")
+            row.semester = normalized.get("semester")
+            row.year = normalized.get("year")
+            row.reason = normalized.get("reason", "")
+            session.commit()
+            return {**_room_block_to_dict(row), "relocatedSchedules": relocated}
 
     if collection == "groups":
         normalized = normalize_number_fields(payload, ["student_count", "has_subgroups", "entry_year", "study_course"])
@@ -1659,35 +1505,20 @@ def update_collection_item(connection, collection, item_id, payload):
         ) or normalize_programme(specialty_code)
         entry_year = normalized.get("entry_year") or infer_group_entry_year(normalized.get("name"))
         study_course = normalized.get("study_course") or infer_study_course(entry_year)
-        db_execute(
-            connection,
-            """
-            UPDATE groups
-            SET name = ?, student_count = ?, has_subgroups = ?, language = ?, programme = ?, specialty_code = ?, entry_year = ?, study_course = ?
-            WHERE id = ?
-            """,
-            (
-                normalized.get("name"),
-                normalized.get("student_count") or 0,
-                1 if normalized.get("has_subgroups", 0) else 0,
-                group_language,
-                programme,
-                specialty_code,
-                entry_year,
-                study_course,
-                item_id,
-            ),
-        )
-        connection.commit()
-        return query_one(
-            connection,
-            """
-            SELECT id, name, student_count, has_subgroups, language, programme, specialty_code, entry_year, study_course
-            FROM groups
-            WHERE id = ?
-            """,
-            (item_id,),
-        )
+        with SessionLocal() as session:
+            row = session.get(Group, item_id)
+            if row is None:
+                raise ApiError(404, "record_not_found", "Запись не найдена")
+            row.name = normalized.get("name")
+            row.student_count = normalized.get("student_count") or 0
+            row.has_subgroups = 1 if normalized.get("has_subgroups", 0) else 0
+            row.language = group_language
+            row.programme = programme
+            row.specialty_code = specialty_code
+            row.entry_year = entry_year
+            row.study_course = study_course
+            session.commit()
+            return _group_to_dict(row)
 
     if collection == "sections":
         normalized = normalize_number_fields(payload, ["course_id", "group_id", "classes_count", "class_count", "subgroup_count", "requires_computers", "teacher_id", "iup_entry_id"])
@@ -1704,48 +1535,26 @@ def update_collection_item(connection, collection, item_id, payload):
             normalized["lesson_type"],
             normalized,
         )
-        db_execute(
-            connection,
-            """
-            UPDATE sections
-            SET
-                course_id = ?, course_name = ?, group_id = ?, group_name = ?,
-                classes_count = ?, lesson_type = ?, subgroup_mode = ?, subgroup_count = ?,
-                requires_computers = ?, teacher_id = ?, teacher_name = ?,
-                iup_entry_id = ?, source = ?, match_method = ?
-            WHERE id = ?
-            """,
-            (
-                normalized.get("course_id"),
-                normalized.get("course_name"),
-                normalized.get("group_id"),
-                normalized.get("group_name", ""),
-                normalized.get("classes_count", normalized.get("class_count")),
-                normalized["lesson_type"],
-                normalized["subgroup_mode"],
-                normalized["subgroup_count"],
-                requires_computers,
-                teacher_id,
-                teacher_name,
-                normalized.get("iup_entry_id"),
-                normalized.get("source", "manual"),
-                normalized.get("match_method", "manual"),
-                item_id,
-            ),
-        )
-        connection.commit()
-        return query_one(
-            connection,
-            """
-            SELECT
-                id, course_id, course_name, group_id, group_name, classes_count,
-                lesson_type, subgroup_mode, subgroup_count, requires_computers,
-                teacher_id, teacher_name, iup_entry_id, source, match_method
-            FROM sections
-            WHERE id = ?
-            """,
-            (item_id,),
-        )
+        with SessionLocal() as session:
+            row = session.get(Section, item_id)
+            if row is None:
+                raise ApiError(404, "record_not_found", "Запись не найдена")
+            row.course_id = normalized.get("course_id")
+            row.course_name = normalized.get("course_name")
+            row.group_id = normalized.get("group_id")
+            row.group_name = normalized.get("group_name", "")
+            row.classes_count = normalized.get("classes_count", normalized.get("class_count"))
+            row.lesson_type = normalized["lesson_type"]
+            row.subgroup_mode = normalized["subgroup_mode"]
+            row.subgroup_count = normalized["subgroup_count"]
+            row.requires_computers = requires_computers
+            row.teacher_id = teacher_id
+            row.teacher_name = teacher_name
+            row.iup_entry_id = normalized.get("iup_entry_id")
+            row.source = normalized.get("source", "manual")
+            row.match_method = normalized.get("match_method", "manual")
+            session.commit()
+            return _section_to_dict(row)
 
     if collection == "schedules":
         normalized = normalize_number_fields(
@@ -1759,92 +1568,119 @@ def update_collection_item(connection, collection, item_id, payload):
             normalized.get("section_id"),
             normalized.get("room_id"),
         )
-        db_execute(
-            connection,
-            """
-            UPDATE schedules
-            SET
-                section_id = ?, course_id = ?, course_name = ?, teacher_id = ?, teacher_name = ?,
-                room_id = ?, room_number = ?, group_id = ?, group_name = ?, subgroup = ?,
-                day = ?, start_hour = ?, semester = ?, year = ?, algorithm = ?,
-                room_programme = ?, room_programme_mismatch = ?, relocated_from_room_number = ?, relocation_reason = ?
-            WHERE id = ?
-            """,
-            (
-                normalized.get("section_id"),
-                normalized.get("course_id"),
-                normalized.get("course_name"),
-                normalized.get("teacher_id"),
-                normalized.get("teacher_name"),
-                normalized.get("room_id"),
-                normalized.get("room_number"),
-                normalized.get("group_id"),
-                normalized.get("group_name"),
-                normalized.get("subgroup", ""),
-                normalized.get("day"),
-                normalized.get("start_hour"),
-                normalized.get("semester"),
-                normalized.get("year"),
-                normalized.get("algorithm"),
-                room_programme,
-                room_programme_mismatch,
-                normalized.get("relocated_from_room_number", ""),
-                normalized.get("relocation_reason", ""),
-                item_id,
-            ),
-        )
-        connection.commit()
-        return query_one(
-            connection,
-            """
-            SELECT
-                id, section_id, course_id, course_name, teacher_id, teacher_name, room_id, room_number,
-                group_id, group_name, subgroup, day, start_hour, semester, year, algorithm,
-                room_programme, room_programme_mismatch, relocated_from_room_number, relocation_reason
-            FROM schedules
-            WHERE id = ?
-            """,
-            (item_id,),
-        )
+        with SessionLocal() as session:
+            row = session.get(Schedule, item_id)
+            if row is None:
+                raise ApiError(404, "record_not_found", "Запись не найдена")
+            row.section_id = normalized.get("section_id")
+            row.course_id = normalized.get("course_id")
+            row.course_name = normalized.get("course_name")
+            row.teacher_id = normalized.get("teacher_id")
+            row.teacher_name = normalized.get("teacher_name")
+            row.room_id = normalized.get("room_id")
+            row.room_number = normalized.get("room_number")
+            row.group_id = normalized.get("group_id")
+            row.group_name = normalized.get("group_name")
+            row.subgroup = normalized.get("subgroup", "")
+            row.day = normalized.get("day")
+            row.start_hour = normalized.get("start_hour")
+            row.semester = normalized.get("semester")
+            row.year = normalized.get("year")
+            row.algorithm = normalized.get("algorithm")
+            row.room_programme = room_programme
+            row.room_programme_mismatch = room_programme_mismatch
+            row.relocated_from_room_number = normalized.get("relocated_from_room_number", "")
+            row.relocation_reason = normalized.get("relocation_reason", "")
+            session.commit()
+            return _schedule_to_dict(row)
 
     raise ApiError(400, "unsupported_collection", "Unsupported collection")
 
 
 def delete_collection_item(connection, collection, item_id):
     schedules_changed = False
-    if collection == "courses":
-        course = query_one(connection, "SELECT code FROM courses WHERE id = ?", (item_id,))
-        db_execute(connection, "DELETE FROM schedules WHERE course_id = ?", (item_id,))
-        schedules_changed = True
-        db_execute(connection, "DELETE FROM sections WHERE course_id = ?", (item_id,))
-        db_execute(connection, "DELETE FROM course_components WHERE course_id = ?", (item_id,))
-        if course:
-            db_execute(connection, "DELETE FROM iup_entries WHERE lower(course_code) = lower(?)", (course["code"],))
-    elif collection == "groups":
-        group = query_one(connection, "SELECT name FROM groups WHERE id = ?", (item_id,))
-        db_execute(connection, "DELETE FROM schedules WHERE group_id = ?", (item_id,))
-        schedules_changed = True
-        db_execute(connection, "DELETE FROM sections WHERE group_id = ?", (item_id,))
-        db_execute(connection, "UPDATE students SET group_id = NULL, group_name = '', subgroup = '' WHERE group_id = ?", (item_id,))
-        if group:
-            db_execute(connection, "DELETE FROM iup_entries WHERE group_name = ?", (group["name"],))
-    elif collection == "teachers":
-        db_execute(connection, "DELETE FROM schedules WHERE teacher_id = ?", (item_id,))
-        schedules_changed = True
-        db_execute(connection, "UPDATE courses SET instructor_id = NULL, instructor_name = '' WHERE instructor_id = ?", (item_id,))
-        db_execute(connection, "UPDATE course_components SET teacher_id = NULL, teacher_name = '' WHERE teacher_id = ?", (item_id,))
-        db_execute(connection, "UPDATE sections SET teacher_id = NULL, teacher_name = '' WHERE teacher_id = ?", (item_id,))
-        db_execute(connection, "DELETE FROM teacher_preference_requests WHERE teacher_id = ?", (item_id,))
-        db_execute(connection, "DELETE FROM notifications WHERE recipient_role = 'teacher' AND recipient_id = ?", (item_id,))
-    elif collection == "rooms":
-        db_execute(connection, "DELETE FROM schedules WHERE room_id = ?", (item_id,))
-        db_execute(connection, "DELETE FROM room_blocks WHERE room_id = ?", (item_id,))
-        schedules_changed = True
-    elif collection == "room_blocks":
-        pass
-    elif collection == "students":
-        db_execute(connection, "DELETE FROM notifications WHERE recipient_role = 'student' AND recipient_id = ?", (item_id,))
-    db_execute(connection, f"DELETE FROM {collection} WHERE id = ?", (item_id,))
+    collection_models = {
+        "courses": Course,
+        "course_components": CourseComponent,
+        "groups": Group,
+        "teachers": Teacher,
+        "rooms": Room,
+        "room_blocks": RoomBlock,
+        "students": Student,
+        "sections": Section,
+        "schedules": Schedule,
+    }
+    model = collection_models.get(collection)
+    if model is None:
+        raise ApiError(400, "unsupported_collection", "Unsupported collection")
+
+    with SessionLocal() as session:
+        if collection == "courses":
+            course = session.get(Course, item_id)
+            session.execute(delete(Schedule).where(Schedule.course_id == item_id))
+            schedules_changed = True
+            session.execute(delete(Section).where(Section.course_id == item_id))
+            session.execute(delete(CourseComponent).where(CourseComponent.course_id == item_id))
+            if course:
+                session.execute(
+                    delete(IupEntry).where(
+                        func.lower(IupEntry.course_code) == str(course.code or "").lower()
+                    )
+                )
+        elif collection == "groups":
+            group = session.get(Group, item_id)
+            session.execute(delete(Schedule).where(Schedule.group_id == item_id))
+            schedules_changed = True
+            session.execute(delete(Section).where(Section.group_id == item_id))
+            session.execute(
+                update(Student)
+                .where(Student.group_id == item_id)
+                .values(group_id=None, group_name="", subgroup="")
+            )
+            if group:
+                session.execute(delete(IupEntry).where(IupEntry.group_name == group.name))
+        elif collection == "teachers":
+            session.execute(delete(Schedule).where(Schedule.teacher_id == item_id))
+            schedules_changed = True
+            session.execute(
+                update(Course)
+                .where(Course.instructor_id == item_id)
+                .values(instructor_id=None, instructor_name="")
+            )
+            session.execute(
+                update(CourseComponent)
+                .where(CourseComponent.teacher_id == item_id)
+                .values(teacher_id=None, teacher_name="")
+            )
+            session.execute(
+                update(Section)
+                .where(Section.teacher_id == item_id)
+                .values(teacher_id=None, teacher_name="")
+            )
+            session.execute(
+                delete(TeacherPreferenceRequest).where(
+                    TeacherPreferenceRequest.teacher_id == item_id
+                )
+            )
+            session.execute(
+                delete(Notification).where(
+                    Notification.recipient_role == "teacher",
+                    Notification.recipient_id == item_id,
+                )
+            )
+        elif collection == "rooms":
+            session.execute(delete(Schedule).where(Schedule.room_id == item_id))
+            session.execute(delete(RoomBlock).where(RoomBlock.room_id == item_id))
+            schedules_changed = True
+        elif collection == "students":
+            session.execute(
+                delete(Notification).where(
+                    Notification.recipient_role == "student",
+                    Notification.recipient_id == item_id,
+                )
+            )
+        session.execute(delete(model).where(model.id == item_id))
+        session.commit()
+
     if schedules_changed and collection != "rooms":
         recompute_room_availability(connection)
-    connection.commit()

@@ -444,6 +444,79 @@ def _slot_has_available_room(slot, room_ids, room_map):
     return False
 
 
+def _candidate_summary(items, rooms, slots, compatible_rooms_by_item, allowed_slots_by_item):
+    room_counts = [
+        {
+            "itemId": item["id"],
+            "courseName": item["course_name"],
+            "lessonType": item["lesson_type"],
+            "teacherId": item["teacher_id"],
+            "lessonsPerWeek": item["lessons_per_week"],
+            "studentCount": item["student_count"],
+            "candidateRooms": len(compatible_rooms_by_item.get(item["id"], [])),
+            "candidateSlots": len(allowed_slots_by_item.get(item["id"], [])),
+            "pcRequired": item["pc_required"],
+            "roomTypeRequired": item["room_type_required"],
+        }
+        for item in items
+    ]
+    zero_room_items = [item for item in room_counts if item["candidateRooms"] == 0]
+    low_slot_items = [
+        item
+        for item in room_counts
+        if item["candidateSlots"] < item["lessonsPerWeek"]
+    ]
+    lesson_type_counts = defaultdict(int)
+    for item in items:
+        lesson_type_counts[item["lesson_type"]] += item["lessons_per_week"]
+    room_type_counts = defaultdict(int)
+    computer_rooms = 0
+    for room in rooms:
+        room_type_counts[room.get("type") or ""] += 1
+        if int(room.get("pc_count") or 0) >= MIN_COMPUTER_COUNT:
+            computer_rooms += 1
+    return {
+        "planItems": len(items),
+        "rooms": len(rooms),
+        "slots": len(slots),
+        "totalLessons": sum(item["lessons_per_week"] for item in items),
+        "lessonTypeCounts": dict(sorted(lesson_type_counts.items())),
+        "roomTypeCounts": dict(sorted(room_type_counts.items())),
+        "computerRooms": computer_rooms,
+        "zeroRoomItems": zero_room_items[:25],
+        "lowSlotItems": low_slot_items[:25],
+        "minCandidateRooms": min((item["candidateRooms"] for item in room_counts), default=0),
+        "minCandidateSlots": min((item["candidateSlots"] for item in room_counts), default=0),
+        "maxCandidateRooms": max((item["candidateRooms"] for item in room_counts), default=0),
+        "maxCandidateSlots": max((item["candidateSlots"] for item in room_counts), default=0),
+    }
+
+
+def _apply_warm_start_hints(model, decision_vars, payload, items_by_id):
+    hints = payload.get("warmStartSchedule") or []
+    if not hints:
+        return 0
+
+    hinted = 0
+    valid_item_ids = set(items_by_id)
+    for entry in hints:
+        item_id = str(entry.get("itemId") or "")
+        if item_id not in valid_item_ids:
+            continue
+        room_id = entry.get("roomId")
+        day = entry.get("day")
+        hour = entry.get("hour")
+        if room_id is None or day is None or hour is None:
+            continue
+        slot_id = f"{day}_{int(hour)}"
+        variable = decision_vars.get((item_id, slot_id, room_id))
+        if variable is None:
+            continue
+        model.AddHint(variable, 1)
+        hinted += 1
+    return hinted
+
+
 def optimize_schedule(payload):
     if cp_model is None:
         raise ApiError(
@@ -531,12 +604,23 @@ def optimize_schedule(payload):
                 }
             )
 
+    candidate_summary = _candidate_summary(
+        items,
+        rooms,
+        slots,
+        compatible_rooms_by_item,
+        allowed_slots_by_item,
+    )
+
     if incompatibilities:
         raise ApiError(
             400,
             "optimizer_input_infeasible",
             "Входные данные несовместимы для оптимизатора.",
-            details={"issues": incompatibilities},
+            details={
+                "issues": incompatibilities,
+                "candidateSummary": candidate_summary,
+            },
         )
 
     model = cp_model.CpModel()
@@ -1042,6 +1126,7 @@ def optimize_schedule(payload):
         objective_terms.extend(-35 * var for var in day_load_spread_penalty_vars)
 
     model.Maximize(sum(objective_terms))
+    warm_start_hints = _apply_warm_start_hints(model, decision_vars, payload, items_by_id)
 
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = float(payload.get("maxSolveTimeSeconds", 10))
@@ -1054,6 +1139,19 @@ def optimize_schedule(payload):
             400,
             "optimizer_no_solution",
             "Не удалось найти допустимое расписание для заданных ограничений.",
+            details={
+                "solverStatus": solver.StatusName(status),
+                "candidateSummary": candidate_summary,
+                "constraints": {
+                    "enforceLectureBeforeLab": enforce_lecture_before_lab,
+                    "maxClassesPerDayForTeacher": max_classes_per_day_for_teacher,
+                    "maxClassesPerDayForAudience": max_classes_per_day_for_audience,
+                    "preferSeparateSubgroupsByDay": prefer_separate_subgroups_by_day,
+                    "maxRoomCandidatesPerItem": max_room_candidates_per_item,
+                    "maxSolveTimeSeconds": float(payload.get("maxSolveTimeSeconds", 10)),
+                    "stopAfterFirstSolution": bool(payload.get("stopAfterFirstSolution")),
+                },
+            },
         )
 
     schedule = []
@@ -1126,6 +1224,9 @@ def optimize_schedule(payload):
         "preferSeparateSubgroupsByDay": prefer_separate_subgroups_by_day,
         "subgroupSeparationPairs": len(subgroup_day_separation_pairs),
         "programmeFallbackItems": sorted(programme_fallback_scheduled_items),
+        "warmStartHints": warm_start_hints,
+        "maxRoomCandidatesPerItem": max_room_candidates_per_item,
+        "candidateSummary": candidate_summary,
     }
 
     return {

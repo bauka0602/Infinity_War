@@ -7,7 +7,7 @@ from ...teachers.preferences import (
     list_teacher_preference_requests,
     update_teacher_preference_status,
 )
-from ..common import read_json_body
+from ..schemas import TeacherPreferenceCreateRequest, TeacherPreferenceStatusRequest
 
 router = APIRouter()
 
@@ -23,8 +23,11 @@ def teacher_preferences_all(request: Request):
 
 
 @router.post("/teacher-preferences", status_code=201)
-async def teacher_preferences_create(request: Request):
-    return create_teacher_preference_request(request.headers, await read_json_body(request))
+async def teacher_preferences_create(payload: TeacherPreferenceCreateRequest, request: Request):
+    return create_teacher_preference_request(
+        request.headers,
+        payload.model_dump(exclude_none=True),
+    )
 
 
 @router.delete("/teacher-preferences")
@@ -33,8 +36,16 @@ def teacher_preferences_delete_all(request: Request):
 
 
 @router.put("/teacher-preferences/{request_id}/status")
-async def teacher_preferences_update_status(request_id: int, request: Request):
-    return update_teacher_preference_status(request.headers, request_id, await read_json_body(request))
+async def teacher_preferences_update_status(
+    request_id: int,
+    payload: TeacherPreferenceStatusRequest,
+    request: Request,
+):
+    return update_teacher_preference_status(
+        request.headers,
+        request_id,
+        payload.model_dump(exclude_none=True),
+    )
 
 
 @router.delete("/teacher-preferences/{request_id}")

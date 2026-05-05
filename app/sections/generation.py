@@ -3,9 +3,12 @@ import logging
 import re
 from difflib import SequenceMatcher
 
-from ..collections.service import normalize_lesson_type, normalize_language, positive_int
-from ..core.db import db_execute, insert_and_get_id, query_all, query_one
+from sqlalchemy import func, or_, select
+
+from ..collections.normalization import normalize_lesson_type, normalize_language, positive_int
 from ..core.errors import ApiError
+from ..core.orm import SessionLocal
+from ..models import Course, CourseComponent, Group, IupEntry, Room, Section, Teacher
 from .lesson_rules import requires_computers_for_component
 from ..programmes.utils import normalize_programme_text, same_programme
 from ..teachers.utils import build_teacher_name_signature, normalize_teacher_name
@@ -118,86 +121,91 @@ def _classes_count(iup_entry, component):
     return max(1, min(4, int(result)))
 
 
-def _load_rop_components(connection, payload):
-    clauses = ["cc.lesson_type IN ('lecture', 'practical', 'lab')"]
-    params = []
+def _load_rop_components(session, payload):
+    clauses = [CourseComponent.lesson_type.in_(("lecture", "practical", "lab"))]
     if payload.get("academic_period"):
-        clauses.append("cc.academic_period = ?")
-        params.append(int(payload["academic_period"]))
+        clauses.append(CourseComponent.academic_period == int(payload["academic_period"]))
     if payload.get("semester"):
-        clauses.append("cc.semester = ?")
-        params.append(int(payload["semester"]))
+        clauses.append(CourseComponent.semester == int(payload["semester"]))
     if payload.get("programme"):
-        clauses.append("coalesce(cc.programme, c.programme, '') <> ''")
+        clauses.append(func.coalesce(CourseComponent.programme, Course.programme, "") != "")
 
-    return query_all(
-        connection,
-        f"""
-        SELECT
-            cc.id AS component_id,
-            cc.course_id,
-            cc.course_code,
-            cc.course_name,
-            cc.programme,
-            cc.study_year,
-            cc.academic_period,
-            cc.semester,
-            cc.lesson_type,
-            cc.hours,
-            cc.weekly_classes,
-            cc.requires_computers,
-            c.language,
-            c.component,
-            c.programme AS course_programme
-        FROM course_components cc
-        JOIN courses c ON c.id = cc.course_id
-        WHERE {" AND ".join(clauses)}
-        ORDER BY cc.academic_period, cc.course_name, cc.lesson_type, cc.id
-        """,
-        tuple(params),
-    )
+    return session.execute(
+        select(
+            CourseComponent.id.label("component_id"),
+            CourseComponent.course_id.label("course_id"),
+            CourseComponent.course_code.label("course_code"),
+            CourseComponent.course_name.label("course_name"),
+            CourseComponent.programme.label("programme"),
+            CourseComponent.study_year.label("study_year"),
+            CourseComponent.academic_period.label("academic_period"),
+            CourseComponent.semester.label("semester"),
+            CourseComponent.lesson_type.label("lesson_type"),
+            CourseComponent.hours.label("hours"),
+            CourseComponent.weekly_classes.label("weekly_classes"),
+            CourseComponent.requires_computers.label("requires_computers"),
+            Course.language.label("language"),
+            Course.component.label("component"),
+            Course.programme.label("course_programme"),
+        )
+        .join(Course, Course.id == CourseComponent.course_id)
+        .where(*clauses)
+        .order_by(
+            CourseComponent.academic_period,
+            CourseComponent.course_name,
+            CourseComponent.lesson_type,
+            CourseComponent.id,
+        )
+    ).mappings().all()
 
 
-def _load_iup_entries(connection, payload):
-    clauses = ["lesson_type IN ('lecture', 'practical', 'lab')"]
-    params = []
+def _load_iup_entries(session, payload):
+    clauses = [IupEntry.lesson_type.in_(("lecture", "practical", "lab"))]
+    field_map = {
+        "group_name": IupEntry.group_name,
+        "academic_period": IupEntry.academic_period,
+        "semester": IupEntry.semester,
+        "programme": IupEntry.programme,
+        "language": IupEntry.language,
+    }
     for field in ("group_name", "academic_period", "semester", "programme", "language"):
         value = payload.get(field)
         if value in (None, ""):
             continue
+        column = field_map[field]
         if field in {"academic_period", "semester"}:
-            clauses.append(f"{field} = ?")
-            params.append(int(value))
+            clauses.append(column == int(value))
         else:
-            clauses.append(f"lower(coalesce({field}, '')) = lower(?)")
-            params.append(str(value).strip())
-    return query_all(
-        connection,
-        f"""
-        SELECT
-            id,
-            file_name,
-            group_name,
-            programme,
-            study_course,
-            language,
-            academic_year,
-            academic_period,
-            semester,
-            component,
-            course_code,
-            course_name,
-            credits,
-            lesson_type,
-            teacher_id,
-            teacher_name,
-            hours
-        FROM iup_entries
-        WHERE {" AND ".join(clauses)}
-        ORDER BY group_name, academic_period, course_name, lesson_type, id
-        """,
-        tuple(params),
-    )
+            clauses.append(func.lower(func.coalesce(column, "")) == func.lower(str(value).strip()))
+    return session.execute(
+        select(
+            IupEntry.id.label("id"),
+            IupEntry.file_name.label("file_name"),
+            IupEntry.group_name.label("group_name"),
+            IupEntry.programme.label("programme"),
+            IupEntry.study_course.label("study_course"),
+            IupEntry.language.label("language"),
+            IupEntry.academic_year.label("academic_year"),
+            IupEntry.academic_period.label("academic_period"),
+            IupEntry.semester.label("semester"),
+            IupEntry.component.label("component"),
+            IupEntry.course_code.label("course_code"),
+            IupEntry.course_name.label("course_name"),
+            IupEntry.credits.label("credits"),
+            IupEntry.lesson_type.label("lesson_type"),
+            IupEntry.teacher_id.label("teacher_id"),
+            IupEntry.teacher_name.label("teacher_name"),
+            IupEntry.hours.label("hours"),
+        )
+        .where(*clauses)
+        .order_by(
+            IupEntry.group_name,
+            IupEntry.academic_period,
+            IupEntry.course_name,
+            IupEntry.lesson_type,
+            IupEntry.id,
+        )
+    ).mappings().all()
 
 
 def _build_component_index(components):
@@ -261,20 +269,22 @@ def _match_component(iup_entry, component_index, by_lesson_period, issues, stric
     return None, "unmatched"
 
 
-def _find_group(connection, iup_entry, issues):
+def _find_group(session, iup_entry, issues):
     group_name = str(iup_entry.get("group_name") or "").strip()
     if not group_name:
         add_issue(issues, "group_missing", "В записи ИУП не указана группа.", "error", iup_entry_id=iup_entry.get("id"))
         return None
-    group = query_one(
-        connection,
-        """
-        SELECT id, name, student_count, language, programme, specialty_code, study_course
-        FROM groups
-        WHERE lower(name) = lower(?)
-        """,
-        (group_name,),
-    )
+    group = session.execute(
+        select(
+            Group.id.label("id"),
+            Group.name.label("name"),
+            Group.student_count.label("student_count"),
+            Group.language.label("language"),
+            Group.programme.label("programme"),
+            Group.specialty_code.label("specialty_code"),
+            Group.study_course.label("study_course"),
+        ).where(func.lower(Group.name) == func.lower(group_name))
+    ).mappings().first()
     if not group:
         add_issue(issues, "group_missing", "Группа из ИУП не найдена в БД.", "error", group_name=group_name)
         return None
@@ -287,12 +297,16 @@ def _find_group(connection, iup_entry, issues):
     return group
 
 
-def _find_or_create_teacher(connection, iup_entry, issues):
+def _teacher_to_dict(teacher):
+    return {"id": teacher.id, "name": teacher.name} if teacher else None
+
+
+def _find_or_create_teacher(session, iup_entry, issues):
     teacher_id = iup_entry.get("teacher_id")
     if teacher_id:
-        teacher = query_one(connection, "SELECT id, name FROM teachers WHERE id = ?", (teacher_id,))
+        teacher = session.get(Teacher, int(teacher_id))
         if teacher:
-            return teacher
+            return _teacher_to_dict(teacher)
 
     teacher_name = str(iup_entry.get("teacher_name") or "").strip()
     if not teacher_name:
@@ -307,50 +321,48 @@ def _find_or_create_teacher(connection, iup_entry, issues):
         return None
 
     signature = build_teacher_name_signature(teacher_name)
-    teacher = query_one(
-        connection,
-        "SELECT id, name FROM teachers WHERE name_signature = ? ORDER BY id LIMIT 1",
-        (signature,),
+    teacher = session.scalar(
+        select(Teacher)
+        .where(Teacher.name_signature == signature)
+        .order_by(Teacher.id)
+        .limit(1)
     )
     if teacher:
-        return teacher
+        return _teacher_to_dict(teacher)
 
     digest = hashlib.sha1(normalize_teacher_name(teacher_name).encode("utf-8")).hexdigest()[:10]
     email = f"teacher-{digest}@kazatu.edu.kz"
-    existing_email = query_one(connection, "SELECT id, name FROM teachers WHERE lower(email) = lower(?)", (email,))
-    if existing_email:
-        return existing_email
-
-    teacher_id = insert_and_get_id(
-        connection,
-        """
-        INSERT INTO teachers (
-            name, email, phone, subject_taught, weekly_hours_limit,
-            name_normalized, name_signature, teaching_languages
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            teacher_name,
-            email,
-            "",
-            iup_entry.get("course_name") or "",
-            None,
-            normalize_teacher_name(teacher_name),
-            signature,
-            normalize_language(iup_entry.get("language"), "ru"),
-        ),
+    existing_email = session.scalar(
+        select(Teacher)
+        .where(func.lower(Teacher.email) == func.lower(email))
+        .order_by(Teacher.id)
+        .limit(1)
     )
-    add_issue(issues, "teacher_created", "Преподаватель из ИУП создан в БД.", "info", teacher_id=teacher_id, teacher_name=teacher_name)
-    return {"id": teacher_id, "name": teacher_name}
+    if existing_email:
+        return _teacher_to_dict(existing_email)
+
+    teacher = Teacher(
+        name=teacher_name,
+        email=email,
+        phone="",
+        subject_taught=iup_entry.get("course_name") or "",
+        weekly_hours_limit=None,
+        name_normalized=normalize_teacher_name(teacher_name),
+        name_signature=signature,
+        teaching_languages=normalize_language(iup_entry.get("language"), "ru"),
+    )
+    session.add(teacher)
+    session.flush()
+    add_issue(issues, "teacher_created", "Преподаватель из ИУП создан в БД.", "info", teacher_id=teacher.id, teacher_name=teacher_name)
+    return _teacher_to_dict(teacher)
 
 
-def _find_teacher_for_preview(connection, iup_entry, issues):
+def _find_teacher_for_preview(session, iup_entry, issues):
     teacher_id = iup_entry.get("teacher_id")
     if teacher_id:
-        teacher = query_one(connection, "SELECT id, name FROM teachers WHERE id = ?", (teacher_id,))
+        teacher = session.get(Teacher, int(teacher_id))
         if teacher:
-            return teacher
+            return _teacher_to_dict(teacher)
 
     teacher_name = str(iup_entry.get("teacher_name") or "").strip()
     if not teacher_name:
@@ -365,13 +377,14 @@ def _find_teacher_for_preview(connection, iup_entry, issues):
         return None
 
     signature = build_teacher_name_signature(teacher_name)
-    teacher = query_one(
-        connection,
-        "SELECT id, name FROM teachers WHERE name_signature = ? ORDER BY id LIMIT 1",
-        (signature,),
+    teacher = session.scalar(
+        select(Teacher)
+        .where(Teacher.name_signature == signature)
+        .order_by(Teacher.id)
+        .limit(1)
     )
     if teacher:
-        return teacher
+        return _teacher_to_dict(teacher)
 
     add_issue(
         issues,
@@ -384,66 +397,51 @@ def _find_teacher_for_preview(connection, iup_entry, issues):
     return {"id": None, "name": teacher_name}
 
 
-def _fallback_component_from_iup(connection, iup_entry, preview=False):
-    course = query_one(
-        connection,
-        """
-        SELECT id
-        FROM courses
-        WHERE lower(code) = lower(?)
-          AND semester = ?
-          AND lower(coalesce(programme, '')) = lower(?)
-        ORDER BY id
-        LIMIT 1
-        """,
-        (
-            iup_entry.get("course_code") or iup_entry.get("course_name"),
-            iup_entry.get("academic_period"),
-            iup_entry.get("programme") or "",
-        ),
+def _fallback_component_from_iup(session, iup_entry, preview=False):
+    course = session.scalar(
+        select(Course)
+        .where(
+            func.lower(Course.code) == func.lower(iup_entry.get("course_code") or iup_entry.get("course_name") or ""),
+            Course.semester == iup_entry.get("academic_period"),
+            func.lower(func.coalesce(Course.programme, "")) == func.lower(iup_entry.get("programme") or ""),
+        )
+        .order_by(Course.id)
+        .limit(1)
     )
     if course:
-        course_id = course["id"]
+        course_id = course.id
     elif preview:
         course_id = None
     else:
-        course_id = insert_and_get_id(
-            connection,
-            """
-            INSERT INTO courses (
-                name, code, credits, hours, description, year, semester, department,
-                instructor_id, instructor_name, programme, module_type, module_name,
-                cycle, component, language, academic_year, entry_year, requires_computers
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
+        course = Course(
+            name=iup_entry.get("course_name"),
+            code=iup_entry.get("course_code") or iup_entry.get("course_name"),
+            credits=iup_entry.get("credits"),
+            hours=iup_entry.get("hours"),
+            description="Fallback course created from IUP without ROP match.",
+            year=iup_entry.get("study_course"),
+            semester=iup_entry.get("academic_period"),
+            department="",
+            instructor_id=None,
+            instructor_name="",
+            programme=iup_entry.get("programme") or "",
+            module_type="",
+            module_name="",
+            cycle="",
+            component=iup_entry.get("component") or "",
+            language=iup_entry.get("language") or "",
+            academic_year=iup_entry.get("academic_year") or "",
+            entry_year="",
+            requires_computers=1 if requires_computers_for_component(
+                iup_entry.get("lesson_type"),
+                iup_entry.get("course_code"),
                 iup_entry.get("course_name"),
-                iup_entry.get("course_code") or iup_entry.get("course_name"),
-                iup_entry.get("credits"),
-                iup_entry.get("hours"),
-                "Fallback course created from IUP without ROP match.",
                 iup_entry.get("study_course"),
-                iup_entry.get("academic_period"),
-                "",
-                None,
-                "",
-                iup_entry.get("programme") or "",
-                "",
-                "",
-                "",
-                iup_entry.get("component") or "",
-                iup_entry.get("language") or "",
-                iup_entry.get("academic_year") or "",
-                "",
-                1 if requires_computers_for_component(
-                    iup_entry.get("lesson_type"),
-                    iup_entry.get("course_code"),
-                    iup_entry.get("course_name"),
-                    iup_entry.get("study_course"),
-                ) else 0,
-            ),
+            ) else 0,
         )
+        session.add(course)
+        session.flush()
+        course_id = course.id
     return {
         "component_id": None,
         "course_id": course_id,
@@ -468,149 +466,153 @@ def _fallback_component_from_iup(connection, iup_entry, preview=False):
 def _build_sections_from_iup(connection, payload, preview=False):
     strict_mode = normalize_bool(payload.get("strict_mode", payload.get("strictMode")), True)
     issues = []
-    components = _load_rop_components(connection, payload)
-    iup_entries = _load_iup_entries(connection, payload)
-    component_index, by_lesson_period = _build_component_index(components)
+    with SessionLocal() as session:
+        try:
+            components = _load_rop_components(session, payload)
+            iup_entries = _load_iup_entries(session, payload)
+            component_index, by_lesson_period = _build_component_index(components)
 
-    if not iup_entries:
-        raise ApiError(400, "iup_entries_missing", "Нет записей ИУП для генерации sections.")
-    has_first_year_iup_entries = any(
-        normalize_lesson_type(entry.get("lesson_type")) in ACTIVE_LESSON_TYPES
-        and _is_first_year_base_iup_entry(entry)
-        for entry in iup_entries
-    )
-    if not components and strict_mode and not has_first_year_iup_entries:
-        raise ApiError(400, "rop_components_missing", "Нет компонентов РОП для сопоставления с ИУП.")
-
-    inserted = 0
-    updated = 0
-    skipped = 0
-    generated_sections = []
-    electives_by_group = {}
-
-    for iup_entry in iup_entries:
-        lesson_type = normalize_lesson_type(iup_entry.get("lesson_type"))
-        if lesson_type not in ACTIVE_LESSON_TYPES:
-            skipped += 1
-            continue
-        group = _find_group(connection, iup_entry, issues)
-        if not group:
-            skipped += 1
-            continue
-        if not _same_study_course(group, iup_entry):
-            add_issue(
-                issues,
-                "study_course_mismatch",
-                "Строка ИУП относится к другому курсу обучения и не использована.",
-                "info",
-                iup_entry_id=iup_entry.get("id"),
-                group_name=group.get("name"),
-                group_study_course=group.get("study_course"),
-                iup_study_course=iup_entry.get("study_course"),
-                course_name=iup_entry.get("course_name"),
+            if not iup_entries:
+                raise ApiError(400, "iup_entries_missing", "Нет записей ИУП для генерации sections.")
+            has_first_year_iup_entries = any(
+                normalize_lesson_type(entry.get("lesson_type")) in ACTIVE_LESSON_TYPES
+                and _is_first_year_base_iup_entry(entry)
+                for entry in iup_entries
             )
-            skipped += 1
-            continue
-        if normalize_component(iup_entry.get("component")) in ELECTIVE_COMPONENTS:
-            electives_by_group[iup_entry.get("group_name")] = electives_by_group.get(iup_entry.get("group_name"), 0) + 1
-        component, match_method = _match_component(iup_entry, component_index, by_lesson_period, issues, strict_mode)
-        if component is None:
-            if strict_mode and not _is_first_year_base_iup_entry(iup_entry):
-                skipped += 1
-                continue
-            issue_code = "first_year_iup_course_used" if _is_first_year_base_iup_entry(iup_entry) else "fallback_iup_course_used"
-            issue_message = (
-                "Предмет 1 курса 1/2 периода создан по ИУП без РОП."
-                if _is_first_year_base_iup_entry(iup_entry)
-                else "Section будет создан по ИУП без найденного РОП."
-            )
-            add_issue(issues, issue_code, issue_message, "warning", iup_entry_id=iup_entry["id"])
-            component = _fallback_component_from_iup(connection, iup_entry, preview=preview)
-            match_method = "first_year_iup" if _is_first_year_base_iup_entry(iup_entry) else "fallback_iup"
+            if not components and strict_mode and not has_first_year_iup_entries:
+                raise ApiError(400, "rop_components_missing", "Нет компонентов РОП для сопоставления с ИУП.")
 
-        teacher = _find_teacher_for_preview(connection, iup_entry, issues) if preview else _find_or_create_teacher(connection, iup_entry, issues)
-        if not teacher:
-            skipped += 1
-            continue
+            inserted = 0
+            updated = 0
+            skipped = 0
+            generated_sections = []
+            electives_by_group = {}
 
-        classes_count = _classes_count(iup_entry, component)
-        if classes_count < 1 or classes_count > 4:
-            add_issue(issues, "classes_count_invalid", "classes_count скорректирован до диапазона 1..4.", "warning", iup_entry_id=iup_entry["id"])
-        requires_computers = 1 if lesson_type == "lab" else 0
-        section = {
-            "course_id": component["course_id"],
-            "course_name": component["course_name"],
-            "group_id": group["id"],
-            "group_name": group["name"],
-            "classes_count": classes_count,
-            "lesson_type": lesson_type,
-            "subgroup_mode": "none" if lesson_type == "lecture" else "auto",
-            "subgroup_count": 1,
-            "requires_computers": requires_computers,
-            "teacher_id": teacher["id"],
-            "teacher_name": teacher["name"],
-            "iup_entry_id": iup_entry["id"],
-            "source": "iup",
-            "match_method": match_method,
-        }
+            for iup_entry in iup_entries:
+                lesson_type = normalize_lesson_type(iup_entry.get("lesson_type"))
+                if lesson_type not in ACTIVE_LESSON_TYPES:
+                    skipped += 1
+                    continue
+                group = _find_group(session, iup_entry, issues)
+                if not group:
+                    skipped += 1
+                    continue
+                if not _same_study_course(group, iup_entry):
+                    add_issue(
+                        issues,
+                        "study_course_mismatch",
+                        "Строка ИУП относится к другому курсу обучения и не использована.",
+                        "info",
+                        iup_entry_id=iup_entry.get("id"),
+                        group_name=group.get("name"),
+                        group_study_course=group.get("study_course"),
+                        iup_study_course=iup_entry.get("study_course"),
+                        course_name=iup_entry.get("course_name"),
+                    )
+                    skipped += 1
+                    continue
+                if normalize_component(iup_entry.get("component")) in ELECTIVE_COMPONENTS:
+                    electives_by_group[iup_entry.get("group_name")] = electives_by_group.get(iup_entry.get("group_name"), 0) + 1
+                component, match_method = _match_component(iup_entry, component_index, by_lesson_period, issues, strict_mode)
+                if component is None:
+                    if strict_mode and not _is_first_year_base_iup_entry(iup_entry):
+                        skipped += 1
+                        continue
+                    issue_code = "first_year_iup_course_used" if _is_first_year_base_iup_entry(iup_entry) else "fallback_iup_course_used"
+                    issue_message = (
+                        "Предмет 1 курса 1/2 периода создан по ИУП без РОП."
+                        if _is_first_year_base_iup_entry(iup_entry)
+                        else "Section будет создан по ИУП без найденного РОП."
+                    )
+                    add_issue(issues, issue_code, issue_message, "warning", iup_entry_id=iup_entry["id"])
+                    component = _fallback_component_from_iup(session, iup_entry, preview=preview)
+                    match_method = "first_year_iup" if _is_first_year_base_iup_entry(iup_entry) else "fallback_iup"
 
-        existing = query_one(
-            connection,
-            """
-            SELECT id
-            FROM sections
-            WHERE course_id = ? AND group_id = ? AND lesson_type = ?
-            LIMIT 1
-            """,
-            (section["course_id"], section["group_id"], section["lesson_type"]),
-        )
-        if preview:
-            action = "updated" if existing else "inserted"
-            section_id = existing["id"] if existing else None
-        else:
-            section_id, action = _insert_or_update_section(connection, section)
-            LOGGER.info("section_%s_from_iup section_id=%s iup_entry_id=%s", action, section_id, iup_entry["id"])
+                teacher = _find_teacher_for_preview(session, iup_entry, issues) if preview else _find_or_create_teacher(session, iup_entry, issues)
+                if not teacher:
+                    skipped += 1
+                    continue
 
-        inserted += 1 if action == "inserted" else 0
-        updated += 1 if action == "updated" else 0
-        generated_sections.append({"id": section_id, "action": action, **section})
+                classes_count = _classes_count(iup_entry, component)
+                if classes_count < 1 or classes_count > 4:
+                    add_issue(issues, "classes_count_invalid", "classes_count скорректирован до диапазона 1..4.", "warning", iup_entry_id=iup_entry["id"])
+                requires_computers = 1 if lesson_type == "lab" else 0
+                section = {
+                    "course_id": component["course_id"],
+                    "course_name": component["course_name"],
+                    "group_id": group["id"],
+                    "group_name": group["name"],
+                    "classes_count": classes_count,
+                    "lesson_type": lesson_type,
+                    "subgroup_mode": "none" if lesson_type == "lecture" else "auto",
+                    "subgroup_count": 1,
+                    "requires_computers": requires_computers,
+                    "teacher_id": teacher["id"],
+                    "teacher_name": teacher["name"],
+                    "iup_entry_id": iup_entry["id"],
+                    "source": "iup",
+                    "match_method": match_method,
+                }
 
-    for group_name in {entry.get("group_name") for entry in iup_entries}:
-        elective_count = electives_by_group.get(group_name, 0)
-        if elective_count == 0:
-            add_issue(issues, "electives_missing", "У группы нет КВ в ИУП.", "warning", group_name=group_name)
-        elif elective_count > MAX_ELECTIVES_PER_GROUP:
-            add_issue(issues, "electives_overflow", "В ИУП группы слишком много КВ.", "warning", group_name=group_name, count=elective_count)
+                existing = session.scalar(
+                    select(Section.id)
+                    .where(
+                        Section.course_id == section["course_id"],
+                        Section.group_id == section["group_id"],
+                        Section.lesson_type == section["lesson_type"],
+                    )
+                    .limit(1)
+                )
+                if preview:
+                    action = "updated" if existing else "inserted"
+                    section_id = existing if existing else None
+                else:
+                    section_id, action = _insert_or_update_section_in_session(session, section)
+                    LOGGER.info("section_%s_from_iup section_id=%s iup_entry_id=%s", action, section_id, iup_entry["id"])
 
-    iup_keys = {
-        (
-            normalize_course_code(entry.get("course_code")),
-            int(entry.get("academic_period") or 0),
-            normalize_lesson_type(entry.get("lesson_type")),
-            normalize_programme_text(entry.get("programme")),
-        )
-        for entry in iup_entries
-    }
-    for component in components:
-        component_key = (
-            normalize_course_code(component.get("course_code")),
-            int(component.get("academic_period") or 0),
-            normalize_lesson_type(component.get("lesson_type")),
-            normalize_programme_text(component.get("programme") or component.get("course_programme")),
-        )
-        if component_key not in iup_keys:
-            add_issue(
-                issues,
-                "rop_without_iup",
-                "Дисциплина есть в РОП, но отсутствует в ИУП и не использована.",
-                "info",
-                course_code=component.get("course_code"),
-                course_name=component.get("course_name"),
-                academic_period=component.get("academic_period"),
-            )
+                inserted += 1 if action == "inserted" else 0
+                updated += 1 if action == "updated" else 0
+                generated_sections.append({"id": section_id, "action": action, **section})
 
-    if not preview:
-        connection.commit()
+            for group_name in {entry.get("group_name") for entry in iup_entries}:
+                elective_count = electives_by_group.get(group_name, 0)
+                if elective_count == 0:
+                    add_issue(issues, "electives_missing", "У группы нет КВ в ИУП.", "warning", group_name=group_name)
+                elif elective_count > MAX_ELECTIVES_PER_GROUP:
+                    add_issue(issues, "electives_overflow", "В ИУП группы слишком много КВ.", "warning", group_name=group_name, count=elective_count)
+
+            iup_keys = {
+                (
+                    normalize_course_code(entry.get("course_code")),
+                    int(entry.get("academic_period") or 0),
+                    normalize_lesson_type(entry.get("lesson_type")),
+                    normalize_programme_text(entry.get("programme")),
+                )
+                for entry in iup_entries
+            }
+            for component in components:
+                component_key = (
+                    normalize_course_code(component.get("course_code")),
+                    int(component.get("academic_period") or 0),
+                    normalize_lesson_type(component.get("lesson_type")),
+                    normalize_programme_text(component.get("programme") or component.get("course_programme")),
+                )
+                if component_key not in iup_keys:
+                    add_issue(
+                        issues,
+                        "rop_without_iup",
+                        "Дисциплина есть в РОП, но отсутствует в ИУП и не использована.",
+                        "info",
+                        course_code=component.get("course_code"),
+                        course_name=component.get("course_name"),
+                        academic_period=component.get("academic_period"),
+                    )
+
+            if not preview:
+                session.commit()
+        except Exception:
+            session.rollback()
+            raise
 
     return {
         "preview": preview,
@@ -623,69 +625,63 @@ def _build_sections_from_iup(connection, payload, preview=False):
     }
 
 
-def _insert_or_update_section(connection, section):
-    existing = query_one(
-        connection,
-        """
-        SELECT id, teacher_id, teacher_name
-        FROM sections
-        WHERE course_id = ? AND group_id = ? AND lesson_type = ?
-        LIMIT 1
-        """,
-        (section["course_id"], section["group_id"], section["lesson_type"]),
-    )
-    values = (
-        section["course_id"],
-        section["course_name"],
-        section["group_id"],
-        section["group_name"],
-        section["classes_count"],
-        section["lesson_type"],
-        section["subgroup_mode"],
-        section["subgroup_count"],
-        section["requires_computers"],
-        section["teacher_id"],
-        section["teacher_name"],
-        section["iup_entry_id"],
-        section["source"],
-        section["match_method"],
+def _insert_or_update_section_in_session(session, section):
+    existing = session.scalar(
+        select(Section)
+        .where(
+            Section.course_id == section["course_id"],
+            Section.group_id == section["group_id"],
+            Section.lesson_type == section["lesson_type"],
+        )
+        .limit(1)
     )
     if existing:
-        db_execute(
-            connection,
-            """
-            UPDATE sections
-            SET course_id = ?, course_name = ?, group_id = ?, group_name = ?,
-                classes_count = ?, lesson_type = ?, subgroup_mode = ?, subgroup_count = ?,
-                requires_computers = ?,
-                teacher_id = CASE
-                    WHEN teacher_id IS NULL THEN ?
-                    ELSE teacher_id
-                END,
-                teacher_name = CASE
-                    WHEN teacher_id IS NULL OR coalesce(teacher_name, '') = '' THEN ?
-                    ELSE teacher_name
-                END,
-                iup_entry_id = ?, source = ?, match_method = ?
-            WHERE id = ?
-            """,
-            (*values, existing["id"]),
-        )
-        return existing["id"], "updated"
+        original_teacher_id = existing.teacher_id
+        existing.course_id = section["course_id"]
+        existing.course_name = section["course_name"]
+        existing.group_id = section["group_id"]
+        existing.group_name = section["group_name"]
+        existing.classes_count = section["classes_count"]
+        existing.lesson_type = section["lesson_type"]
+        existing.subgroup_mode = section["subgroup_mode"]
+        existing.subgroup_count = section["subgroup_count"]
+        existing.requires_computers = section["requires_computers"]
+        if original_teacher_id is None:
+            existing.teacher_id = section["teacher_id"]
+        if original_teacher_id is None or not existing.teacher_name:
+            existing.teacher_name = section["teacher_name"]
+        existing.iup_entry_id = section["iup_entry_id"]
+        existing.source = section["source"]
+        existing.match_method = section["match_method"]
+        session.flush()
+        return existing.id, "updated"
 
-    section_id = insert_and_get_id(
-        connection,
-        """
-        INSERT INTO sections (
-            course_id, course_name, group_id, group_name, classes_count,
-            lesson_type, subgroup_mode, subgroup_count, requires_computers,
-            teacher_id, teacher_name, iup_entry_id, source, match_method
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        values,
+    row = Section(
+        course_id=section["course_id"],
+        course_name=section["course_name"],
+        group_id=section["group_id"],
+        group_name=section["group_name"],
+        classes_count=section["classes_count"],
+        lesson_type=section["lesson_type"],
+        subgroup_mode=section["subgroup_mode"],
+        subgroup_count=section["subgroup_count"],
+        requires_computers=section["requires_computers"],
+        teacher_id=section["teacher_id"],
+        teacher_name=section["teacher_name"],
+        iup_entry_id=section["iup_entry_id"],
+        source=section["source"],
+        match_method=section["match_method"],
     )
-    return section_id, "inserted"
+    session.add(row)
+    session.flush()
+    return row.id, "inserted"
+
+
+def _insert_or_update_section(connection, section):
+    with SessionLocal() as session:
+        section_id, action = _insert_or_update_section_in_session(session, section)
+        session.commit()
+        return section_id, action
 
 
 def generate_sections_from_iup(connection, payload):
@@ -698,18 +694,38 @@ def preview_sections_from_iup(connection, payload):
 
 def build_validation_report(connection):
     issues = []
-    sections = query_all(
-        connection,
-        """
-        SELECT
-            s.id, s.course_id, s.course_name, s.group_id, s.group_name,
-            s.lesson_type, s.classes_count, s.teacher_id, s.teacher_name,
-            s.requires_computers, g.student_count
-        FROM sections s
-        LEFT JOIN groups g ON g.id = s.group_id
-        ORDER BY s.id
-        """,
-    )
+    with SessionLocal() as session:
+        sections = session.execute(
+            select(
+                Section.id.label("id"),
+                Section.course_id.label("course_id"),
+                Section.course_name.label("course_name"),
+                Section.group_id.label("group_id"),
+                Section.group_name.label("group_name"),
+                Section.lesson_type.label("lesson_type"),
+                Section.classes_count.label("classes_count"),
+                Section.teacher_id.label("teacher_id"),
+                Section.teacher_name.label("teacher_name"),
+                Section.requires_computers.label("requires_computers"),
+                Group.student_count.label("student_count"),
+            )
+            .outerjoin(Group, Group.id == Section.group_id)
+            .order_by(Section.id)
+        ).mappings().all()
+        components = _load_rop_components(session, {})
+        iup_entries = _load_iup_entries(session, {})
+        rooms = session.execute(
+            select(
+                Room.id.label("id"),
+                Room.number.label("number"),
+                Room.capacity.label("capacity"),
+                Room.type.label("type"),
+                Room.computer_count.label("computer_count"),
+                Room.available.label("available"),
+            )
+            .where(func.coalesce(Room.available, 1) == 1)
+            .order_by(Room.id)
+        ).mappings().all()
     if not sections:
         return {
             "summary": {
@@ -721,8 +737,6 @@ def build_validation_report(connection):
             "issues": [],
         }
 
-    components = _load_rop_components(connection, {})
-    iup_entries = _load_iup_entries(connection, {})
     component_index, _by_lesson_period = _build_component_index(components)
     iup_keys = set()
     for entry in iup_entries:
@@ -769,7 +783,6 @@ def build_validation_report(connection):
         if count < 1 or count > 4:
             add_issue(issues, "classes_count_invalid", "classes_count вне диапазона 1..4.", "error", section_id=section["id"], classes_count=count)
 
-    rooms = query_all(connection, "SELECT id, number, capacity, type, computer_count, available FROM rooms WHERE coalesce(available, 1) = 1")
     for section in sections:
         lesson_type = normalize_lesson_type(section.get("lesson_type"))
         student_count = int(section.get("student_count") or 0)

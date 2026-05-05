@@ -1,10 +1,7 @@
-import json
-
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from ..auth.service import require_auth_user
-from ..core.errors import ApiError
 
 COLLECTION_ALIASES = {
     "disciplines": "courses",
@@ -36,16 +33,6 @@ def query_params_to_legacy_dict(request: Request):
     for key, value in request.query_params.multi_items():
         result.setdefault(key, []).append(value)
     return result
-
-
-async def read_json_body(request: Request):
-    body = await request.body()
-    if not body:
-        return {}
-    try:
-        return json.loads(body.decode("utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ApiError(400, "invalid_json", "Некорректный JSON") from exc
 
 
 def require_collection_access(collection, headers, method):

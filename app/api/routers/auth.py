@@ -9,29 +9,35 @@ from ...auth.service import (
     request_teacher_claim,
     update_profile_avatar,
 )
-from ..common import read_json_body
+from ..schemas import (
+    AuthLoginRequest,
+    AuthRegisterRequest,
+    ProfileAvatarRequest,
+    TeacherClaimConfirmRequest,
+    TeacherClaimRequest,
+)
 
 router = APIRouter()
 
 
 @router.post("/auth/register", status_code=201)
-async def auth_register(request: Request):
-    return register_user(await read_json_body(request))
+async def auth_register(payload: AuthRegisterRequest):
+    return register_user(payload.model_dump(exclude_none=True))
 
 
 @router.post("/auth/teacher-claim/request")
-async def auth_teacher_claim_request(request: Request):
-    return request_teacher_claim(await read_json_body(request))
+async def auth_teacher_claim_request(payload: TeacherClaimRequest):
+    return request_teacher_claim(payload.model_dump(exclude_none=True))
 
 
 @router.post("/auth/teacher-claim/confirm")
-async def auth_teacher_claim_confirm(request: Request):
-    return confirm_teacher_claim(await read_json_body(request))
+async def auth_teacher_claim_confirm(payload: TeacherClaimConfirmRequest):
+    return confirm_teacher_claim(payload.model_dump(exclude_none=True))
 
 
 @router.post("/auth/login")
-async def auth_login(request: Request):
-    return login_user(await read_json_body(request))
+async def auth_login(payload: AuthLoginRequest):
+    return login_user(payload.model_dump(exclude_none=True))
 
 
 @router.post("/auth/logout")
@@ -45,5 +51,5 @@ def profile_get(request: Request):
 
 
 @router.post("/profile/avatar")
-async def profile_avatar(request: Request):
-    return update_profile_avatar(request.headers, await read_json_body(request))
+async def profile_avatar(payload: ProfileAvatarRequest, request: Request):
+    return update_profile_avatar(request.headers, payload.model_dump(exclude_none=True))

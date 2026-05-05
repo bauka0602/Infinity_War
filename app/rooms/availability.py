@@ -1,21 +1,21 @@
 from datetime import datetime
 
-from ..core.db import db_execute, query_all
+from sqlalchemy import or_, select, update
+
+from ..core.orm import SessionLocal
+from ..models import Room, RoomBlock
 
 
 def recompute_room_availability(connection):
     # Room availability is a global on/off flag.
     # Slot-level occupancy is derived from schedules and room_blocks separately.
-    db_execute(
-        connection,
-        """
-        UPDATE rooms
-        SET available = CASE
-            WHEN available IS NULL THEN 1
-            ELSE available
-        END
-        """,
-    )
+    with SessionLocal() as session:
+        session.execute(
+            update(Room)
+            .where(Room.available.is_(None))
+            .values(available=1)
+        )
+        session.commit()
 
 
 def normalize_room_block_day(value):
@@ -29,25 +29,23 @@ def normalize_room_block_day(value):
 
 
 def get_room_blocked_slots(connection, semester=None, year=None):
-    clauses = []
-    params = []
+    conditions = []
     if semester is not None:
-        clauses.append("(semester = ? OR semester IS NULL)")
-        params.append(semester)
+        conditions.append(or_(RoomBlock.semester == semester, RoomBlock.semester.is_(None)))
     if year is not None:
-        clauses.append("(year = ? OR year IS NULL)")
-        params.append(year)
-    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    rows = query_all(
-        connection,
-        f"""
-        SELECT room_id, day, start_hour, end_hour
-        FROM room_blocks
-        {where_sql}
-        ORDER BY room_id, day, start_hour
-        """,
-        tuple(params),
+        conditions.append(or_(RoomBlock.year == year, RoomBlock.year.is_(None)))
+    statement = select(
+        RoomBlock.room_id.label("room_id"),
+        RoomBlock.day.label("day"),
+        RoomBlock.start_hour.label("start_hour"),
+        RoomBlock.end_hour.label("end_hour"),
     )
+    if conditions:
+        statement = statement.where(*conditions)
+    with SessionLocal() as session:
+        rows = session.execute(
+            statement.order_by(RoomBlock.room_id, RoomBlock.day, RoomBlock.start_hour)
+        ).mappings().all()
     blocked_by_room = {}
     for row in rows:
         room_id = row.get("room_id")

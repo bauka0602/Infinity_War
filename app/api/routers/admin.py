@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Request
 
 from ...admin.service import clear_all_data, clear_collection_data, clear_schedule_data
-from ..common import read_json_body
+from ..schemas import ScheduleResetRequest
 
 router = APIRouter()
 
@@ -17,10 +17,9 @@ def admin_clear_collection(collection: str, request: Request):
 
 
 @router.post("/schedules/reset")
-async def schedules_reset(request: Request):
-    payload = await read_json_body(request)
-    semester = payload.get("semester")
-    year = payload.get("year")
+async def schedules_reset(payload: ScheduleResetRequest, request: Request):
+    semester = payload.semester
+    year = payload.year
     return clear_schedule_data(
         request.headers,
         semester=int(semester) if semester not in (None, "") else None,

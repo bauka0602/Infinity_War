@@ -144,7 +144,7 @@ def test_rop_component_matching_ignores_rop_language():
 
 def test_iup_parser_preserves_academic_period_boundaries_for_real_pdf():
     repo_root = Path(__file__).resolve().parents[2]
-    iup_file = repo_root / "ИУП_Бизнес-информатика" / "25-19.pdf"
+    iup_file = repo_root / "fixtures" / "real-data" / "ИУП_Бизнес-информатика" / "25-19.pdf"
     if not iup_file.exists():
         return
 

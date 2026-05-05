@@ -8,29 +8,29 @@ from ...imports.service import (
     parse_iup_preview,
     parse_rop_preview,
 )
-from ..common import read_json_body
+from ..schemas import ImportFileRequest
 
 router = APIRouter()
 
 
 @router.post("/import/rop/preview")
-async def import_rop_preview(request: Request):
-    return parse_rop_preview(request.headers, await read_json_body(request))
+async def import_rop_preview(payload: ImportFileRequest, request: Request):
+    return parse_rop_preview(request.headers, payload.model_dump(exclude_none=True))
 
 
 @router.post("/import/rop")
-async def import_rop(request: Request):
-    return import_rop_data(request.headers, await read_json_body(request))
+async def import_rop(payload: ImportFileRequest, request: Request):
+    return import_rop_data(request.headers, payload.model_dump(exclude_none=True))
 
 
 @router.post("/import/iup/preview")
-async def import_iup_preview(request: Request):
-    return parse_iup_preview(request.headers, await read_json_body(request))
+async def import_iup_preview(payload: ImportFileRequest, request: Request):
+    return parse_iup_preview(request.headers, payload.model_dump(exclude_none=True))
 
 
 @router.post("/import/iup")
-async def import_iup(request: Request):
-    return import_iup_data(request.headers, await read_json_body(request))
+async def import_iup(payload: ImportFileRequest, request: Request):
+    return import_iup_data(request.headers, payload.model_dump(exclude_none=True))
 
 
 @router.get("/export/schedule")

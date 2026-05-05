@@ -1,9 +1,12 @@
 from datetime import datetime, timezone
 
+from sqlalchemy import case, delete, func, select
+
 from ..auth.service import require_auth_user
 from ..core.config import DB_LOCK
-from ..core.db import db_execute, get_connection, insert_and_get_id, query_all, query_one
 from ..core.errors import ApiError
+from ..core.orm import SessionLocal
+from ..models import Teacher, TeacherPreferenceRequest
 from ..schedule.time_slots import SCHEDULE_HOURS
 
 
@@ -66,78 +69,61 @@ def _ensure_admin(user):
         raise ApiError(403, "forbidden", "Недостаточно прав.")
 
 
-def _find_conflict(connection, teacher_id, preferred_day, preferred_hour, exclude_request_id=None):
-    query = """
-        SELECT id, teacher_id, teacher_name, preferred_day, preferred_hour, status
-        FROM teacher_preference_requests
-        WHERE preferred_day = ? AND preferred_hour = ? AND status IN ('pending', 'approved') AND teacher_id <> ?
-    """
-    params = [preferred_day, preferred_hour, teacher_id]
-    if exclude_request_id is not None:
-        query += " AND id <> ?"
-        params.append(exclude_request_id)
+def _teacher_preference_select():
+    return select(
+        TeacherPreferenceRequest.id.label("id"),
+        TeacherPreferenceRequest.teacher_id.label("teacher_id"),
+        TeacherPreferenceRequest.teacher_name.label("teacher_name"),
+        Teacher.email.label("teacher_email"),
+        TeacherPreferenceRequest.preferred_day.label("preferred_day"),
+        TeacherPreferenceRequest.preferred_hour.label("preferred_hour"),
+        TeacherPreferenceRequest.note.label("note"),
+        TeacherPreferenceRequest.status.label("status"),
+        TeacherPreferenceRequest.admin_comment.label("admin_comment"),
+        TeacherPreferenceRequest.created_at.label("created_at"),
+        TeacherPreferenceRequest.updated_at.label("updated_at"),
+    ).join(Teacher, Teacher.id == TeacherPreferenceRequest.teacher_id)
 
-    return query_one(connection, query, tuple(params))
+
+def _find_conflict(session, teacher_id, preferred_day, preferred_hour, exclude_request_id=None):
+    statement = select(TeacherPreferenceRequest).where(
+        TeacherPreferenceRequest.preferred_day == preferred_day,
+        TeacherPreferenceRequest.preferred_hour == preferred_hour,
+        TeacherPreferenceRequest.status.in_(("pending", "approved")),
+        TeacherPreferenceRequest.teacher_id != teacher_id,
+    )
+    if exclude_request_id is not None:
+        statement = statement.where(TeacherPreferenceRequest.id != exclude_request_id)
+    return session.scalar(statement)
 
 
 def list_teacher_preference_requests(headers, mine=False):
     user = require_auth_user(headers)
 
     with DB_LOCK:
-        with get_connection() as connection:
+        with SessionLocal() as session:
             if mine:
                 _ensure_teacher(user)
-                rows = query_all(
-                    connection,
-                    """
-                    SELECT
-                        r.id,
-                        r.teacher_id,
-                        r.teacher_name,
-                        t.email AS teacher_email,
-                        r.preferred_day,
-                        r.preferred_hour,
-                        r.note,
-                        r.status,
-                        r.admin_comment,
-                        r.created_at,
-                        r.updated_at
-                    FROM teacher_preference_requests r
-                    JOIN teachers t ON t.id = r.teacher_id
-                    WHERE r.teacher_id = ?
-                    ORDER BY r.created_at DESC, r.id DESC
-                    """,
-                    (user["id"],),
+                statement = (
+                    _teacher_preference_select()
+                    .where(TeacherPreferenceRequest.teacher_id == user["id"])
+                    .order_by(
+                        TeacherPreferenceRequest.created_at.desc(),
+                        TeacherPreferenceRequest.id.desc(),
+                    )
                 )
             else:
                 _ensure_admin(user)
-                rows = query_all(
-                    connection,
-                    """
-                    SELECT
-                        r.id,
-                        r.teacher_id,
-                        r.teacher_name,
-                        t.email AS teacher_email,
-                        r.preferred_day,
-                        r.preferred_hour,
-                        r.note,
-                        r.status,
-                        r.admin_comment,
-                        r.created_at,
-                        r.updated_at
-                    FROM teacher_preference_requests r
-                    JOIN teachers t ON t.id = r.teacher_id
-                    ORDER BY
-                        CASE r.status
-                            WHEN 'pending' THEN 0
-                            WHEN 'approved' THEN 1
-                            ELSE 2
-                        END,
-                        r.created_at DESC,
-                        r.id DESC
-                    """,
+                statement = _teacher_preference_select().order_by(
+                    case(
+                        (TeacherPreferenceRequest.status == "pending", 0),
+                        (TeacherPreferenceRequest.status == "approved", 1),
+                        else_=2,
+                    ),
+                    TeacherPreferenceRequest.created_at.desc(),
+                    TeacherPreferenceRequest.id.desc(),
                 )
+            rows = session.execute(statement).mappings().all()
     return [_serialize_request(row) for row in rows]
 
 
@@ -147,9 +133,9 @@ def create_teacher_preference_request(headers, payload):
     normalized = _validate_preference_payload(payload)
 
     with DB_LOCK:
-        with get_connection() as connection:
+        with SessionLocal() as session:
             conflict = _find_conflict(
-                connection,
+                session,
                 user["id"],
                 normalized["preferred_day"],
                 normalized["preferred_hour"],
@@ -158,62 +144,40 @@ def create_teacher_preference_request(headers, payload):
                 raise ApiError(
                     400,
                     "bad_request",
-                    f"Слот уже занят заявкой преподавателя {conflict['teacher_name']}.",
+                    f"Слот уже занят заявкой преподавателя {conflict.teacher_name}.",
                 )
 
-            duplicate = query_one(
-                connection,
-                """
-                SELECT id
-                FROM teacher_preference_requests
-                WHERE teacher_id = ? AND preferred_day = ? AND preferred_hour = ? AND status IN ('pending', 'approved')
-                """,
-                (user["id"], normalized["preferred_day"], normalized["preferred_hour"]),
+            duplicate = session.scalar(
+                select(TeacherPreferenceRequest.id).where(
+                    TeacherPreferenceRequest.teacher_id == user["id"],
+                    TeacherPreferenceRequest.preferred_day == normalized["preferred_day"],
+                    TeacherPreferenceRequest.preferred_hour == normalized["preferred_hour"],
+                    TeacherPreferenceRequest.status.in_(("pending", "approved")),
+                )
             )
             if duplicate:
                 raise ApiError(400, "bad_request", "Вы уже отправили запрос на этот слот.")
 
-            request_id = insert_and_get_id(
-                connection,
-                """
-                INSERT INTO teacher_preference_requests (
-                    teacher_id, teacher_name, preferred_day, preferred_hour, note, status, admin_comment, created_at, updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, 'pending', '', ?, ?)
-                """,
-                (
-                    user["id"],
-                    user["full_name"],
-                    normalized["preferred_day"],
-                    normalized["preferred_hour"],
-                    normalized["note"],
-                    _now_iso(),
-                    _now_iso(),
-                ),
+            now = _now_iso()
+            request_row = TeacherPreferenceRequest(
+                teacher_id=user["id"],
+                teacher_name=user["full_name"],
+                preferred_day=normalized["preferred_day"],
+                preferred_hour=normalized["preferred_hour"],
+                note=normalized["note"],
+                status="pending",
+                admin_comment="",
+                created_at=now,
+                updated_at=now,
             )
-            connection.commit()
+            session.add(request_row)
+            session.commit()
 
-            created = query_one(
-                connection,
-                """
-                SELECT
-                    r.id,
-                    r.teacher_id,
-                    r.teacher_name,
-                    t.email AS teacher_email,
-                    r.preferred_day,
-                    r.preferred_hour,
-                    r.note,
-                    r.status,
-                    r.admin_comment,
-                    r.created_at,
-                    r.updated_at
-                FROM teacher_preference_requests r
-                JOIN teachers t ON t.id = r.teacher_id
-                WHERE r.id = ?
-                """,
-                (request_id,),
-            )
+            created = session.execute(
+                _teacher_preference_select().where(
+                    TeacherPreferenceRequest.id == request_row.id
+                )
+            ).mappings().one()
     return _serialize_request(created)
 
 
@@ -227,66 +191,36 @@ def update_teacher_preference_status(headers, request_id, payload):
         raise ApiError(400, "bad_request", "Некорректный статус заявки.")
 
     with DB_LOCK:
-        with get_connection() as connection:
-            existing = query_one(
-                connection,
-                """
-                SELECT id, teacher_id, teacher_name, preferred_day, preferred_hour, note, status, admin_comment, created_at, updated_at
-                FROM teacher_preference_requests
-                WHERE id = ?
-                """,
-                (request_id,),
-            )
+        with SessionLocal() as session:
+            existing = session.get(TeacherPreferenceRequest, request_id)
             if existing is None:
                 raise ApiError(404, "record_not_found", "Запрос преподавателя не найден.")
 
             if status == "approved":
                 conflict = _find_conflict(
-                    connection,
-                    existing["teacher_id"],
-                    existing["preferred_day"],
-                    existing["preferred_hour"],
+                    session,
+                    existing.teacher_id,
+                    existing.preferred_day,
+                    existing.preferred_hour,
                     exclude_request_id=request_id,
                 )
                 if conflict:
                     raise ApiError(
                         400,
                         "bad_request",
-                        f"Слот уже занят заявкой преподавателя {conflict['teacher_name']}.",
+                        f"Слот уже занят заявкой преподавателя {conflict.teacher_name}.",
                     )
 
-            db_execute(
-                connection,
-                """
-                UPDATE teacher_preference_requests
-                SET status = ?, admin_comment = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                (status, admin_comment, _now_iso(), request_id),
-            )
-            connection.commit()
+            existing.status = status
+            existing.admin_comment = admin_comment
+            existing.updated_at = _now_iso()
+            session.commit()
 
-            updated = query_one(
-                connection,
-                """
-                SELECT
-                    r.id,
-                    r.teacher_id,
-                    r.teacher_name,
-                    t.email AS teacher_email,
-                    r.preferred_day,
-                    r.preferred_hour,
-                    r.note,
-                    r.status,
-                    r.admin_comment,
-                    r.created_at,
-                    r.updated_at
-                FROM teacher_preference_requests r
-                JOIN teachers t ON t.id = r.teacher_id
-                WHERE r.id = ?
-                """,
-                (request_id,),
-            )
+            updated = session.execute(
+                _teacher_preference_select().where(
+                    TeacherPreferenceRequest.id == request_id
+                )
+            ).mappings().one()
     return _serialize_request(updated)
 
 
@@ -295,37 +229,21 @@ def delete_teacher_preference_request(headers, request_id):
     _ensure_admin(user)
 
     with DB_LOCK:
-        with get_connection() as connection:
-            existing = query_one(
-                connection,
-                """
-                SELECT
-                    r.id,
-                    r.teacher_id,
-                    r.teacher_name,
-                    t.email AS teacher_email,
-                    r.preferred_day,
-                    r.preferred_hour,
-                    r.note,
-                    r.status,
-                    r.admin_comment,
-                    r.created_at,
-                    r.updated_at
-                FROM teacher_preference_requests r
-                JOIN teachers t ON t.id = r.teacher_id
-                WHERE r.id = ?
-                """,
-                (request_id,),
-            )
+        with SessionLocal() as session:
+            existing = session.execute(
+                _teacher_preference_select().where(
+                    TeacherPreferenceRequest.id == request_id
+                )
+            ).mappings().one_or_none()
             if existing is None:
                 raise ApiError(404, "record_not_found", "Запрос преподавателя не найден.")
 
-            db_execute(
-                connection,
-                "DELETE FROM teacher_preference_requests WHERE id = ?",
-                (request_id,),
+            session.execute(
+                delete(TeacherPreferenceRequest).where(
+                    TeacherPreferenceRequest.id == request_id
+                )
             )
-            connection.commit()
+            session.commit()
 
     return {"deleted": True, "item": _serialize_request(existing)}
 
@@ -335,25 +253,30 @@ def delete_all_teacher_preference_requests(headers):
     _ensure_admin(user)
 
     with DB_LOCK:
-        with get_connection() as connection:
-            row = query_one(
-                connection,
-                "SELECT COUNT(*) AS total FROM teacher_preference_requests",
+        with SessionLocal() as session:
+            total = int(
+                session.scalar(select(func.count()).select_from(TeacherPreferenceRequest))
+                or 0
             )
-            total = int(row["total"] or 0) if row else 0
-            db_execute(connection, "DELETE FROM teacher_preference_requests")
-            connection.commit()
+            session.execute(delete(TeacherPreferenceRequest))
+            session.commit()
 
     return {"deleted": True, "count": total}
 
 
-def get_approved_teacher_preferences(connection):
-    return query_all(
-        connection,
-        """
-        SELECT teacher_id, preferred_day, preferred_hour
-        FROM teacher_preference_requests
-        WHERE status = 'approved'
-        ORDER BY teacher_id, preferred_day, preferred_hour
-        """,
-    )
+def get_approved_teacher_preferences(connection=None):
+    with SessionLocal() as session:
+        rows = session.execute(
+            select(
+                TeacherPreferenceRequest.teacher_id.label("teacher_id"),
+                TeacherPreferenceRequest.preferred_day.label("preferred_day"),
+                TeacherPreferenceRequest.preferred_hour.label("preferred_hour"),
+            )
+            .where(TeacherPreferenceRequest.status == "approved")
+            .order_by(
+                TeacherPreferenceRequest.teacher_id,
+                TeacherPreferenceRequest.preferred_day,
+                TeacherPreferenceRequest.preferred_hour,
+            )
+        ).mappings().all()
+        return [dict(row) for row in rows]

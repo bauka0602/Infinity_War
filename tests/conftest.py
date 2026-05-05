@@ -2,9 +2,11 @@ import importlib
 import os
 import sys
 import time
+from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import func, select
 
 
 MODULE_PREFIXES = ("backend.app", "backend.server")
@@ -32,6 +34,57 @@ def backend_modules(tmp_path):
     return app_module, db_module
 
 
+class OrmTestHelper:
+    def __init__(self):
+        self.orm_module = importlib.import_module("backend.app.core.orm")
+        self.models = importlib.import_module("backend.app.models")
+
+    def model(self, name):
+        return getattr(self.models, name)
+
+    def add(self, model_name, **values):
+        model = self.model(model_name)
+        with self.orm_module.SessionLocal() as session:
+            row = model(**values)
+            session.add(row)
+            session.commit()
+            return row
+
+    def get(self, model_name, item_id):
+        model = self.model(model_name)
+        with self.orm_module.SessionLocal() as session:
+            return session.get(model, item_id)
+
+    def one(self, model_name, **filters):
+        model = self.model(model_name)
+        statement = select(model)
+        for field, value in filters.items():
+            statement = statement.where(getattr(model, field) == value)
+        with self.orm_module.SessionLocal() as session:
+            return session.scalar(statement)
+
+    def list(self, model_name, *order_fields, **filters):
+        model = self.model(model_name)
+        statement = select(model)
+        for field, value in filters.items():
+            statement = statement.where(getattr(model, field) == value)
+        if order_fields:
+            statement = statement.order_by(*(getattr(model, field) for field in order_fields))
+        with self.orm_module.SessionLocal() as session:
+            return list(session.scalars(statement).all())
+
+    def count(self, model_name):
+        model = self.model(model_name)
+        with self.orm_module.SessionLocal() as session:
+            return int(session.scalar(select(func.count()).select_from(model)) or 0)
+
+
+@pytest.fixture
+def orm(backend_modules):
+    _app_module, _db_module = backend_modules
+    return OrmTestHelper()
+
+
 @pytest.fixture
 def client(backend_modules):
     app_module, _db_module = backend_modules
@@ -56,122 +109,86 @@ def admin_auth_headers(client):
 
 @pytest.fixture
 def seeded_teacher_request(backend_modules):
-    _app_module, db_module = backend_modules
-    with db_module.get_connection() as connection:
-        teacher_id = db_module.insert_and_get_id(
-            connection,
-            """
-            INSERT INTO teachers (
-                name, email, password, token, avatar_data, phone, subject_taught, weekly_hours_limit, teaching_languages
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "Teacher Test",
-                "teacher.test@kazatu.edu.kz",
-                "",
-                "",
-                "",
-                "",
-                "Test Department",
-                20,
-                "ru,kk",
-            ),
-        )
-        request_id = db_module.insert_and_get_id(
-            connection,
-            """
-            INSERT INTO teacher_preference_requests (
-                teacher_id, teacher_name, preferred_day, preferred_hour, note, status, admin_comment, created_at, updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
-            """,
-            (
-                teacher_id,
-                "Teacher Test",
-                "monday",
-                8,
-                "Morning preferred",
-                "pending",
-                "",
-            ),
-        )
-        connection.commit()
+    _app_module, _db_module = backend_modules
+    helper = OrmTestHelper()
+    teacher = helper.add(
+        "Teacher",
+        name="Teacher Test",
+        email="teacher.test@kazatu.edu.kz",
+        password="",
+        token="",
+        avatar_data="",
+        phone="",
+        subject_taught="Test Department",
+        weekly_hours_limit=20,
+        teaching_languages="ru,kk",
+    )
+    now = datetime.now(timezone.utc).isoformat()
+    request = helper.add(
+        "TeacherPreferenceRequest",
+        teacher_id=teacher.id,
+        teacher_name="Teacher Test",
+        preferred_day="monday",
+        preferred_hour=8,
+        note="Morning preferred",
+        status="pending",
+        admin_comment="",
+        created_at=now,
+        updated_at=now,
+    )
 
-    return {"teacher_id": teacher_id, "request_id": request_id}
+    return {"teacher_id": teacher.id, "request_id": request.id}
 
 
 @pytest.fixture
 def seeded_claimable_teacher(backend_modules):
-    _app_module, db_module = backend_modules
-    with db_module.get_connection() as connection:
-        teacher_id = db_module.insert_and_get_id(
-            connection,
-            """
-            INSERT INTO teachers (
-                name, email, password, token, avatar_data, phone, subject_taught, weekly_hours_limit, teaching_languages
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "Claimable Teacher",
-                "claimable.teacher@kazatu.edu.kz",
-                "",
-                "",
-                "",
-                "+77001112233",
-                "CS",
-                18,
-                "ru,kk",
-            ),
-        )
-        connection.commit()
-    return {"teacher_id": teacher_id}
+    _app_module, _db_module = backend_modules
+    teacher = OrmTestHelper().add(
+        "Teacher",
+        name="Claimable Teacher",
+        email="claimable.teacher@kazatu.edu.kz",
+        password="",
+        token="",
+        avatar_data="",
+        phone="+77001112233",
+        subject_taught="CS",
+        weekly_hours_limit=18,
+        teaching_languages="ru,kk",
+    )
+    return {"teacher_id": teacher.id}
 
 
 @pytest.fixture
 def seeded_group(backend_modules):
-    _app_module, db_module = backend_modules
-    with db_module.get_connection() as connection:
-        group_id = db_module.insert_and_get_id(
-            connection,
-            """
-            INSERT INTO groups (name, student_count, has_subgroups, language, study_course)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            ("SE-24-01", 24, 0, "ru", 2),
-        )
-        connection.commit()
-    return {"group_id": group_id}
+    _app_module, _db_module = backend_modules
+    group = OrmTestHelper().add(
+        "Group",
+        name="SE-24-01",
+        student_count=24,
+        has_subgroups=0,
+        language="ru",
+        study_course=2,
+    )
+    return {"group_id": group.id}
 
 
 @pytest.fixture
 def seeded_teacher_account(backend_modules):
-    _app_module, db_module = backend_modules
+    _app_module, _db_module = backend_modules
     security_module = importlib.import_module("backend.app.auth.security")
-    with db_module.get_connection() as connection:
-        teacher_id = db_module.insert_and_get_id(
-            connection,
-            """
-            INSERT INTO teachers (
-                name, email, password, token, avatar_data, phone, subject_taught, weekly_hours_limit, teaching_languages
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "Active Teacher",
-                "active.teacher@kazatu.edu.kz",
-                security_module.hash_password("teacher123"),
-                "",
-                "",
-                "+77002223344",
-                "CS",
-                20,
-                "ru,kk",
-            ),
-        )
-        connection.commit()
-    return {"teacher_id": teacher_id, "email": "active.teacher@kazatu.edu.kz", "password": "teacher123"}
+    teacher = OrmTestHelper().add(
+        "Teacher",
+        name="Active Teacher",
+        email="active.teacher@kazatu.edu.kz",
+        password=security_module.hash_password("teacher123"),
+        token="",
+        avatar_data="",
+        phone="+77002223344",
+        subject_taught="CS",
+        weekly_hours_limit=20,
+        teaching_languages="ru,kk",
+    )
+    return {"teacher_id": teacher.id, "email": "active.teacher@kazatu.edu.kz", "password": "teacher123"}
 
 
 @pytest.fixture
@@ -191,28 +208,20 @@ def teacher_auth_headers(client, seeded_teacher_account):
 
 @pytest.fixture
 def seeded_notification(backend_modules):
-    _app_module, db_module = backend_modules
-    with db_module.get_connection() as connection:
-        notification_id = db_module.insert_and_get_id(
-            connection,
-            """
-            INSERT INTO notifications (
-                recipient_role, recipient_id, title, message, metadata, notification_type, is_read, created_at, read_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), NULL)
-            """,
-            (
-                "teacher",
-                1,
-                "Schedule changed",
-                "A lesson was updated",
-                "{}",
-                "schedule_changed",
-                0,
-            ),
-        )
-        connection.commit()
-    return {"notification_id": notification_id}
+    _app_module, _db_module = backend_modules
+    notification = OrmTestHelper().add(
+        "Notification",
+        recipient_role="teacher",
+        recipient_id=1,
+        title="Schedule changed",
+        message="A lesson was updated",
+        metadata_json="{}",
+        notification_type="schedule_changed",
+        is_read=0,
+        created_at=datetime.now(timezone.utc).isoformat(),
+        read_at=None,
+    )
+    return {"notification_id": notification.id}
 
 
 def wait_for_job_completion(client, headers, job_id, timeout_seconds=5):

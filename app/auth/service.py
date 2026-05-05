@@ -1,9 +1,12 @@
 import secrets
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import func, select, update
+
 from ..core.config import DB_LOCK, EXPOSE_DEV_CLAIM_CODE, TEACHER_EMAIL_DOMAIN
-from ..core.db import db_execute, get_connection, insert_and_get_id, query_all, query_one
 from ..core.errors import ApiError
+from ..core.orm import SessionLocal
+from ..models import Course, CourseComponent, Group, Schedule, Section, Student, Teacher, User
 from .security import (
     hash_password,
     needs_password_rehash,
@@ -48,32 +51,28 @@ def normalize_phone_search(value):
 
 
 def _count_students_in_group(connection, group_id):
-    return int(
-        query_one(
-            connection,
-            """
-            SELECT COUNT(*) AS count
-            FROM students
-            WHERE group_id = ?
-            """,
-            (group_id,),
-        )["count"]
-    )
+    with SessionLocal() as session:
+        return int(
+            session.scalar(
+                select(func.count()).select_from(Student).where(Student.group_id == group_id)
+            )
+            or 0
+        )
 
 
 def _count_students_in_subgroup(connection, group_id, subgroup):
-    return int(
-        query_one(
-            connection,
-            """
-            SELECT COUNT(*) AS count
-            FROM students
-            WHERE group_id = ?
-              AND upper(coalesce(subgroup, '')) = ?
-            """,
-            (group_id, subgroup),
-        )["count"]
-    )
+    with SessionLocal() as session:
+        return int(
+            session.scalar(
+                select(func.count())
+                .select_from(Student)
+                .where(
+                    Student.group_id == group_id,
+                    func.upper(func.coalesce(Student.subgroup, "")) == subgroup,
+                )
+            )
+            or 0
+        )
 
 
 def _subgroup_capacity_limits(group_capacity):
@@ -150,128 +149,155 @@ def _serialize_claimable_teacher(row):
         "teachingLanguages": row.get("teaching_languages", "") or "ru,kk",
     }
 
+
+def _admin_account_dict(row):
+    return {
+        "id": row.id,
+        "email": row.email,
+        "phone": "",
+        "full_name": row.full_name,
+        "role": row.role,
+        "token": row.token,
+        "avatar_data": row.avatar_data,
+        "department": row.department,
+        "programme": row.programme,
+        "group_id": row.group_id,
+        "group_name": row.group_name,
+        "subgroup": row.subgroup,
+        "language": "",
+        "teaching_languages": "",
+    }
+
+
+def _teacher_account_dict(row, include_claim_fields=False):
+    data = {
+        "id": row.id,
+        "email": row.email,
+        "phone": row.phone,
+        "password": row.password,
+        "full_name": row.name,
+        "name": row.name,
+        "role": "teacher",
+        "token": row.token,
+        "avatar_data": row.avatar_data,
+        "department": "",
+        "subject_taught": row.subject_taught,
+        "programme": "",
+        "group_id": None,
+        "group_name": "",
+        "subgroup": "",
+        "language": "",
+        "weekly_hours_limit": row.weekly_hours_limit,
+        "teaching_languages": row.teaching_languages,
+    }
+    if include_claim_fields:
+        data.update(
+            {
+                "claim_code": row.claim_code,
+                "claim_code_expires_at": row.claim_code_expires_at,
+                "claim_requested_at": row.claim_requested_at,
+            }
+        )
+    return data
+
+
+def _student_account_dict(row):
+    return {
+        "id": row.id,
+        "email": row.email,
+        "phone": "",
+        "password": row.password,
+        "full_name": row.name,
+        "name": row.name,
+        "role": "student",
+        "token": row.token,
+        "avatar_data": row.avatar_data,
+        "department": row.department,
+        "programme": row.programme,
+        "group_id": row.group_id,
+        "group_name": row.group_name,
+        "subgroup": row.subgroup,
+        "language": row.language,
+        "teaching_languages": "",
+    }
+
+
 def _find_account_by_token(connection, token):
-    admin = query_one(
-        connection,
-        """
-        SELECT id, email, '' AS phone, full_name, role, token, avatar_data, department, programme, group_id, group_name, subgroup, '' AS language, '' AS teaching_languages
-        FROM users
-        WHERE role = 'admin' AND token = ?
-        """,
-        (token,),
-    )
-    if admin:
-        return admin
+    with SessionLocal() as session:
+        admin = session.scalar(
+            select(User).where(User.role == "admin", User.token == token)
+        )
+        if admin:
+            return _admin_account_dict(admin)
 
-    teacher = query_one(
-        connection,
-        """
-        SELECT
-            id, email, phone, name AS full_name, 'teacher' AS role, token, avatar_data,
-            '' AS department, subject_taught, '' AS programme, NULL AS group_id, '' AS group_name, '' AS subgroup, '' AS language, teaching_languages
-        FROM teachers
-        WHERE token = ?
-        """,
-        (token,),
-    )
-    if teacher:
-        return teacher
+        teacher = session.scalar(select(Teacher).where(Teacher.token == token))
+        if teacher:
+            return _teacher_account_dict(teacher)
 
-    return query_one(
-        connection,
-        """
-        SELECT
-            id, email, '' AS phone, name AS full_name, 'student' AS role, token, avatar_data,
-            department, programme, group_id, group_name, subgroup, language, '' AS teaching_languages
-        FROM students
-        WHERE token = ?
-        """,
-        (token,),
-    )
+        student = session.scalar(select(Student).where(Student.token == token))
+        return _student_account_dict(student) if student else None
 
 
 def _email_exists(connection, email):
     normalized = email.strip().lower()
-    checks = (
-        ("users", "SELECT id FROM users WHERE lower(email) = lower(?)"),
-        ("teachers", "SELECT id FROM teachers WHERE lower(email) = lower(?)"),
-        ("students", "SELECT id FROM students WHERE lower(email) = lower(?)"),
-    )
-    for _, query in checks:
-        if query_one(connection, query, (normalized,)):
-            return True
-    return False
+    with SessionLocal() as session:
+        return any(
+            (
+                session.scalar(select(User.id).where(func.lower(User.email) == normalized)),
+                session.scalar(select(Teacher.id).where(func.lower(Teacher.email) == normalized)),
+                session.scalar(select(Student.id).where(func.lower(Student.email) == normalized)),
+            )
+        )
 
 
 def _find_teacher_by_email(connection, email):
     normalized = email.strip().lower()
-    return query_one(
-        connection,
-        """
-        SELECT id, email, password, token, name, phone, subject_taught, weekly_hours_limit, avatar_data, teaching_languages
-        FROM teachers
-        WHERE lower(email) = lower(?)
-        """,
-        (normalized,),
-    )
+    with SessionLocal() as session:
+        teacher = session.scalar(select(Teacher).where(func.lower(Teacher.email) == normalized))
+        return _teacher_account_dict(teacher) if teacher else None
 
 
 def _find_teacher_by_id(connection, teacher_id):
-    return query_one(
-        connection,
-        """
-        SELECT
-            id, email, password, token, name, phone, subject_taught, weekly_hours_limit,
-            avatar_data, teaching_languages, claim_code, claim_code_expires_at, claim_requested_at
-        FROM teachers
-        WHERE id = ?
-        """,
-        (teacher_id,),
-    )
+    with SessionLocal() as session:
+        teacher = session.get(Teacher, teacher_id)
+        return _teacher_account_dict(teacher, include_claim_fields=True) if teacher else None
 
 
 def _clear_teacher_claim_state(connection, teacher_id):
-    db_execute(
-        connection,
-        """
-        UPDATE teachers
-        SET claim_code = NULL, claim_code_expires_at = NULL, claim_requested_at = NULL
-        WHERE id = ?
-        """,
-        (teacher_id,),
-    )
+    with SessionLocal() as session:
+        session.execute(
+            update(Teacher)
+            .where(Teacher.id == teacher_id)
+            .values(
+                claim_code=None,
+                claim_code_expires_at=None,
+                claim_requested_at=None,
+            )
+        )
+        session.commit()
 
 
 def _get_teacher_assigned_disciplines(connection, teacher_id):
-    rows = query_all(
-        connection,
-        """
-        SELECT discipline_name
-        FROM (
-            SELECT course_name AS discipline_name
-            FROM course_components
-            WHERE teacher_id = ?
-              AND trim(coalesce(course_name, '')) <> ''
-
-            UNION
-
-            SELECT name AS discipline_name
-            FROM courses
-            WHERE instructor_id = ?
-              AND trim(coalesce(name, '')) <> ''
-
-            UNION
-
-            SELECT course_name AS discipline_name
-            FROM sections
-            WHERE teacher_id = ?
-              AND trim(coalesce(course_name, '')) <> ''
-        ) assigned
-        ORDER BY discipline_name
-        """,
-        (teacher_id, teacher_id, teacher_id),
-    )
-    return [row["discipline_name"] for row in rows if row.get("discipline_name")]
+    with SessionLocal() as session:
+        rows = session.execute(
+            select(CourseComponent.course_name.label("discipline_name"))
+            .where(
+                CourseComponent.teacher_id == teacher_id,
+                func.trim(func.coalesce(CourseComponent.course_name, "")) != "",
+            )
+            .union(
+                select(Course.name.label("discipline_name")).where(
+                    Course.instructor_id == teacher_id,
+                    func.trim(func.coalesce(Course.name, "")) != "",
+                ),
+                select(Section.course_name.label("discipline_name")).where(
+                    Section.teacher_id == teacher_id,
+                    func.trim(func.coalesce(Section.course_name, "")) != "",
+                ),
+            )
+            .order_by("discipline_name")
+        ).all()
+    return [row.discipline_name for row in rows if row.discipline_name]
 
 
 def _sanitize_profile_user(connection, user):
@@ -289,40 +315,22 @@ def _sanitize_profile_user(connection, user):
 
 def _find_login_account(connection, email, selected_role):
     normalized = email.strip().lower()
-    if selected_role == "admin":
-        return query_one(
-            connection,
-            """
-            SELECT id, email, '' AS phone, password, full_name, role, token, avatar_data, department, programme, group_id, group_name, subgroup, '' AS language, '' AS teaching_languages
-            FROM users
-            WHERE role = 'admin' AND lower(email) = lower(?)
-            """,
-            (normalized,),
-        )
-    if selected_role == "teacher":
-        return query_one(
-            connection,
-            """
-            SELECT
-                id, email, phone, password, name AS full_name, 'teacher' AS role, token, avatar_data,
-                '' AS department, subject_taught, '' AS programme, NULL AS group_id, '' AS group_name, '' AS subgroup, '' AS language, teaching_languages
-            FROM teachers
-            WHERE lower(email) = lower(?)
-            """,
-            (normalized,),
-        )
-    if selected_role == "student":
-        return query_one(
-            connection,
-            """
-            SELECT
-                id, email, '' AS phone, password, name AS full_name, 'student' AS role, token, avatar_data,
-                department, programme, group_id, group_name, subgroup, language, '' AS teaching_languages
-            FROM students
-            WHERE lower(email) = lower(?)
-            """,
-            (normalized,),
-        )
+    with SessionLocal() as session:
+        if selected_role == "admin":
+            admin = session.scalar(
+                select(User).where(User.role == "admin", func.lower(User.email) == normalized)
+            )
+            if admin is None:
+                return None
+            data = _admin_account_dict(admin)
+            data["password"] = admin.password
+            return data
+        if selected_role == "teacher":
+            teacher = session.scalar(select(Teacher).where(func.lower(Teacher.email) == normalized))
+            return _teacher_account_dict(teacher) if teacher else None
+        if selected_role == "student":
+            student = session.scalar(select(Student).where(func.lower(Student.email) == normalized))
+            return _student_account_dict(student) if student else None
 
     return (
         _find_login_account(connection, email, "admin")
@@ -337,8 +345,7 @@ def require_auth_user(headers):
         raise ApiError(401, "auth_required", "Требуется авторизация")
 
     with DB_LOCK:
-        with get_connection() as connection:
-            user = _find_account_by_token(connection, token)
+        user = _find_account_by_token(None, token)
 
     if user is None:
         raise ApiError(401, "invalid_token", "Недействительный токен")
@@ -410,10 +417,8 @@ def register_user(payload):
     ensure_teacher_email_allowed(email, role)
 
     with DB_LOCK:
-        with get_connection() as connection:
-            existing_teacher = (
-                _find_teacher_by_email(connection, email) if role == "teacher" else None
-            )
+        with SessionLocal() as session:
+            existing_teacher = _find_teacher_by_email(None, email) if role == "teacher" else None
             if role == "student":
                 try:
                     group_id = int(group_id)
@@ -425,32 +430,27 @@ def register_user(payload):
                         {"fields": ["groupId"]},
                     ) from exc
 
-                selected_group = query_one(
-                    connection,
-                    """
-                    SELECT
-                        g.id,
-                        g.name,
-                        g.student_count,
-                        g.has_subgroups,
-                        g.language,
-                        CASE
-                            WHEN EXISTS (
-                                SELECT 1
-                                FROM schedules s
-                                WHERE s.group_id = g.id
-                                  AND trim(coalesce(s.subgroup, '')) <> ''
-                            )
-                            THEN 1
-                            ELSE 0
-                        END AS auto_has_subgroups
-                    FROM groups g
-                    WHERE g.id = ?
-                    """,
-                    (group_id,),
-                )
-                if selected_group is None:
+                group = session.get(Group, group_id)
+                if group is None:
                     raise ApiError(400, "bad_request", "Выбрана некорректная группа")
+                auto_has_subgroups = bool(
+                    session.scalar(
+                        select(Schedule.id)
+                        .where(
+                            Schedule.group_id == group.id,
+                            func.trim(func.coalesce(Schedule.subgroup, "")) != "",
+                        )
+                        .limit(1)
+                    )
+                )
+                selected_group = {
+                    "id": group.id,
+                    "name": group.name,
+                    "student_count": group.student_count,
+                    "has_subgroups": group.has_subgroups,
+                    "language": group.language,
+                    "auto_has_subgroups": 1 if auto_has_subgroups else 0,
+                }
                 if student_language != normalize_language(selected_group.get("language"), "ru"):
                     raise ApiError(
                         400,
@@ -468,7 +468,7 @@ def register_user(payload):
                 else:
                     subgroup = ""
 
-                _enforce_student_group_capacity(connection, selected_group, subgroup)
+                _enforce_student_group_capacity(None, selected_group, subgroup)
 
             if role == "teacher" and existing_teacher and not _is_teacher_claimed(existing_teacher):
                 raise ApiError(
@@ -477,7 +477,7 @@ def register_user(payload):
                     "Для импортированного преподавателя нужно подтвердить аккаунт через поиск и код.",
                 )
 
-            if _email_exists(connection, email):
+            if _email_exists(None, email):
                 raise ApiError(
                     400,
                     "email_already_exists",
@@ -485,83 +485,46 @@ def register_user(payload):
                 )
             token = secrets.token_urlsafe(32)
             if role == "teacher":
-                user_id = insert_and_get_id(
-                    connection,
-                    """
-                    INSERT INTO teachers (
-                        name, email, password, token, avatar_data, phone, subject_taught,
-                        weekly_hours_limit, teaching_languages, name_normalized, name_signature
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        payload["displayName"],
-                        email,
-                        hash_password(payload["password"]),
-                        token,
-                        None,
-                        phone,
-                        subject_taught,
-                        None,
-                        ",".join(teaching_languages),
-                        normalize_teacher_name(payload["displayName"]),
-                        build_teacher_name_signature(payload["displayName"]),
-                    ),
+                teacher = Teacher(
+                    name=payload["displayName"],
+                    email=email,
+                    password=hash_password(payload["password"]),
+                    token=token,
+                    avatar_data=None,
+                    phone=phone,
+                    subject_taught=subject_taught,
+                    weekly_hours_limit=None,
+                    teaching_languages=",".join(teaching_languages),
+                    name_normalized=normalize_teacher_name(payload["displayName"]),
+                    name_signature=build_teacher_name_signature(payload["displayName"]),
                 )
-                user = query_one(
-                    connection,
-                    """
-                    SELECT
-                        id, email, phone, name AS full_name, 'teacher' AS role, token, avatar_data,
-                        '' AS department, subject_taught, '' AS programme, NULL AS group_id, '' AS group_name, '' AS subgroup, '' AS language, teaching_languages
-                    FROM teachers
-                    WHERE id = ?
-                    """,
-                    (user_id,),
-                )
+                session.add(teacher)
+                session.commit()
+                user = _teacher_account_dict(teacher)
             else:
-                user_id = insert_and_get_id(
-                    connection,
-                    """
-                    INSERT INTO students (
-                        name, email, password, token, avatar_data, department, programme, group_id, group_name, subgroup, language
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        payload["displayName"],
-                        email,
-                        hash_password(payload["password"]),
-                        token,
-                        None,
-                        department,
-                        programme_name,
-                        selected_group["id"],
-                        selected_group["name"],
-                        subgroup,
-                        student_language,
-                    ),
+                student = Student(
+                    name=payload["displayName"],
+                    email=email,
+                    password=hash_password(payload["password"]),
+                    token=token,
+                    avatar_data=None,
+                    department=department,
+                    programme=programme_name,
+                    group_id=selected_group["id"],
+                    group_name=selected_group["name"],
+                    subgroup=subgroup,
+                    language=student_language,
                 )
-                user = query_one(
-                    connection,
-                    """
-                    SELECT
-                        id, email, '' AS phone, name AS full_name, 'student' AS role, token, avatar_data,
-                        department, programme, group_id, group_name, subgroup, language, '' AS teaching_languages
-                    FROM students
-                    WHERE id = ?
-                    """,
-                    (user_id,),
-                )
-            connection.commit()
-            return _sanitize_profile_user(connection, user)
+                session.add(student)
+                session.commit()
+                user = _student_account_dict(student)
+            return _sanitize_profile_user(None, user)
 
 
 def get_current_profile(headers):
     user = require_auth_user(headers)
     with DB_LOCK:
-        with get_connection() as connection:
-            return _sanitize_profile_user(connection, user)
+        return _sanitize_profile_user(None, user)
 
 
 def update_profile_avatar(headers, payload):
@@ -578,41 +541,28 @@ def update_profile_avatar(headers, payload):
     user = require_auth_user(headers)
 
     with DB_LOCK:
-        with get_connection() as connection:
+        with SessionLocal() as session:
             if user["role"] == "admin":
-                db_execute(
-                    connection,
-                    """
-                    UPDATE users
-                    SET avatar_data = ?
-                    WHERE id = ?
-                    """,
-                    (avatar_data, user["id"]),
+                session.execute(
+                    update(User).where(User.id == user["id"]).values(avatar_data=avatar_data)
                 )
             elif user["role"] == "teacher":
-                db_execute(
-                    connection,
-                    """
-                    UPDATE teachers
-                    SET avatar_data = ?
-                    WHERE id = ?
-                    """,
-                    (avatar_data, user["id"]),
+                session.execute(
+                    update(Teacher)
+                    .where(Teacher.id == user["id"])
+                    .values(avatar_data=avatar_data)
                 )
             else:
-                db_execute(
-                    connection,
-                    """
-                    UPDATE students
-                    SET avatar_data = ?
-                    WHERE id = ?
-                    """,
-                    (avatar_data, user["id"]),
+                session.execute(
+                    update(Student)
+                    .where(Student.id == user["id"])
+                    .values(avatar_data=avatar_data)
                 )
-            connection.commit()
-            updated_user = _find_account_by_token(connection, user["token"])
+            session.commit()
 
-    return _sanitize_profile_user(connection, updated_user)
+        updated_user = _find_account_by_token(None, user["token"])
+
+    return _sanitize_profile_user(None, updated_user)
 
 
 def login_user(payload):
@@ -624,52 +574,52 @@ def login_user(payload):
         raise ApiError(400, "invalid_role", "Некорректная роль")
 
     with DB_LOCK:
-        with get_connection() as connection:
-            user = _find_login_account(connection, email, selected_role or None)
+        user = _find_login_account(None, email, selected_role or None)
 
-            if user is None or not verify_password(user["password"], password):
-                raise ApiError(401, "invalid_credentials", "Неверный email или пароль")
+        if user is None or not verify_password(user["password"], password):
+            raise ApiError(401, "invalid_credentials", "Неверный email или пароль")
 
-            if selected_role and user["role"] != selected_role:
-                raise ApiError(
-                    403,
-                    "role_mismatch",
-                    "Этот аккаунт зарегистрирован с другой ролью",
-                )
+        if selected_role and user["role"] != selected_role:
+            raise ApiError(
+                403,
+                "role_mismatch",
+                "Этот аккаунт зарегистрирован с другой ролью",
+            )
 
-            if user["role"] == "teacher" and not user["email"].lower().endswith(
-                TEACHER_EMAIL_DOMAIN
-            ):
-                raise ApiError(
-                    403,
-                    "teacher_account_email_domain_required",
-                    "У аккаунта преподавателя должен быть email @kazatu.edu.kz",
-                )
+        if user["role"] == "teacher" and not user["email"].lower().endswith(
+            TEACHER_EMAIL_DOMAIN
+        ):
+            raise ApiError(
+                403,
+                "teacher_account_email_domain_required",
+                "У аккаунта преподавателя должен быть email @kazatu.edu.kz",
+            )
 
-            token = secrets.token_urlsafe(32)
-            password_hash = hash_password(password) if needs_password_rehash(user["password"]) else user["password"]
+        token = secrets.token_urlsafe(32)
+        password_hash = hash_password(password) if needs_password_rehash(user["password"]) else user["password"]
+        with SessionLocal() as session:
             if user["role"] == "admin":
-                db_execute(
-                    connection,
-                    "UPDATE users SET token = ?, password = ? WHERE id = ?",
-                    (token, password_hash, user["id"]),
+                session.execute(
+                    update(User)
+                    .where(User.id == user["id"])
+                    .values(token=token, password=password_hash)
                 )
             elif user["role"] == "teacher":
-                db_execute(
-                    connection,
-                    "UPDATE teachers SET token = ?, password = ? WHERE id = ?",
-                    (token, password_hash, user["id"]),
+                session.execute(
+                    update(Teacher)
+                    .where(Teacher.id == user["id"])
+                    .values(token=token, password=password_hash)
                 )
             else:
-                db_execute(
-                    connection,
-                    "UPDATE students SET token = ?, password = ? WHERE id = ?",
-                    (token, password_hash, user["id"]),
+                session.execute(
+                    update(Student)
+                    .where(Student.id == user["id"])
+                    .values(token=token, password=password_hash)
                 )
-            connection.commit()
+            session.commit()
 
-            user["token"] = token
-            user["password"] = password_hash
+        user["token"] = token
+        user["password"] = password_hash
 
     return sanitize_user(user)
 
@@ -678,14 +628,14 @@ def logout_user(headers):
     user = require_auth_user(headers)
 
     with DB_LOCK:
-        with get_connection() as connection:
+        with SessionLocal() as session:
             if user["role"] == "admin":
-                db_execute(connection, "UPDATE users SET token = '' WHERE id = ?", (user["id"],))
+                session.execute(update(User).where(User.id == user["id"]).values(token=""))
             elif user["role"] == "teacher":
-                db_execute(connection, "UPDATE teachers SET token = '' WHERE id = ?", (user["id"],))
+                session.execute(update(Teacher).where(Teacher.id == user["id"]).values(token=""))
             else:
-                db_execute(connection, "UPDATE students SET token = '' WHERE id = ?", (user["id"],))
-            connection.commit()
+                session.execute(update(Student).where(Student.id == user["id"]).values(token=""))
+            session.commit()
 
     return {"success": True}
 
@@ -715,16 +665,21 @@ def search_claimable_teachers(query_value):
         return []
 
     with DB_LOCK:
-        with get_connection() as connection:
-            rows = query_all(
-                connection,
-                """
-                SELECT id, name, email, phone, teaching_languages
-                FROM teachers
-                WHERE COALESCE(password, '') = '' AND COALESCE(token, '') = ''
-                ORDER BY name, id
-                """,
-            )
+        with SessionLocal() as session:
+            rows = session.execute(
+                select(
+                    Teacher.id.label("id"),
+                    Teacher.name.label("name"),
+                    Teacher.email.label("email"),
+                    Teacher.phone.label("phone"),
+                    Teacher.teaching_languages.label("teaching_languages"),
+                )
+                .where(
+                    func.coalesce(Teacher.password, "") == "",
+                    func.coalesce(Teacher.token, "") == "",
+                )
+                .order_by(Teacher.name, Teacher.id)
+            ).mappings().all()
 
     matched_rows = []
     for row in rows:
@@ -764,17 +719,17 @@ def request_teacher_claim(payload):
         raise ApiError(400, "invalid_id", "ID должен быть числом.") from exc
 
     with DB_LOCK:
-        with get_connection() as connection:
-            teacher = _find_teacher_by_id(connection, teacher_id)
+        with SessionLocal() as session:
+            teacher = session.get(Teacher, teacher_id)
             if teacher is None:
                 raise ApiError(404, "record_not_found", "Преподаватель не найден.")
-            if _is_teacher_claimed(teacher):
+            if teacher.password or teacher.token:
                 raise ApiError(
                     400,
                     "teacher_claim_already_completed",
                     "Этот аккаунт преподавателя уже активирован.",
                 )
-            email = teacher["email"].strip().lower()
+            email = str(teacher.email or "").strip().lower()
             if not email:
                 if not provided_email:
                     raise ApiError(
@@ -785,27 +740,17 @@ def request_teacher_claim(payload):
                     )
                 ensure_teacher_email_allowed(provided_email, "teacher")
                 email = provided_email
-                db_execute(
-                    connection,
-                    "UPDATE teachers SET email = ? WHERE id = ?",
-                    (email, teacher["id"]),
-                )
+                teacher.email = email
             else:
                 ensure_teacher_email_allowed(email, "teacher")
 
             claim_code = f"{secrets.randbelow(1_000_000):06d}"
             expires_at = (_utc_now() + timedelta(minutes=10)).isoformat()
             requested_at = _utc_now_iso()
-            db_execute(
-                connection,
-                """
-                UPDATE teachers
-                SET claim_code = ?, claim_code_expires_at = ?, claim_requested_at = ?
-                WHERE id = ?
-                """,
-                (claim_code, expires_at, requested_at, teacher["id"]),
-            )
-            connection.commit()
+            teacher.claim_code = claim_code
+            teacher.claim_code_expires_at = expires_at
+            teacher.claim_requested_at = requested_at
+            session.commit()
 
     return {
         "success": True,
@@ -843,17 +788,17 @@ def confirm_teacher_claim(payload):
         raise ApiError(400, "invalid_id", "ID должен быть числом.") from exc
 
     with DB_LOCK:
-        with get_connection() as connection:
-            teacher = _find_teacher_by_id(connection, teacher_id)
+        with SessionLocal() as session:
+            teacher = session.get(Teacher, teacher_id)
             if teacher is None:
                 raise ApiError(404, "record_not_found", "Преподаватель не найден.")
-            if _is_teacher_claimed(teacher):
+            if teacher.password or teacher.token:
                 raise ApiError(
                     400,
                     "teacher_claim_already_completed",
                     "Этот аккаунт преподавателя уже активирован.",
                 )
-            email = teacher["email"].strip().lower()
+            email = str(teacher.email or "").strip().lower()
             if not email:
                 if not provided_email:
                     raise ApiError(
@@ -864,21 +809,17 @@ def confirm_teacher_claim(payload):
                     )
                 ensure_teacher_email_allowed(provided_email, "teacher")
                 email = provided_email
-                db_execute(
-                    connection,
-                    "UPDATE teachers SET email = ? WHERE id = ?",
-                    (email, teacher["id"]),
-                )
+                teacher.email = email
             else:
                 ensure_teacher_email_allowed(email, "teacher")
-            if not teacher.get("claim_code") or teacher["claim_code"] != code:
+            if not teacher.claim_code or teacher.claim_code != code:
                 raise ApiError(
                     400,
                     "teacher_claim_code_invalid",
                     "Код подтверждения неверный.",
                 )
 
-            expires_at_raw = teacher.get("claim_code_expires_at")
+            expires_at_raw = teacher.claim_code_expires_at
             if not expires_at_raw:
                 raise ApiError(
                     400,
@@ -887,8 +828,10 @@ def confirm_teacher_claim(payload):
                 )
             expires_at = datetime.fromisoformat(expires_at_raw)
             if expires_at < _utc_now():
-                _clear_teacher_claim_state(connection, teacher["id"])
-                connection.commit()
+                teacher.claim_code = None
+                teacher.claim_code_expires_at = None
+                teacher.claim_requested_at = None
+                session.commit()
                 raise ApiError(
                     400,
                     "teacher_claim_code_expired",
@@ -896,15 +839,11 @@ def confirm_teacher_claim(payload):
                 )
 
             token = secrets.token_urlsafe(32)
-            db_execute(
-                connection,
-                """
-                UPDATE teachers
-                SET password = ?, token = ?, claim_code = NULL, claim_code_expires_at = NULL, claim_requested_at = NULL
-                WHERE id = ?
-                """,
-                (hash_password(password), token, teacher["id"]),
-            )
-            connection.commit()
+            teacher.password = hash_password(password)
+            teacher.token = token
+            teacher.claim_code = None
+            teacher.claim_code_expires_at = None
+            teacher.claim_requested_at = None
+            session.commit()
 
     return {"success": True}

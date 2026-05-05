@@ -4,6 +4,13 @@ import os
 SCHEDULE_ALGORITHMS = {"greedy", "cpsat", "cpsat_fast", "hybrid"}
 DEFAULT_SCHEDULE_ALGORITHM = os.getenv("SCHEDULE_ALGORITHM", "greedy").strip().lower()
 CP_SAT_SOLVE_SECONDS = float(os.getenv("CP_SAT_SOLVE_SECONDS", "900"))
+CP_SAT_MAX_ROOM_CANDIDATES = int(os.getenv("CP_SAT_MAX_ROOM_CANDIDATES", "24"))
+CP_SAT_WARM_START_ENABLED = os.getenv("CP_SAT_WARM_START_ENABLED", "true").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
 
 if DEFAULT_SCHEDULE_ALGORITHM not in SCHEDULE_ALGORITHMS:
     DEFAULT_SCHEDULE_ALGORITHM = "greedy"

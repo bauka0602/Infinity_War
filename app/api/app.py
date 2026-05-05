@@ -10,12 +10,15 @@ from .common import json_error
 from .routers import admin, auth, collections, imports, notifications, public, schedules, system, teacher_preferences
 from ..core.config import ALLOWED_ORIGINS
 from ..core.errors import ApiError
+from ..core.monitoring import capture_exception, init_monitoring, instrument_fastapi
 
 LOGGER = logging.getLogger(__name__)
 
 
 def create_app():
+    init_monitoring()
     app = FastAPI(title="TimeTableG API", version="3.0.0")
+    instrument_fastapi(app)
 
     allow_origins = ["*"] if "*" in ALLOWED_ORIGINS else ALLOWED_ORIGINS
     app.add_middleware(
@@ -50,6 +53,7 @@ def create_app():
     async def generic_error_handler(request: Request, exc: Exception):
         if exc.__class__.__name__ == "UniqueViolation":
             return json_error(400, "Ошибка базы данных", "database_error")
+        capture_exception(exc, method=request.method, path=request.url.path)
         LOGGER.exception("Unhandled API error for %s %s", request.method, request.url.path)
         return json_error(500, "Внутренняя ошибка сервера", "internal_server_error")
 

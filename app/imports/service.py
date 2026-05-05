@@ -3,10 +3,13 @@ import hashlib
 import re
 from io import BytesIO
 
+from sqlalchemy import case, delete, func, or_, select, update
+
 from ..auth.service import require_auth_user
 from ..core.config import DB_LOCK, TEACHER_EMAIL_DOMAIN
-from ..core.db import db_execute, get_connection, insert_and_get_id, query_all, query_one
 from ..core.errors import ApiError
+from ..core.orm import SessionLocal
+from ..models import Course, CourseComponent, Group, IupEntry, Schedule, Section, Teacher
 from ..sections.lesson_rules import requires_computers_for_component
 from ..teachers.utils import build_teacher_name_signature, normalize_teacher_name
 
@@ -151,94 +154,44 @@ def _normalize_course_department(value):
     return COURSE_EDUCATIONAL_PROGRAMME_GROUP_ALIASES.get(_normalize_header(text), text)
 
 def _upsert_rop_course(connection, course, offering):
-    existing = query_one(
-        connection,
-        """
-        SELECT id
-        FROM courses
-        WHERE lower(code) = lower(?) AND lower(name) = lower(?) AND semester = ? AND year = ? AND lower(programme) = lower(?)
-        """,
-        (
-            course["code"],
-            course["name"],
-            offering["academicPeriod"],
-            course.get("studyYear"),
-            course.get("programme") or "",
-        ),
-    )
+    programme = course.get("programme") or ""
     description = (
         f"Imported from ROP. Component: {course.get('component') or '-'}; "
         f"cycle: {course.get('cycle') or '-'}; academic period: {offering['academicPeriod']}."
     )
-    update_params = (
-        course["name"],
-        course["code"],
-        course.get("credits"),
-        offering.get("totalHours"),
-        description,
-        course.get("studyYear"),
-        offering["academicPeriod"],
-        _normalize_course_department(course.get("department") or "B057"),
-        course.get("programme") or "",
-        course.get("moduleType") or "",
-        course.get("moduleName") or "",
-        course.get("cycle") or "",
-        course.get("component") or "",
-        course.get("language") or "",
-        course.get("academicYear") or "",
-        course.get("entryYear") or "",
-        0,
-    )
-    insert_params = (
-        *update_params[:8],
-        None,
-        "",
-        *update_params[8:],
-    )
-
-    if existing:
-        db_execute(
-            connection,
-            """
-            UPDATE courses
-            SET
-                name = ?,
-                code = ?,
-                credits = ?,
-                hours = ?,
-                description = ?,
-                year = ?,
-                semester = ?,
-                department = ?,
-                programme = ?,
-                module_type = ?,
-                module_name = ?,
-                cycle = ?,
-                component = ?,
-                language = ?,
-                academic_year = ?,
-                entry_year = ?,
-                requires_computers = ?
-            WHERE id = ?
-            """,
-            (*update_params, existing["id"]),
+    with SessionLocal() as session:
+        existing = session.scalar(
+            select(Course).where(
+                func.lower(Course.code) == func.lower(course["code"]),
+                func.lower(Course.name) == func.lower(course["name"]),
+                Course.semester == offering["academicPeriod"],
+                Course.year == course.get("studyYear"),
+                func.lower(Course.programme) == func.lower(programme),
+            )
         )
-        return "updated", existing["id"]
-
-    course_id = insert_and_get_id(
-        connection,
-        """
-        INSERT INTO courses (
-            name, code, credits, hours, description,
-            year, semester, department, instructor_id, instructor_name, programme,
-            module_type, module_name, cycle, component, language, academic_year, entry_year,
-            requires_computers
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        insert_params,
-    )
-    return "inserted", course_id
+        result = "updated" if existing else "inserted"
+        row = existing or Course(instructor_id=None, instructor_name="")
+        row.name = course["name"]
+        row.code = course["code"]
+        row.credits = course.get("credits")
+        row.hours = offering.get("totalHours")
+        row.description = description
+        row.year = course.get("studyYear")
+        row.semester = offering["academicPeriod"]
+        row.department = _normalize_course_department(course.get("department") or "B057")
+        row.programme = programme
+        row.module_type = course.get("moduleType") or ""
+        row.module_name = course.get("moduleName") or ""
+        row.cycle = course.get("cycle") or ""
+        row.component = course.get("component") or ""
+        row.language = course.get("language") or ""
+        row.academic_year = course.get("academicYear") or ""
+        row.entry_year = course.get("entryYear") or ""
+        row.requires_computers = 0
+        if existing is None:
+            session.add(row)
+        session.commit()
+        return result, row.id
 
 
 def _component_has_teacher(component):
@@ -252,39 +205,35 @@ def _component_teacher(component):
 
 
 def _find_rop_component_teacher(connection, course_id, component):
-    exact = query_one(
-        connection,
-        """
-        SELECT teacher_id, teacher_name
-        FROM course_components
-        WHERE course_id = ?
-          AND lesson_type = ?
-          AND academic_period = ?
-          AND teacher_id IS NOT NULL
-        ORDER BY id
-        LIMIT 1
-        """,
-        (course_id, component["lessonType"], component["academicPeriod"]),
-    )
+    with SessionLocal() as session:
+        exact = session.scalar(
+            select(CourseComponent)
+            .where(
+                CourseComponent.course_id == course_id,
+                CourseComponent.lesson_type == component["lessonType"],
+                CourseComponent.academic_period == component["academicPeriod"],
+                CourseComponent.teacher_id.is_not(None),
+            )
+            .order_by(CourseComponent.id)
+            .limit(1)
+        )
+        same_lesson_type = session.scalar(
+            select(CourseComponent)
+            .where(
+                CourseComponent.course_id == course_id,
+                CourseComponent.lesson_type == component["lessonType"],
+                CourseComponent.teacher_id.is_not(None),
+            )
+            .order_by(CourseComponent.academic_period.is_(None), CourseComponent.id)
+            .limit(1)
+        )
     if exact:
-        return _component_teacher(exact)
-
-    same_lesson_type = query_one(
-        connection,
-        """
-        SELECT teacher_id, teacher_name
-        FROM course_components
-        WHERE course_id = ?
-          AND lesson_type = ?
-          AND teacher_id IS NOT NULL
-        ORDER BY
-          CASE WHEN academic_period IS NULL THEN 1 ELSE 0 END,
-          id
-        LIMIT 1
-        """,
-        (course_id, component["lessonType"]),
+        return exact.teacher_id, exact.teacher_name or ""
+    return (
+        (same_lesson_type.teacher_id, same_lesson_type.teacher_name or "")
+        if same_lesson_type
+        else (None, "")
     )
-    return _component_teacher(same_lesson_type)
 
 
 def _sync_rop_course_components(connection, course_id, course, offering, lesson_components):
@@ -305,92 +254,63 @@ def _sync_rop_course_components(connection, course_id, course, offering, lesson_
             continue
         seen_components.add(component_key)
 
-        existing_component = query_one(
-            connection,
-            """
-            SELECT id, teacher_id, teacher_name
-            FROM course_components
-            WHERE course_id = ?
-              AND lesson_type = ?
-              AND academic_period = ?
-            ORDER BY id
-            LIMIT 1
-            """,
-            (course_id, component["lessonType"], component["academicPeriod"]),
-        )
+        with SessionLocal() as session:
+            existing_component = session.scalar(
+                select(CourseComponent)
+                .where(
+                    CourseComponent.course_id == course_id,
+                    CourseComponent.lesson_type == component["lessonType"],
+                    CourseComponent.academic_period == component["academicPeriod"],
+                )
+                .order_by(CourseComponent.id)
+                .limit(1)
+            )
 
-        teacher_id, teacher_name = _component_teacher(existing_component)
+        teacher_id, teacher_name = (
+            (existing_component.teacher_id, existing_component.teacher_name or "")
+            if existing_component and existing_component.teacher_id
+            else (None, "")
+        )
         if not teacher_id:
             teacher_id, teacher_name = _find_rop_component_teacher(connection, course_id, component)
 
-        if existing_component:
-            db_execute(
-                connection,
-                """
-                UPDATE course_components
-                SET
-                    course_code = ?,
-                    course_name = ?,
-                    programme = ?,
-                    study_year = ?,
-                    semester = ?,
-                    hours = ?,
-                    weekly_classes = ?,
-                    requires_computers = ?,
-                    teacher_id = CASE
-                        WHEN teacher_id IS NULL THEN ?
-                        ELSE teacher_id
-                    END,
-                    teacher_name = CASE
-                        WHEN teacher_id IS NULL AND coalesce(teacher_name, '') = '' THEN ?
-                        ELSE teacher_name
-                    END
-                WHERE id = ?
-                """,
-                (
-                    component["courseCode"],
-                    component["courseName"],
-                    course.get("programme") or "",
-                    course.get("studyYear"),
-                    component["semester"],
-                    component["hours"],
-                    component["weeklyClasses"],
-                    1 if component.get("requiresComputers") else 0,
-                    teacher_id,
-                    teacher_name,
-                    existing_component["id"],
-                ),
-            )
-            updated += 1
-            continue
+        with SessionLocal() as session:
+            row = session.get(CourseComponent, existing_component.id) if existing_component else None
+            if row:
+                row.course_code = component["courseCode"]
+                row.course_name = component["courseName"]
+                row.programme = course.get("programme") or ""
+                row.study_year = course.get("studyYear")
+                row.semester = component["semester"]
+                row.hours = component["hours"]
+                row.weekly_classes = component["weeklyClasses"]
+                row.requires_computers = 1 if component.get("requiresComputers") else 0
+                if row.teacher_id is None:
+                    row.teacher_id = teacher_id
+                    if not row.teacher_name:
+                        row.teacher_name = teacher_name
+                session.commit()
+                updated += 1
+                continue
 
-        component_id = insert_and_get_id(
-            connection,
-            """
-            INSERT INTO course_components (
-                course_id, course_code, course_name, programme, study_year,
-                academic_period, semester, lesson_type, hours, weekly_classes,
-                requires_computers, teacher_id, teacher_name
+            row = CourseComponent(
+                course_id=course_id,
+                course_code=component["courseCode"],
+                course_name=component["courseName"],
+                programme=course.get("programme") or "",
+                study_year=course.get("studyYear"),
+                academic_period=component["academicPeriod"],
+                semester=component["semester"],
+                lesson_type=component["lessonType"],
+                hours=component["hours"],
+                weekly_classes=component["weeklyClasses"],
+                requires_computers=1 if component.get("requiresComputers") else 0,
+                teacher_id=teacher_id,
+                teacher_name=teacher_name,
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                course_id,
-                component["courseCode"],
-                component["courseName"],
-                course.get("programme") or "",
-                course.get("studyYear"),
-                component["academicPeriod"],
-                component["semester"],
-                component["lessonType"],
-                component["hours"],
-                component["weeklyClasses"],
-                1 if component.get("requiresComputers") else 0,
-                teacher_id,
-                teacher_name,
-            ),
-        )
-        inserted += 1
+            session.add(row)
+            session.commit()
+            inserted += 1
 
     return {"inserted": inserted, "updated": updated}
 
@@ -872,160 +792,139 @@ def _teacher_email_from_name(name):
     return f"iup-{digest}{TEACHER_EMAIL_DOMAIN}"
 
 
-def _upsert_iup_teacher(connection, teacher_name, language):
+def _upsert_iup_teacher(session, teacher_name, language):
     normalized_name = normalize_teacher_name(teacher_name)
     name_signature = build_teacher_name_signature(teacher_name)
     normalized_language = _normalise_iup_language(language)
-    existing = query_one(
-        connection,
-        """
-        SELECT id, name, teaching_languages
-        FROM teachers
-        WHERE lower(name) = lower(?)
-           OR coalesce(name_normalized, '') = ?
-           OR (coalesce(name_signature, '') = ? AND ? <> '')
-        ORDER BY id
-        LIMIT 1
-        """,
-        (teacher_name, normalized_name, name_signature, name_signature),
+    existing = session.scalar(
+        select(Teacher)
+        .where(
+            or_(
+                func.lower(Teacher.name) == func.lower(teacher_name),
+                func.coalesce(Teacher.name_normalized, "") == normalized_name,
+                (
+                    (func.coalesce(Teacher.name_signature, "") == name_signature)
+                    if name_signature
+                    else False
+                ),
+            )
+        )
+        .order_by(Teacher.id)
+        .limit(1)
     )
     if existing:
         current_languages = [
             value.strip().lower()
-            for value in str(existing.get("teaching_languages") or "").split(",")
+            for value in str(existing.teaching_languages or "").split(",")
             if value.strip()
         ]
         if normalized_language and normalized_language not in current_languages:
             current_languages.append(normalized_language)
         teaching_languages = ",".join(current_languages or [normalized_language or "ru"])
-        db_execute(
-            connection,
-            """
-            UPDATE teachers
-            SET
-                name_normalized = COALESCE(NULLIF(name_normalized, ''), ?),
-                name_signature = COALESCE(NULLIF(name_signature, ''), ?),
-                teaching_languages = ?
-            WHERE id = ?
-            """,
-            (normalized_name, name_signature, teaching_languages, existing["id"]),
-        )
-        return existing["id"], "existing"
+        if not existing.name_normalized:
+            existing.name_normalized = normalized_name
+        if not existing.name_signature:
+            existing.name_signature = name_signature
+        existing.teaching_languages = teaching_languages
+        session.flush()
+        return existing.id, "existing"
 
-    teacher_id = insert_and_get_id(
-        connection,
-        """
-        INSERT INTO teachers (name, email, subject_taught, teaching_languages, name_normalized, name_signature)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (
-            teacher_name,
-            _teacher_email_from_name(teacher_name),
-            "",
-            normalized_language or "ru",
-            normalized_name,
-            name_signature,
-        ),
+    teacher = Teacher(
+        name=teacher_name,
+        email=_teacher_email_from_name(teacher_name),
+        subject_taught="",
+        teaching_languages=normalized_language or "ru",
+        name_normalized=normalized_name,
+        name_signature=name_signature,
     )
-    return teacher_id, "inserted"
+    session.add(teacher)
+    session.flush()
+    return teacher.id, "inserted"
 
 
-def _resolve_iup_group_name(connection, group_name):
+def _resolve_iup_group_name(session, group_name):
     if not group_name:
         return ""
-    exact = query_one(connection, "SELECT name FROM groups WHERE name = ?", (group_name,))
+    exact = session.scalar(select(Group.name).where(Group.name == group_name))
     if exact:
-        return exact["name"]
-    prefixed = query_one(
-        connection,
-        "SELECT name FROM groups WHERE name LIKE ? ORDER BY length(name), name LIMIT 1",
-        (f"{group_name}%",),
+        return exact
+    prefixed = session.scalar(
+        select(Group.name)
+        .where(Group.name.like(f"{group_name}%"))
+        .order_by(func.length(Group.name), Group.name)
+        .limit(1)
     )
-    return prefixed["name"] if prefixed else group_name
+    return prefixed if prefixed else group_name
 
 
-def _load_group_context(connection, group_name):
+def _load_group_context(session, group_name):
     if not group_name:
         return None
-    return query_one(
-        connection,
-        """
-        SELECT name, programme, language, study_course
-        FROM groups
-        WHERE name = ?
-        """,
-        (group_name,),
+    row = session.scalar(select(Group).where(Group.name == group_name))
+    if row is None:
+        return None
+    return {
+        "name": row.name,
+        "programme": row.programme,
+        "language": row.language,
+        "study_course": row.study_course,
+    }
+
+
+def _find_matching_iup_course(session, course_code, programme, semester):
+    programme = programme or ""
+    programme_like = f"%{programme}%" if programme else ""
+    conditions = [func.lower(Course.code) == func.lower(course_code or "")]
+    if programme:
+        conditions.append(
+            or_(
+                func.lower(Course.programme) == func.lower(programme),
+                func.lower(Course.programme).like(func.lower(programme_like)),
+                Course.programme == "",
+            )
+        )
+    if semester is not None:
+        conditions.append(Course.semester == semester)
+
+    return session.scalar(
+        select(Course)
+        .where(*conditions)
+        .order_by(
+            case(
+                (func.lower(Course.programme) == func.lower(programme), 0),
+                (func.lower(Course.programme).like(func.lower(programme_like)), 1),
+                (Course.programme == "", 2),
+                else_=3,
+            ),
+            Course.id,
+        )
+        .limit(1)
     )
 
 
-def _find_matching_iup_course(connection, course_code, programme, semester):
-    return query_one(
-        connection,
-        """
-        SELECT id, instructor_id
-        FROM courses
-        WHERE lower(code) = lower(?)
-          AND (
-            ? = ''
-            OR lower(programme) = lower(?)
-            OR lower(programme) LIKE lower(?)
-            OR programme = ''
-          )
-          AND (? IS NULL OR semester = ?)
-        ORDER BY
-          CASE
-            WHEN lower(programme) = lower(?) THEN 0
-            WHEN lower(programme) LIKE lower(?) THEN 1
-            WHEN programme = '' THEN 2
-            ELSE 3
-          END,
-          id
-        LIMIT 1
-        """,
-        (
-            course_code,
-            programme or "",
-            programme or "",
-            f"%{programme}%" if programme else "",
-            semester,
-            semester,
-            programme or "",
-            f"%{programme}%" if programme else "",
-        ),
-    )
-
-
-def _find_matching_iup_course_relaxed(connection, course_code, programme, semester):
-    course = _find_matching_iup_course(connection, course_code, programme, semester)
+def _find_matching_iup_course_relaxed(session, course_code, programme, semester):
+    course = _find_matching_iup_course(session, course_code, programme, semester)
     if course:
         return course
 
     if semester is not None:
-        course = query_one(
-            connection,
-            """
-            SELECT id, instructor_id
-            FROM courses
-            WHERE lower(code) = lower(?)
-              AND semester = ?
-            ORDER BY id
-            LIMIT 1
-            """,
-            (course_code, semester),
+        course = session.scalar(
+            select(Course)
+            .where(
+                func.lower(Course.code) == func.lower(course_code or ""),
+                Course.semester == semester,
+            )
+            .order_by(Course.id)
+            .limit(1)
         )
         if course:
             return course
 
-    return query_one(
-        connection,
-        """
-        SELECT id, instructor_id
-        FROM courses
-        WHERE lower(code) = lower(?)
-        ORDER BY id
-        LIMIT 1
-        """,
-        (course_code,),
+    return session.scalar(
+        select(Course)
+        .where(func.lower(Course.code) == func.lower(course_code or ""))
+        .order_by(Course.id)
+        .limit(1)
     )
 
 
@@ -1039,7 +938,7 @@ def _course_import_item(code, name, semester=None, programme=None, study_year=No
     }
 
 
-def _get_iup_course_lists(connection, parsed):
+def _get_iup_course_lists(session, parsed):
     metadata = parsed["metadata"]
     matched_courses = []
     missing_courses = []
@@ -1055,7 +954,7 @@ def _get_iup_course_lists(connection, parsed):
             continue
         seen_iup_courses.add(key)
         match = _find_matching_iup_course_relaxed(
-            connection,
+            session,
             course.get("code", ""),
             metadata.get("programme", ""),
             course.get("semester"),
@@ -1095,7 +994,7 @@ def _missing_first_year_base_courses(missing_courses):
     ]
 
 
-def _create_iup_missing_courses(connection, parsed, missing_courses):
+def _create_iup_missing_courses(session, parsed, missing_courses):
     metadata = parsed["metadata"]
     created = []
     courses_by_key = {
@@ -1105,41 +1004,33 @@ def _create_iup_missing_courses(connection, parsed, missing_courses):
 
     for item in missing_courses:
         course = courses_by_key.get(((item.get("code") or "").lower(), item.get("semester"))) or item
-        course_id = insert_and_get_id(
-            connection,
-            """
-            INSERT INTO courses (
-                name, code, credits, hours, description,
-                year, semester, department, instructor_id, instructor_name, programme,
-                module_type, module_name, cycle, component, language, academic_year, entry_year,
-                requires_computers
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                course.get("name") or item.get("name") or item.get("code") or "Без названия",
-                course.get("code") or item.get("code") or "",
-                course.get("credits"),
-                None,
+        course_row = Course(
+            name=course.get("name") or item.get("name") or item.get("code") or "Без названия",
+            code=course.get("code") or item.get("code") or "",
+            credits=course.get("credits"),
+            hours=None,
+            description=(
                 "Imported from IUP: first-year base course not present in ROP."
                 if _is_first_year_base_course(course)
-                else "Imported from IUP as missing course draft.",
-                course.get("studyYear"),
-                course.get("semester") or item.get("semester"),
-                _normalize_course_department(metadata.get("educationalProgrammeGroup") or "B057"),
-                None,
-                "",
-                metadata.get("programme", ""),
-                "",
-                "",
-                "",
-                course.get("component", ""),
-                metadata.get("language", "ru"),
-                metadata.get("academicYear", ""),
-                "",
-                0,
+                else "Imported from IUP as missing course draft."
             ),
+            year=course.get("studyYear"),
+            semester=course.get("semester") or item.get("semester"),
+            department=_normalize_course_department(metadata.get("educationalProgrammeGroup") or "B057"),
+            instructor_id=None,
+            instructor_name="",
+            programme=metadata.get("programme", ""),
+            module_type="",
+            module_name="",
+            cycle="",
+            component=course.get("component", ""),
+            language=metadata.get("language", "ru"),
+            academic_year=metadata.get("academicYear", ""),
+            entry_year="",
+            requires_computers=0,
         )
+        session.add(course_row)
+        session.flush()
         created.append(_course_import_item(
             course.get("code") or item.get("code"),
             course.get("name") or item.get("name"),
@@ -1160,34 +1051,25 @@ def _create_iup_missing_courses(connection, parsed, missing_courses):
             if component_key in seen_components:
                 continue
             seen_components.add(component_key)
-            insert_and_get_id(
-                connection,
-                """
-                INSERT INTO course_components (
-                    course_id, course_code, course_name, lesson_type, hours,
-                    weekly_classes, academic_period, semester, requires_computers,
-                    teacher_id, teacher_name
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    course_id,
-                    entry.get("courseCode", ""),
-                    entry.get("courseName", ""),
-                    entry.get("lessonType"),
-                    entry.get("hours"),
-                    1,
-                    entry.get("academicPeriod"),
-                    entry.get("semester"),
-                    1 if requires_computers_for_component(
+            session.add(
+                CourseComponent(
+                    course_id=course_row.id,
+                    course_code=entry.get("courseCode", ""),
+                    course_name=entry.get("courseName", ""),
+                    lesson_type=entry.get("lessonType"),
+                    hours=entry.get("hours") or 0,
+                    weekly_classes=1,
+                    academic_period=entry.get("academicPeriod"),
+                    semester=entry.get("semester"),
+                    requires_computers=1 if requires_computers_for_component(
                         entry.get("lessonType"),
                         entry.get("courseCode", ""),
                         entry.get("courseName", ""),
                         entry.get("studyYear"),
                     ) else 0,
-                    None,
-                    "",
-                ),
+                    teacher_id=None,
+                    teacher_name="",
+                )
             )
 
     return created
@@ -1195,151 +1077,143 @@ def _create_iup_missing_courses(connection, parsed, missing_courses):
 
 def _store_iup_entries(connection, parsed, create_missing_courses=False):
     metadata = parsed["metadata"]
-    metadata["groupName"] = _resolve_iup_group_name(connection, metadata.get("groupName", ""))
-    group_context = _load_group_context(connection, metadata.get("groupName", ""))
-    if group_context:
-        if group_context.get("language"):
-            metadata["language"] = group_context["language"]
-        if group_context.get("study_course") and not metadata.get("studyCourse"):
-            metadata["studyCourse"] = group_context["study_course"]
-    db_execute(
-        connection,
-        "DELETE FROM iup_entries WHERE file_name = ? AND group_name = ?",
-        (metadata["fileName"], metadata.get("groupName", "")),
-    )
+    with SessionLocal() as session:
+        try:
+            metadata["groupName"] = _resolve_iup_group_name(session, metadata.get("groupName", ""))
+            group_context = _load_group_context(session, metadata.get("groupName", ""))
+            if group_context:
+                if group_context.get("language"):
+                    metadata["language"] = group_context["language"]
+                if group_context.get("study_course") and not metadata.get("studyCourse"):
+                    metadata["studyCourse"] = group_context["study_course"]
 
-    updated_courses = set()
-    updated_components = set()
-    teacher_cache = {}
-    matched_courses, missing_courses = _get_iup_course_lists(connection, parsed)
-    created_courses = []
-    auto_first_year_courses = _missing_first_year_base_courses(missing_courses)
-    courses_to_create = missing_courses if create_missing_courses else auto_first_year_courses
-    if courses_to_create:
-        created_courses = _create_iup_missing_courses(connection, parsed, courses_to_create)
-        matched_courses, missing_courses = _get_iup_course_lists(connection, parsed)
-
-    for entry in parsed["entries"]:
-        teacher_name = entry.get("teacherName", "")
-        teacher_id = None
-        if teacher_name:
-            if teacher_name not in teacher_cache:
-                teacher_cache[teacher_name] = _upsert_iup_teacher(
-                    connection,
-                    teacher_name,
-                    metadata.get("language", "ru"),
+            session.execute(
+                delete(IupEntry).where(
+                    IupEntry.file_name == metadata["fileName"],
+                    IupEntry.group_name == metadata.get("groupName", ""),
                 )
-            teacher_id, status = teacher_cache[teacher_name]
-
-        insert_and_get_id(
-            connection,
-            """
-            INSERT INTO iup_entries (
-                file_name, group_name, programme, study_course,
-                language, academic_year, academic_period, semester, component,
-                course_code, course_name, credits, lesson_type, teacher_id,
-                teacher_name, hours
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                metadata["fileName"],
-                metadata.get("groupName", ""),
-                metadata.get("programme", ""),
-                entry.get("studyYear"),
-                metadata.get("language", "ru"),
-                metadata.get("academicYear", ""),
-                entry.get("academicPeriod"),
-                entry.get("semester"),
-                entry.get("component", ""),
-                entry["courseCode"],
-                entry["courseName"],
-                entry.get("credits"),
-                entry["lessonType"],
-                teacher_id,
-                teacher_name,
-                entry.get("hours"),
-            ),
-        )
 
-        if teacher_id and entry["lessonType"] in IUP_ACTIVE_LESSON_TYPES:
-            course = _find_matching_iup_course_relaxed(
-                connection,
-                entry["courseCode"],
-                metadata.get("programme", ""),
-                entry.get("semester"),
-            )
-            if course and course["id"] not in updated_courses:
-                course_update = db_execute(
-                    connection,
-                    """
-                    UPDATE courses
-                    SET instructor_id = ?, instructor_name = ?
-                    WHERE id = ?
-                      AND (instructor_id IS NULL OR coalesce(instructor_name, '') = '')
-                    """,
-                    (teacher_id, teacher_name, course["id"]),
-                )
-                if max(0, getattr(course_update, "rowcount", 0) or 0):
-                    updated_courses.add(course["id"])
+            updated_courses = set()
+            updated_components = set()
+            teacher_cache = {}
+            matched_courses, missing_courses = _get_iup_course_lists(session, parsed)
+            created_courses = []
+            auto_first_year_courses = _missing_first_year_base_courses(missing_courses)
+            courses_to_create = missing_courses if create_missing_courses else auto_first_year_courses
+            if courses_to_create:
+                created_courses = _create_iup_missing_courses(session, parsed, courses_to_create)
+                matched_courses, missing_courses = _get_iup_course_lists(session, parsed)
 
-            if course:
-                component_update = db_execute(
-                    connection,
-                    """
-                    UPDATE course_components
-                    SET teacher_id = ?, teacher_name = ?
-                    WHERE course_id = ?
-                      AND lesson_type = ?
-                      AND (? IS NULL OR academic_period = ?)
-                      AND (teacher_id IS NULL OR coalesce(teacher_name, '') = '')
-                    """,
-                    (
-                        teacher_id,
-                        teacher_name,
-                        course["id"],
-                        entry["lessonType"],
-                        entry.get("academicPeriod"),
-                        entry.get("academicPeriod"),
-                    ),
-                )
-                updated_count = max(0, getattr(component_update, "rowcount", 0) or 0)
-                if updated_count == 0 and entry.get("academicPeriod") is not None:
-                    fallback_update = db_execute(
-                        connection,
-                        """
-                        UPDATE course_components
-                        SET teacher_id = ?, teacher_name = ?
-                        WHERE course_id = ?
-                          AND lesson_type = ?
-                          AND (teacher_id IS NULL OR coalesce(teacher_name, '') = '')
-                        """,
-                        (
-                            teacher_id,
+            for entry in parsed["entries"]:
+                teacher_name = entry.get("teacherName", "")
+                teacher_id = None
+                if teacher_name:
+                    if teacher_name not in teacher_cache:
+                        teacher_cache[teacher_name] = _upsert_iup_teacher(
+                            session,
                             teacher_name,
-                            course["id"],
-                            entry["lessonType"],
-                        ),
+                            metadata.get("language", "ru"),
+                        )
+                    teacher_id, _status = teacher_cache[teacher_name]
+
+                session.add(
+                    IupEntry(
+                        file_name=metadata["fileName"],
+                        group_name=metadata.get("groupName", ""),
+                        programme=metadata.get("programme", ""),
+                        study_course=entry.get("studyYear"),
+                        language=metadata.get("language", "ru"),
+                        academic_year=metadata.get("academicYear", ""),
+                        academic_period=entry.get("academicPeriod"),
+                        semester=entry.get("semester"),
+                        component=entry.get("component", ""),
+                        course_code=entry["courseCode"],
+                        course_name=entry["courseName"],
+                        credits=entry.get("credits"),
+                        lesson_type=entry["lessonType"],
+                        teacher_id=teacher_id,
+                        teacher_name=teacher_name,
+                        hours=entry.get("hours"),
                     )
-                    updated_count = max(0, getattr(fallback_update, "rowcount", 0) or 0)
-                db_execute(
-                    connection,
-                    """
-                    UPDATE sections
-                    SET teacher_id = ?, teacher_name = ?
-                    WHERE course_id = ?
-                      AND lesson_type = ?
-                      AND (teacher_id IS NULL OR coalesce(teacher_name, '') = '')
-                    """,
-                    (
-                        teacher_id,
-                        teacher_name,
-                        course["id"],
-                        entry["lessonType"],
-                    ),
                 )
-                if updated_count:
-                    updated_components.add((entry["courseCode"], entry["lessonType"], entry.get("academicPeriod")))
+
+                if teacher_id and entry["lessonType"] in IUP_ACTIVE_LESSON_TYPES:
+                    course = _find_matching_iup_course_relaxed(
+                        session,
+                        entry["courseCode"],
+                        metadata.get("programme", ""),
+                        entry.get("semester"),
+                    )
+                    if course and course.id not in updated_courses:
+                        course_update = session.execute(
+                            update(Course)
+                            .where(
+                                Course.id == course.id,
+                                or_(
+                                    Course.instructor_id.is_(None),
+                                    func.coalesce(Course.instructor_name, "") == "",
+                                ),
+                            )
+                            .values(instructor_id=teacher_id, instructor_name=teacher_name)
+                        )
+                        if max(0, getattr(course_update, "rowcount", 0) or 0):
+                            updated_courses.add(course.id)
+
+                    if course:
+                        component_conditions = [
+                            CourseComponent.course_id == course.id,
+                            CourseComponent.lesson_type == entry["lessonType"],
+                            or_(
+                                CourseComponent.teacher_id.is_(None),
+                                func.coalesce(CourseComponent.teacher_name, "") == "",
+                            ),
+                        ]
+                        if entry.get("academicPeriod") is not None:
+                            component_conditions.append(
+                                CourseComponent.academic_period == entry.get("academicPeriod")
+                            )
+                        component_update = session.execute(
+                            update(CourseComponent)
+                            .where(*component_conditions)
+                            .values(teacher_id=teacher_id, teacher_name=teacher_name)
+                        )
+                        updated_count = max(0, getattr(component_update, "rowcount", 0) or 0)
+                        if updated_count == 0 and entry.get("academicPeriod") is not None:
+                            fallback_update = session.execute(
+                                update(CourseComponent)
+                                .where(
+                                    CourseComponent.course_id == course.id,
+                                    CourseComponent.lesson_type == entry["lessonType"],
+                                    or_(
+                                        CourseComponent.teacher_id.is_(None),
+                                        func.coalesce(CourseComponent.teacher_name, "") == "",
+                                    ),
+                                )
+                                .values(teacher_id=teacher_id, teacher_name=teacher_name)
+                            )
+                            updated_count = max(0, getattr(fallback_update, "rowcount", 0) or 0)
+                        session.execute(
+                            update(Section)
+                            .where(
+                                Section.course_id == course.id,
+                                Section.lesson_type == entry["lessonType"],
+                                or_(
+                                    Section.teacher_id.is_(None),
+                                    func.coalesce(Section.teacher_name, "") == "",
+                                ),
+                            )
+                            .values(teacher_id=teacher_id, teacher_name=teacher_name)
+                        )
+                        if updated_count:
+                            updated_components.add(
+                                (entry["courseCode"], entry["lessonType"], entry.get("academicPeriod"))
+                            )
+
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
 
     return {
         "iupEntries": len(parsed["entries"]),
@@ -1366,8 +1240,8 @@ def parse_iup_preview(headers, payload):
     file_name, file_bytes = _decode_iup_payload(payload)
     parsed = _parse_iup_file(file_name, file_bytes)
     with DB_LOCK:
-        with get_connection() as connection:
-            matched_courses, missing_courses = _get_iup_course_lists(connection, parsed)
+        with SessionLocal() as session:
+            matched_courses, missing_courses = _get_iup_course_lists(session, parsed)
     return {
         "metadata": parsed["metadata"],
         "totals": parsed["totals"],
@@ -1398,9 +1272,7 @@ def import_iup_data(headers, payload):
     parsed = _parse_iup_file(file_name, file_bytes)
     create_missing_courses = bool(payload.get("createMissingCourses"))
     with DB_LOCK:
-        with get_connection() as connection:
-            stats = _store_iup_entries(connection, parsed, create_missing_courses)
-            connection.commit()
+        stats = _store_iup_entries(None, parsed, create_missing_courses)
     return {
         "success": True,
         "metadata": parsed["metadata"],
@@ -1548,40 +1420,38 @@ def import_rop_data(headers, payload):
     seen_course_results = set()
 
     with DB_LOCK:
-        with get_connection() as connection:
-            for offering in preview["offerings"]:
-                course = course_by_key.get((offering["courseCode"], offering["courseName"]))
-                if not course:
-                    continue
-                result, course_id = _upsert_rop_course(connection, course, offering)
-                summary["courses"][result] += 1
-                list_key = (
-                    result,
-                    course["code"].lower(),
-                    course["name"].lower(),
-                    offering["academicPeriod"],
-                    (course.get("programme") or "").lower(),
-                )
-                if list_key not in seen_course_results:
-                    seen_course_results.add(list_key)
-                    course_lists["inserted" if result == "inserted" else "existing"].append(
-                        _course_import_item(
-                            course["code"],
-                            course["name"],
-                            offering["academicPeriod"],
-                            course.get("programme") or "",
-                        )
+        for offering in preview["offerings"]:
+            course = course_by_key.get((offering["courseCode"], offering["courseName"]))
+            if not course:
+                continue
+            result, course_id = _upsert_rop_course(None, course, offering)
+            summary["courses"][result] += 1
+            list_key = (
+                result,
+                course["code"].lower(),
+                course["name"].lower(),
+                offering["academicPeriod"],
+                (course.get("programme") or "").lower(),
+            )
+            if list_key not in seen_course_results:
+                seen_course_results.add(list_key)
+                course_lists["inserted" if result == "inserted" else "existing"].append(
+                    _course_import_item(
+                        course["code"],
+                        course["name"],
+                        offering["academicPeriod"],
+                        course.get("programme") or "",
                     )
-                component_summary = _sync_rop_course_components(
-                    connection,
-                    course_id,
-                    course,
-                    offering,
-                    preview["lessonComponents"],
                 )
-                summary["courseComponents"]["inserted"] += component_summary["inserted"]
-                summary["courseComponents"]["updated"] += component_summary["updated"]
-            connection.commit()
+            component_summary = _sync_rop_course_components(
+                None,
+                course_id,
+                course,
+                offering,
+                preview["lessonComponents"],
+            )
+            summary["courseComponents"]["inserted"] += component_summary["inserted"]
+            summary["courseComponents"]["updated"] += component_summary["updated"]
 
     return {
         "message": "ROP import completed successfully.",
@@ -1728,43 +1598,40 @@ def generate_schedule_export(headers, semester=None, year=None, language=None, g
         ) from exc
 
     with DB_LOCK:
-        with get_connection() as connection:
-            clauses = []
-            params = []
-            if semester is not None:
-                clauses.append("s.semester = ?")
-                params.append(semester)
-            if year is not None:
-                clauses.append("s.year = ?")
-                params.append(year)
-            if group_id is not None:
-                clauses.append("s.group_id = ?")
-                params.append(group_id)
-            where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-            schedules = query_all(
-                connection,
-                f"""
-                SELECT
-                    s.course_name,
-                    s.group_name,
-                    s.subgroup,
-                    s.teacher_name,
-                    s.room_number,
-                    s.day,
-                    s.start_hour,
-                    s.semester,
-                    s.year,
-                    s.algorithm,
-                    s.room_programme,
-                    s.room_programme_mismatch,
-                    COALESCE(sec.lesson_type, 'lecture') AS lesson_type
-                FROM schedules s
-                LEFT JOIN sections sec ON sec.id = s.section_id
-                {where_sql}
-                ORDER BY s.group_name, s.day, s.start_hour, s.course_name, s.id
-                """,
-                tuple(params),
+        with SessionLocal() as session:
+            statement = (
+                select(
+                    Schedule.course_name.label("course_name"),
+                    Schedule.group_name.label("group_name"),
+                    Schedule.subgroup.label("subgroup"),
+                    Schedule.teacher_name.label("teacher_name"),
+                    Schedule.room_number.label("room_number"),
+                    Schedule.day.label("day"),
+                    Schedule.start_hour.label("start_hour"),
+                    Schedule.semester.label("semester"),
+                    Schedule.year.label("year"),
+                    Schedule.algorithm.label("algorithm"),
+                    Schedule.room_programme.label("room_programme"),
+                    Schedule.room_programme_mismatch.label("room_programme_mismatch"),
+                    func.coalesce(Section.lesson_type, "lecture").label("lesson_type"),
+                )
+                .select_from(Schedule)
+                .outerjoin(Section, Section.id == Schedule.section_id)
             )
+            if semester is not None:
+                statement = statement.where(Schedule.semester == semester)
+            if year is not None:
+                statement = statement.where(Schedule.year == year)
+            if group_id is not None:
+                statement = statement.where(Schedule.group_id == group_id)
+            statement = statement.order_by(
+                Schedule.group_name,
+                Schedule.day,
+                Schedule.start_hour,
+                Schedule.course_name,
+                Schedule.id,
+            )
+            schedules = session.execute(statement).mappings().all()
 
     if not schedules:
         raise ApiError(400, "bad_request", "Расписание ещё не сгенерировано.")
