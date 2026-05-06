@@ -1,5 +1,5 @@
-from ..core.errors import ApiError
-from .time_slots import SCHEDULE_HOURS
+from ...core.errors import ApiError
+from ..time_slots import SCHEDULE_HOURS
 
 PC_REQUIRED_LESSON_TYPES = {"lab"}
 MIN_COMPUTER_COUNT = 10

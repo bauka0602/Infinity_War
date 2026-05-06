@@ -255,7 +255,15 @@ def generate_sections_from_components(connection, payload):
                 classes_count = positive_int(component.get("weekly_classes"), 1)
                 subgroup_mode = normalize_subgroup_mode("none" if lesson_type == "lecture" else "auto", lesson_type)
                 subgroup_count = 1
-                requires_computers = 1 if component.get("requires_computers") else 0
+                requires_computers = 1 if (
+                    component.get("requires_computers")
+                    or section_requires_computers(
+                        lesson_type,
+                        "",
+                        component.get("course_name"),
+                        component.get("year"),
+                    )
+                ) else 0
                 teacher_id, teacher_name = _resolve_section_teacher_in_session(
                     session,
                     component["course_id"],

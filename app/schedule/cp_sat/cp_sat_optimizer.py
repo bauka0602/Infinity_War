@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from ..core.errors import ApiError
-from ..programmes.utils import normalize_programme_text, same_programme
-from .time_slots import SCHEDULE_HOURS
+from ...core.errors import ApiError
+from ...programmes.utils import normalize_programme_text, same_programme
+from ..time_slots import SCHEDULE_HOURS
 
 try:
     from ortools.sat.python import cp_model
@@ -1132,6 +1132,12 @@ def optimize_schedule(payload):
     solver.parameters.max_time_in_seconds = float(payload.get("maxSolveTimeSeconds", 10))
     solver.parameters.num_search_workers = int(payload.get("numWorkers", 8))
     solver.parameters.stop_after_first_solution = bool(payload.get("stopAfterFirstSolution"))
+    relative_gap_limit = float(payload.get("relativeGapLimit") or 0)
+    if relative_gap_limit > 0 and not solver.parameters.stop_after_first_solution:
+        solver.parameters.relative_gap_limit = relative_gap_limit
+    if solver.parameters.stop_after_first_solution:
+        solver.parameters.linearization_level = 0
+        solver.parameters.random_seed = int(payload.get("randomSeed", 13))
 
     status = solver.Solve(model)
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
@@ -1150,6 +1156,7 @@ def optimize_schedule(payload):
                     "maxRoomCandidatesPerItem": max_room_candidates_per_item,
                     "maxSolveTimeSeconds": float(payload.get("maxSolveTimeSeconds", 10)),
                     "stopAfterFirstSolution": bool(payload.get("stopAfterFirstSolution")),
+                    "relativeGapLimit": relative_gap_limit,
                 },
             },
         )
@@ -1226,6 +1233,9 @@ def optimize_schedule(payload):
         "programmeFallbackItems": sorted(programme_fallback_scheduled_items),
         "warmStartHints": warm_start_hints,
         "maxRoomCandidatesPerItem": max_room_candidates_per_item,
+        "maxSolveTimeSeconds": float(payload.get("maxSolveTimeSeconds", 10)),
+        "relativeGapLimit": relative_gap_limit,
+        "bestObjectiveBound": solver.BestObjectiveBound(),
         "candidateSummary": candidate_summary,
     }
 

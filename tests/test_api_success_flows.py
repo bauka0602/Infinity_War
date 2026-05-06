@@ -794,6 +794,70 @@ def test_generate_sections_without_filters_uses_all_matching_data(client, admin_
     }
 
 
+def test_generate_sections_marks_lab_as_computer_required(client, admin_auth_headers, orm):
+    teacher = orm.add(
+        "Teacher",
+        name="Lab Teacher",
+        email="lab-teacher@example.com",
+        phone="",
+        subject_taught="",
+        teaching_languages="ru",
+    )
+    course = orm.add(
+        "Course",
+        name="Database Lab",
+        code="DBL 100",
+        credits=3,
+        year=1,
+        semester=1,
+        programme="Бизнес-информатика",
+        instructor_id=teacher.id,
+        instructor_name=teacher.name,
+    )
+    orm.add(
+        "CourseComponent",
+        course_id=course.id,
+        course_code=course.code,
+        course_name=course.name,
+        programme="Бизнес-информатика",
+        study_year=1,
+        academic_period=1,
+        semester=1,
+        lesson_type="lab",
+        hours=30,
+        weekly_classes=2,
+        requires_computers=0,
+        teacher_id=teacher.id,
+        teacher_name=teacher.name,
+    )
+    group_response = client.post(
+        "/api/groups",
+        headers=admin_auth_headers,
+        json={
+            "name": "BI-25-LAB",
+            "student_count": 24,
+            "language": "ru",
+            "programme": "Бизнес-информатика",
+            "study_course": 1,
+        },
+    )
+    assert group_response.status_code == 201
+
+    response = client.post(
+        "/api/sections/generate",
+        headers=admin_auth_headers,
+        json={
+            "programme": "Бизнес-информатика",
+            "study_course": 1,
+            "semester": 1,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["inserted"] == 1
+    section = orm.one("Section", course_id=course.id, lesson_type="lab")
+    assert section.requires_computers == 1
+
+
 def test_schedule_generation_success_flow_with_export(client, admin_auth_headers, orm):
     _seed_schedule_data(client, admin_auth_headers)
 
@@ -1136,7 +1200,7 @@ def test_forced_subgroups_are_capped_at_two():
 
 
 def test_optimizer_allows_parallel_different_subgroups():
-    from backend.app.schedule.cp_sat_optimizer import optimize_schedule
+    from backend.app.schedule.cp_sat.cp_sat_optimizer import optimize_schedule
 
     result = optimize_schedule(
         {
@@ -1186,7 +1250,7 @@ def test_optimizer_allows_parallel_different_subgroups():
 
 
 def test_optimizer_allows_lab_in_practical_room_with_at_least_ten_computers():
-    from backend.app.schedule.cp_sat_optimizer import optimize_schedule
+    from backend.app.schedule.cp_sat.cp_sat_optimizer import optimize_schedule
 
     result = optimize_schedule(
         {
@@ -1220,7 +1284,7 @@ def test_optimizer_allows_lab_in_practical_room_with_at_least_ten_computers():
 
 
 def test_optimizer_rejects_computer_lesson_when_practical_room_has_less_than_ten_computers():
-    from backend.app.schedule.cp_sat_optimizer import optimize_schedule
+    from backend.app.schedule.cp_sat.cp_sat_optimizer import optimize_schedule
     from backend.app.core.errors import ApiError
 
     with pytest.raises(ApiError) as exc_info:

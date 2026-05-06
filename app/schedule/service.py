@@ -9,14 +9,11 @@ from ..models import Course, Group, Room, RoomBlock, Schedule, Section, Teacher,
 from ..programmes.education import get_home_room_programmes
 from ..core.errors import ApiError
 from ..programmes.utils import normalize_programme_text
-from .config import (
-    CP_SAT_MAX_ROOM_CANDIDATES,
-    CP_SAT_SOLVE_SECONDS,
-    CP_SAT_WARM_START_ENABLED,
-    normalize_schedule_algorithm,
-)
-from .cp_sat_optimizer import optimize_schedule
+from .config import CP_SAT_WARM_START_ENABLED, normalize_schedule_algorithm
+from .cp_sat import optimize_cpsat_schedule
+from .cp_sat.cp_sat_fast import optimize_cpsat_fast_schedule
 from .greedy import optimize_greedy_schedule
+from .mix import optimize_cpsat_greedy_schedule
 from .payload import (
     _build_optimizer_payload,
     _chunk_sections_by_capacity,
@@ -314,93 +311,6 @@ def _record_batch_occupancy(occupied, generated_items):
             occupied["groups"].setdefault(str(group_id), set()).add(slot)
 
 
-def _batch_error_details(exc, study_course, batch_key, batch_sections, payload):
-    details = getattr(exc, "details", None) or {}
-    if not isinstance(details, dict):
-        details = {}
-    return {
-        **details,
-        "studyCourse": study_course,
-        "batchKey": {
-            "language": batch_key[1],
-            "programme": batch_key[2],
-            "specialtyCode": batch_key[3],
-        },
-        "batchSections": len(batch_sections),
-        "batchPlanItems": len(payload.get("planItems") or []),
-    }
-
-
-def _relaxed_cpsat_payload(payload):
-    relaxed = deepcopy(payload)
-    relaxed["enforceLectureBeforeLab"] = False
-    relaxed["maxClassesPerDayForTeacher"] = max(8, int(relaxed.get("maxClassesPerDayForTeacher") or 0))
-    relaxed["maxClassesPerDayForAudience"] = max(8, int(relaxed.get("maxClassesPerDayForAudience") or 0))
-    relaxed["enableGapPenalties"] = False
-    relaxed["enableBuildingTransitionPenalties"] = False
-    relaxed["preferSeparateSubgroupsByDay"] = False
-    relaxed["stopAfterFirstSolution"] = True
-    relaxed["maxRoomCandidatesPerItem"] = max(
-        int(relaxed.get("maxRoomCandidatesPerItem") or 0),
-        CP_SAT_MAX_ROOM_CANDIDATES,
-    )
-    return relaxed
-
-
-def _optimize_with_cpsat_retry(payload, study_course, batch_key, batch_sections, fast=False):
-    primary_payload = deepcopy(payload)
-    if fast:
-        primary_payload["stopAfterFirstSolution"] = True
-    try:
-        result = optimize_schedule(primary_payload)
-        result.setdefault("diagnostics", {})["relaxedRetryUsed"] = False
-        return result
-    except ApiError as primary_exc:
-        if primary_exc.code not in {"optimizer_no_solution", "optimizer_input_infeasible"}:
-            raise
-
-        relaxed_payload = _relaxed_cpsat_payload(primary_payload)
-        try:
-            result = optimize_schedule(relaxed_payload)
-            diagnostics = result.setdefault("diagnostics", {})
-            diagnostics["relaxedRetryUsed"] = True
-            diagnostics["primaryFailure"] = _batch_error_details(
-                primary_exc,
-                study_course,
-                batch_key,
-                batch_sections,
-                primary_payload,
-            )
-            return result
-        except ApiError as relaxed_exc:
-            primary_details = _batch_error_details(
-                primary_exc,
-                study_course,
-                batch_key,
-                batch_sections,
-                primary_payload,
-            )
-            relaxed_details = _batch_error_details(
-                relaxed_exc,
-                study_course,
-                batch_key,
-                batch_sections,
-                relaxed_payload,
-            )
-            raise ApiError(
-                relaxed_exc.status,
-                relaxed_exc.code,
-                (
-                    f"{relaxed_exc.message} CP-SAT primary and relaxed retry failed. "
-                    f"Пакет: {study_course} курс, {batch_key[2] or 'без направления'}, {batch_key[1] or 'без языка'}."
-                ),
-                details={
-                    "primary": primary_details,
-                    "relaxed": relaxed_details,
-                },
-            ) from relaxed_exc
-
-
 def _schedule_batch_key(section):
     return (
         int(section.get("study_course") or 0),
@@ -452,8 +362,6 @@ def _generate_schedule_rows_by_batches(
                 }
             )
         if selected_algorithm in {"cpsat", "cpsat_fast", "hybrid"}:
-            payload["maxSolveTimeSeconds"] = CP_SAT_SOLVE_SECONDS
-            payload["maxRoomCandidatesPerItem"] = CP_SAT_MAX_ROOM_CANDIDATES
             if CP_SAT_WARM_START_ENABLED:
                 try:
                     payload["warmStartSchedule"] = optimize_greedy_schedule(payload).get("schedule") or []
@@ -461,64 +369,53 @@ def _generate_schedule_rows_by_batches(
                     payload["warmStartSchedule"] = []
         if selected_algorithm == "greedy":
             optimization_result = optimize_greedy_schedule(payload)
-        elif selected_algorithm in {"cpsat", "cpsat_fast"}:
-            optimization_result = _optimize_with_cpsat_retry(
+        elif selected_algorithm == "cpsat":
+            optimization_result = optimize_cpsat_schedule(
                 payload,
-                study_course,
-                batch_key,
-                batch_sections,
-                fast=selected_algorithm == "cpsat_fast",
+                context={
+                    "study_course": study_course,
+                    "batch_key": {
+                        "language": batch_key[1],
+                        "programme": batch_key[2],
+                        "specialtyCode": batch_key[3],
+                    },
+                    "batch_sections_count": len(batch_sections),
+                },
+            )
+        elif selected_algorithm == "cpsat_fast":
+            optimization_result = optimize_cpsat_fast_schedule(
+                payload,
+                context={
+                    "study_course": study_course,
+                    "batch_key": {
+                        "language": batch_key[1],
+                        "programme": batch_key[2],
+                        "specialtyCode": batch_key[3],
+                    },
+                    "batch_sections_count": len(batch_sections),
+                },
             )
         else:
             try:
-                optimization_result = _optimize_with_cpsat_retry(
+                optimization_result = optimize_cpsat_greedy_schedule(
                     payload,
-                    study_course,
-                    batch_key,
-                    batch_sections,
-                    fast=False,
+                    context={
+                        "study_course": study_course,
+                        "batch_key": {
+                            "language": batch_key[1],
+                            "programme": batch_key[2],
+                            "specialtyCode": batch_key[3],
+                        },
+                        "batch_sections_count": len(batch_sections),
+                    },
                 )
             except ApiError as exc:
-                if exc.code in {"optimizer_no_solution", "optimizer_dependency_missing"}:
-                    try:
-                        optimization_result = optimize_greedy_schedule(payload)
-                        diagnostics = optimization_result.setdefault("diagnostics", {})
-                        diagnostics["hybridFallbackUsed"] = True
-                        diagnostics["cpsatFailure"] = _batch_error_details(
-                            exc,
-                            study_course,
-                            batch_key,
-                            batch_sections,
-                            payload,
-                        )
-                    except ApiError as fallback_exc:
-                        details = _batch_error_details(
-                            fallback_exc,
-                            study_course,
-                            batch_key,
-                            batch_sections,
-                            payload,
-                        )
-                        raise ApiError(
-                            fallback_exc.status,
-                            fallback_exc.code,
-                            f"{fallback_exc.message} Пакет: {study_course} курс, {batch_key[2] or 'без направления'}, {batch_key[1] or 'без языка'}.",
-                            details=details,
-                        ) from fallback_exc
-                else:
-                    details = _batch_error_details(
-                        exc,
-                        study_course,
-                        batch_key,
-                        batch_sections,
-                        payload,
-                    )
-                    raise ApiError(
-                        exc.status,
-                        exc.code,
-                        f"{exc.message} Пакет: {study_course} курс, {batch_key[2] or 'без направления'}, {batch_key[1] or 'без языка'}.",
-                        details=details,
-                    ) from exc
+                raise ApiError(
+                    exc.status,
+                    exc.code,
+                    f"{exc.message} Пакет: {study_course} курс, {batch_key[2] or 'без направления'}, {batch_key[1] or 'без языка'}.",
+                    details=getattr(exc, "details", None) or {},
+                ) from exc
         generated_items = optimization_result.get("schedule") or []
         if progress_callback:
             progress_callback(

@@ -77,11 +77,11 @@ cd backend
 Supported algorithms:
 
 - `greedy` - primary fast production mode
-- `cpsat_fast` - CP-SAT first-solution mode
+- `cpsat_fast` - CP-SAT fast production mode, optimized for fast feasible schedules
 - `cpsat` - full CP-SAT mode
 - `hybrid` - CP-SAT with greedy fallback
 
-Current practical note: `greedy` handles the full `fixtures/real-data/Queries/` dataset successfully. CP-SAT needs careful limits/tuning for large full-dataset runs.
+Current practical note: `cpsat` is the default algorithm. It uses bounded room candidates, greedy warm-start data, quality soft constraints, and a relative optimality gap limit so it can spend time improving the timetable without running indefinitely. `cpsat_fast` stops at the first feasible CP-SAT schedule. `greedy` remains available as the fastest fallback/debug mode.
 
 ## Real Data Fixtures
 

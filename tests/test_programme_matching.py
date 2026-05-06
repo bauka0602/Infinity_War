@@ -9,7 +9,7 @@ from backend.app.imports.service import (
     _parse_iup_file,
     _normalize_rop_programme_name,
 )
-from backend.app.schedule.cp_sat_optimizer import HOURS_DEFAULT
+from backend.app.schedule.cp_sat.cp_sat_optimizer import HOURS_DEFAULT
 from backend.app.teachers.preferences import VALID_HOURS
 from backend.app.sections.generation import _is_first_year_base_iup_entry, _same_academic_programme, _same_study_course
 from backend.app.sections.generation import _build_component_index, _match_component
