@@ -10,7 +10,11 @@ from ...auth.service import require_auth_user
 from ...collections.service import generate_sections_from_components
 from ...core.config import DB_LOCK
 from ...core.errors import ApiError
-from ...schedule.jobs import create_schedule_generation_job, get_schedule_generation_job
+from ...schedule.jobs import (
+    cancel_schedule_generation_job,
+    create_schedule_generation_job,
+    get_schedule_generation_job,
+)
 from ...schedule import DEFAULT_SCHEDULE_ALGORITHM, normalize_schedule_algorithm
 from ...sections.generation import (
     build_validation_report,
@@ -51,6 +55,17 @@ def schedule_generate_status(job_id: str, request: Request):
     if user["role"] != "admin":
         raise ApiError(403, "forbidden", "Недостаточно прав")
     return get_schedule_generation_job(job_id)
+
+
+@router.post(
+    "/schedules/generate/{job_id}/cancel",
+    response_model=ScheduleGenerationJobResponse,
+)
+def schedule_generate_cancel(job_id: str, request: Request):
+    user = require_auth_user(request.headers)
+    if user["role"] != "admin":
+        raise ApiError(403, "forbidden", "Недостаточно прав")
+    return cancel_schedule_generation_job(job_id)
 
 
 @router.get("/schedules/generate/{job_id}/events")

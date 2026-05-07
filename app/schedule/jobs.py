@@ -182,6 +182,26 @@ def _set_job_progress(job_id, progress):
     _log_schedule_job_event("schedule_generation_progress", job_id, **progress)
 
 
+def _get_job_status(job_id):
+    with SessionLocal() as session:
+        job = session.get(ScheduleGenerationJob, job_id)
+        if job is None:
+            return None
+        return {
+            "status": job.status,
+            "errorCode": job.error_code,
+        }
+
+
+def _is_job_cancelled(job_id):
+    status = _get_job_status(job_id)
+    return bool(
+        status
+        and status["status"] == "failed"
+        and status["errorCode"] == "schedule_generation_interrupted"
+    )
+
+
 def _set_job_state(job_id, **updates):
     allowed_columns = {
         "status": "status",
@@ -229,6 +249,12 @@ def _run_schedule_generation_job(
     started_monotonic = time.monotonic()
 
     def progress_callback(progress):
+        if _is_job_cancelled(job_id):
+            raise ApiError(
+                409,
+                "schedule_generation_interrupted",
+                "Генерация расписания была остановлена.",
+            )
         elapsed = round(time.monotonic() - started_monotonic, 3)
         _set_job_progress(job_id, {**progress, "elapsedSeconds": elapsed})
 
@@ -267,7 +293,10 @@ def _run_schedule_generation_job(
                 year,
                 algorithm,
                 progress_callback=progress_callback,
+                cancel_checker=lambda: _is_job_cancelled(job_id),
             )
+            if _is_job_cancelled(job_id):
+                return
             updated_schedule = _schedule_rows_for_notifications(semester, year)
             create_schedule_regeneration_notifications(
                 None,
@@ -296,6 +325,8 @@ def _run_schedule_generation_job(
             schedule_count=len(generated),
         )
     except ApiError as exc:
+        if _is_job_cancelled(job_id):
+            return
         _set_job_state(
             job_id,
             status="failed",
@@ -441,6 +472,34 @@ def get_schedule_generation_job(job_id):
         if job is None:
             raise ApiError(404, "record_not_found", "Задача генерации не найдена.")
         return _snapshot_job(job)
+
+
+def cancel_schedule_generation_job(job_id):
+    now = _utc_now_iso()
+    with _jobs_lock:
+        with SessionLocal() as session:
+            job = session.get(ScheduleGenerationJob, job_id)
+            if job is None:
+                raise ApiError(404, "record_not_found", "Задача генерации не найдена.")
+            if job.status in {"completed", "failed"}:
+                return _snapshot_job(job)
+
+            job.status = "failed"
+            job.error = "Генерация расписания была остановлена."
+            job.error_code = "schedule_generation_interrupted"
+            job.finished_at = now
+            job.updated_at = now
+            session.commit()
+            session.refresh(job)
+
+            _log_schedule_job_event(
+                "schedule_generation_cancelled",
+                job_id,
+                semester=job.semester,
+                year=job.year,
+                algorithm=job.algorithm,
+            )
+            return _snapshot_job(job)
 
 
 def claim_next_schedule_generation_job(worker_id=None):

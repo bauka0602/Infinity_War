@@ -329,6 +329,7 @@ def _generate_schedule_rows_by_batches(
     year,
     algorithm,
     progress_callback=None,
+    cancel_checker=None,
 ):
     selected_algorithm = normalize_schedule_algorithm(algorithm)
     selected_monday = monday_for_week(year)
@@ -340,6 +341,13 @@ def _generate_schedule_rows_by_batches(
     )
     total_batches = len(batch_keys)
     for batch_index, batch_key in enumerate(batch_keys, start=1):
+        if cancel_checker and cancel_checker():
+            raise ApiError(
+                409,
+                "schedule_generation_interrupted",
+                "Генерация расписания была остановлена.",
+            )
+
         study_course = batch_key[0]
         batch_sections = [
             section
@@ -435,7 +443,7 @@ def _generate_schedule_rows_by_batches(
     return rows
 
 
-def build_schedule(connection, semester, year, algorithm, progress_callback=None):
+def build_schedule(connection, semester, year, algorithm, progress_callback=None, cancel_checker=None):
     algorithm = normalize_schedule_algorithm(algorithm)
     academic_periods = academic_periods_for_schedule_semester(semester)
     with SessionLocal() as session:
@@ -660,7 +668,15 @@ def build_schedule(connection, semester, year, algorithm, progress_callback=None
             year,
             algorithm,
             progress_callback=progress_callback,
+            cancel_checker=cancel_checker,
         )
+
+        if cancel_checker and cancel_checker():
+            raise ApiError(
+                409,
+                "schedule_generation_interrupted",
+                "Генерация расписания была остановлена.",
+            )
 
         generated_group_ids = sorted({int(section["group_id"]) for section in sections if section.get("group_id") is not None})
 
