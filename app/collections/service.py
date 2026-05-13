@@ -906,6 +906,7 @@ def get_collection_item(collection, item_id):
                 "name": row.name,
                 "email": row.email,
                 "phone": row.phone,
+                "department": row.department,
                 "subject_taught": row.subject_taught,
                 "weekly_hours_limit": row.weekly_hours_limit,
                 "teaching_languages": row.teaching_languages,
@@ -1012,6 +1013,7 @@ def list_collection(connection, collection, query, user=None):
                     Teacher.name.label("name"),
                     Teacher.email.label("email"),
                     Teacher.phone.label("phone"),
+                    Teacher.department.label("department"),
                     Teacher.subject_taught.label("subject_taught"),
                     Teacher.weekly_hours_limit.label("weekly_hours_limit"),
                     Teacher.teaching_languages.label("teaching_languages"),
@@ -1211,7 +1213,8 @@ def create_collection_item(connection, collection, payload):
                 name=normalized.get("name"),
                 email=normalized.get("email"),
                 phone=normalized.get("phone", ""),
-                subject_taught=normalized.get("subject_taught", normalized.get("department", normalized.get("specialization", ""))),
+                department=normalized.get("department", ""),
+                subject_taught=normalized.get("subject_taught", normalized.get("specialization", "")),
                 weekly_hours_limit=normalized.get("weekly_hours_limit", normalized.get("max_hours_per_week")),
                 teaching_languages=teaching_languages,
                 name_normalized=normalize_teacher_name(normalized.get("name")),
@@ -1224,6 +1227,7 @@ def create_collection_item(connection, collection, payload):
                 "name": row.name,
                 "email": row.email,
                 "phone": row.phone,
+                "department": row.department,
                 "subject_taught": row.subject_taught,
                 "weekly_hours_limit": row.weekly_hours_limit,
                 "teaching_languages": row.teaching_languages,
@@ -1454,7 +1458,8 @@ def update_collection_item(connection, collection, item_id, payload):
             row.name = normalized.get("name")
             row.email = normalized.get("email")
             row.phone = normalized.get("phone", "")
-            row.subject_taught = normalized.get("subject_taught", normalized.get("department", normalized.get("specialization", "")))
+            row.department = normalized.get("department", "")
+            row.subject_taught = normalized.get("subject_taught", normalized.get("specialization", ""))
             row.weekly_hours_limit = normalized.get("weekly_hours_limit", normalized.get("max_hours_per_week"))
             row.teaching_languages = teaching_languages
             row.name_normalized = normalize_teacher_name(normalized.get("name"))
@@ -1465,6 +1470,7 @@ def update_collection_item(connection, collection, item_id, payload):
                 "name": row.name,
                 "email": row.email,
                 "phone": row.phone,
+                "department": row.department,
                 "subject_taught": row.subject_taught,
                 "weekly_hours_limit": row.weekly_hours_limit,
                 "teaching_languages": row.teaching_languages,

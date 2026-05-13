@@ -27,6 +27,7 @@ def test_iup_metadata_detects_programme_language_and_shortened_study():
     metadata = _extract_iup_metadata(
         "ИУП_05-057-23-01.pdf",
         [
+            "Институт бизнеса и цифровых технологий",
             "Наименование группы образовательной программы (шифр) Компьютерная инженерия (6B06103)",
             "Форма обучения 3 года",
             "Оқыту тілі қазақ",
@@ -36,6 +37,7 @@ def test_iup_metadata_detects_programme_language_and_shortened_study():
     assert metadata["programme"] == "Компьютерная инженерия (СОПР)"
     assert metadata["language"] == "kk"
     assert metadata["groupName"] == "05-057-23-01 СОПР"
+    assert metadata["faculty"] == "Факультет/Институт бизнеса и цифровых технологий"
 
 
 def test_iup_language_normalization_accepts_codes_and_labels():

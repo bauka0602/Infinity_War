@@ -119,6 +119,7 @@ class Teacher(Base):
     claim_requested_at: Mapped[str | None] = mapped_column(Text)
     avatar_data: Mapped[str | None] = mapped_column(Text)
     phone: Mapped[str | None] = mapped_column(Text)
+    department: Mapped[str | None] = mapped_column(Text)
     subject_taught: Mapped[str | None] = mapped_column(Text)
     weekly_hours_limit: Mapped[int | None] = mapped_column(Integer)
     name_normalized: Mapped[str | None] = mapped_column(Text)

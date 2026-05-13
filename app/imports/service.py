@@ -31,6 +31,23 @@ IUP_LESSON_PHRASES = {
 }
 IUP_ACTIVE_LESSON_TYPES = {"lecture", "practical", "lab"}
 
+IUP_FACULTY_ALIASES = (
+    ("агроном", "Агрономический факультет"),
+    ("лесного хозяйства", "Факультет лесного хозяйства, дикой природы и окружающей среды"),
+    ("дикой природы", "Факультет лесного хозяйства, дикой природы и окружающей среды"),
+    ("окружающей среды", "Факультет лесного хозяйства, дикой природы и окружающей среды"),
+    ("земельными ресурсами", "Факультет управления земельными ресурсами, архитектуры и дизайна"),
+    ("архитектур", "Факультет управления земельными ресурсами, архитектуры и дизайна"),
+    ("дизайн", "Факультет управления земельными ресурсами, архитектуры и дизайна"),
+    ("ветеринар", "Факультет ветеринарии и технологии животноводства"),
+    ("животновод", "Факультет ветеринарии и технологии животноводства"),
+    ("бизнес", "Факультет/Институт бизнеса и цифровых технологий"),
+    ("цифровых технолог", "Факультет/Институт бизнеса и цифровых технологий"),
+    ("техническ", "Технический факультет"),
+    ("экономическ", "Экономический факультет"),
+    ("энергетическ", "Энергетический факультет"),
+)
+
 ROP_PERIOD_COLUMN_GROUPS = (
     {
         "academic_period_column": 10,
@@ -554,6 +571,27 @@ def _normalise_iup_language(value):
     return "ru"
 
 
+def _normalise_iup_faculty(value):
+    text = re.sub(r"\s+", " ", str(value or "").replace("\\", "/")).strip()
+    normalized = text.lower()
+    if not normalized:
+        return ""
+    for marker, faculty in IUP_FACULTY_ALIASES:
+        if marker in normalized:
+            return faculty
+    return text
+
+
+def _extract_iup_faculty(lines):
+    for line in lines[:40]:
+        normalized = line.lower()
+        if "университет" in normalized or "подпись" in normalized or "печать" in normalized:
+            continue
+        if any(marker in normalized for marker, _faculty in IUP_FACULTY_ALIASES):
+            return _normalise_iup_faculty(line)
+    return ""
+
+
 def _infer_iup_group_name(file_name, programme):
     full_match = re.search(r"05[-_]?057[-_](\d{2})[-_](\d{2})", file_name)
     if full_match:
@@ -578,7 +616,9 @@ def _extract_iup_metadata(file_name, lines):
         "studyCourse": None,
         "language": "ru",
         "academicYear": "",
+        "faculty": "",
     }
+    metadata["faculty"] = _extract_iup_faculty(lines)
     for index, line in enumerate(lines):
         lower_line = line.lower()
         if line.startswith("Курс "):
@@ -792,10 +832,11 @@ def _teacher_email_from_name(name):
     return f"iup-{digest}{TEACHER_EMAIL_DOMAIN}"
 
 
-def _upsert_iup_teacher(session, teacher_name, language):
+def _upsert_iup_teacher(session, teacher_name, language, faculty=""):
     normalized_name = normalize_teacher_name(teacher_name)
     name_signature = build_teacher_name_signature(teacher_name)
     normalized_language = _normalise_iup_language(language)
+    normalized_faculty = _normalise_iup_faculty(faculty)
     existing = session.scalar(
         select(Teacher)
         .where(
@@ -825,6 +866,8 @@ def _upsert_iup_teacher(session, teacher_name, language):
             existing.name_normalized = normalized_name
         if not existing.name_signature:
             existing.name_signature = name_signature
+        if normalized_faculty and not existing.department:
+            existing.department = normalized_faculty
         existing.teaching_languages = teaching_languages
         session.flush()
         return existing.id, "existing"
@@ -832,6 +875,7 @@ def _upsert_iup_teacher(session, teacher_name, language):
     teacher = Teacher(
         name=teacher_name,
         email=_teacher_email_from_name(teacher_name),
+        department=normalized_faculty,
         subject_taught="",
         teaching_languages=normalized_language or "ru",
         name_normalized=normalized_name,
@@ -1114,6 +1158,7 @@ def _store_iup_entries(connection, parsed, create_missing_courses=False):
                             session,
                             teacher_name,
                             metadata.get("language", "ru"),
+                            metadata.get("faculty", ""),
                         )
                     teacher_id, _status = teacher_cache[teacher_name]
 

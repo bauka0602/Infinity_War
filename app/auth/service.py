@@ -180,7 +180,7 @@ def _teacher_account_dict(row, include_claim_fields=False):
         "role": "teacher",
         "token": row.token,
         "avatar_data": row.avatar_data,
-        "department": "",
+        "department": row.department,
         "subject_taught": row.subject_taught,
         "programme": "",
         "group_id": None,
@@ -402,6 +402,8 @@ def register_user(payload):
         teacher_missing = []
         if not phone:
             teacher_missing.append("phone")
+        if not department:
+            teacher_missing.append("department")
         if not teaching_languages:
             teacher_missing.append("teachingLanguages")
         if teacher_missing:
@@ -492,6 +494,7 @@ def register_user(payload):
                     token=token,
                     avatar_data=None,
                     phone=phone,
+                    department=department,
                     subject_taught=subject_taught,
                     weekly_hours_limit=None,
                     teaching_languages=",".join(teaching_languages),

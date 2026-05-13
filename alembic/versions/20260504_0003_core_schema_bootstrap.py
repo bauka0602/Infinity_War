@@ -269,6 +269,7 @@ def _ensure_columns():
             ("requires_computers", integer, "0"),
         ],
         "teachers": [
+            ("department", text),
             ("subject_taught", text),
             ("weekly_hours_limit", integer),
             ("name_normalized", text),
