@@ -597,6 +597,102 @@ def _relocate_conflicting_room_schedules(connection, room_block, exclude_block_i
     return relocated
 
 
+def _room_has_other_block(session, room_id, day, start_hour, exclude_block_id=None, semester=None, year=None):
+    normalized_day = normalize_room_block_day(day)
+    rows = session.execute(
+        select(
+            RoomBlock.id.label("id"),
+            RoomBlock.day.label("day"),
+            RoomBlock.start_hour.label("start_hour"),
+            RoomBlock.end_hour.label("end_hour"),
+            RoomBlock.semester.label("semester"),
+            RoomBlock.year.label("year"),
+        ).where(RoomBlock.room_id == room_id)
+    ).mappings().all()
+    for row in rows:
+        if exclude_block_id is not None and int(row.get("id") or 0) == int(exclude_block_id):
+            continue
+        if semester is not None and row.get("semester") not in (None, semester):
+            continue
+        if year is not None and row.get("year") not in (None, year):
+            continue
+        block_day = normalize_room_block_day(row.get("day"))
+        if block_day != normalized_day:
+            continue
+        block_start = int(row.get("start_hour") or 0)
+        block_end = int(row.get("end_hour") or block_start + 1)
+        if block_start <= int(start_hour or 0) < block_end:
+            return True
+    return False
+
+
+def _restore_room_block_relocations(session, room_block_id):
+    room_block = session.get(RoomBlock, room_block_id)
+    if room_block is None:
+        return 0
+    original_room = session.get(Room, room_block.room_id)
+    if original_room is None:
+        return 0
+
+    original_room_number = str(original_room.number or "")
+    block_day = normalize_room_block_day(room_block.day)
+    block_start = int(room_block.start_hour or 0)
+    block_end = int(room_block.end_hour or block_start + 1)
+    if block_end <= block_start:
+        block_end = block_start + 1
+
+    candidates = session.scalars(
+        select(Schedule)
+        .where(Schedule.relocated_from_room_number == original_room_number)
+        .order_by(Schedule.day, Schedule.start_hour, Schedule.id)
+    ).all()
+    restored_count = 0
+    for schedule in candidates:
+        if room_block.semester is not None and schedule.semester != room_block.semester:
+            continue
+        if room_block.year is not None and schedule.year != room_block.year:
+            continue
+        if normalize_room_block_day(schedule.day) != block_day:
+            continue
+        if not (block_start <= int(schedule.start_hour or 0) < block_end):
+            continue
+        if session.scalar(
+            select(Schedule.id)
+            .where(
+                Schedule.room_id == original_room.id,
+                Schedule.day == schedule.day,
+                Schedule.start_hour == schedule.start_hour,
+                Schedule.id != schedule.id,
+            )
+            .limit(1)
+        ):
+            continue
+        if _room_has_other_block(
+            session,
+            original_room.id,
+            schedule.day,
+            schedule.start_hour,
+            exclude_block_id=room_block_id,
+            semester=schedule.semester,
+            year=schedule.year,
+        ):
+            continue
+
+        room_programme, room_programme_mismatch = _resolve_schedule_room_programme_meta_in_session(
+            session,
+            schedule.section_id,
+            original_room.id,
+        )
+        schedule.room_id = original_room.id
+        schedule.room_number = original_room_number
+        schedule.room_programme = room_programme
+        schedule.room_programme_mismatch = room_programme_mismatch
+        schedule.relocated_from_room_number = ""
+        schedule.relocation_reason = ""
+        restored_count += 1
+    return restored_count
+
+
 def validate_schedule_payload(connection, payload, exclude_schedule_id=None):
     section_id = payload.get("section_id")
     room_id = payload.get("room_id")
@@ -1712,6 +1808,8 @@ def delete_collection_item(connection, collection, item_id):
             session.execute(delete(Schedule).where(Schedule.room_id == item_id))
             session.execute(delete(RoomBlock).where(RoomBlock.room_id == item_id))
             schedules_changed = True
+        elif collection == "room_blocks":
+            schedules_changed = _restore_room_block_relocations(session, item_id) > 0
         elif collection == "students":
             session.execute(
                 delete(Notification).where(
