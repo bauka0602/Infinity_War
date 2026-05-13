@@ -132,6 +132,7 @@ class Room(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     number: Mapped[str] = mapped_column(Text, nullable=False)
     capacity: Mapped[int | None] = mapped_column(Integer)
+    building: Mapped[str | None] = mapped_column(Text)
     type: Mapped[str | None] = mapped_column(Text)
     equipment: Mapped[str | None] = mapped_column(Text)
     programme: Mapped[str | None] = mapped_column(Text)

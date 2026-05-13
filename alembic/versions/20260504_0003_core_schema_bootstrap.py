@@ -295,6 +295,7 @@ def _ensure_columns():
             ("programme", text),
             ("available", integer, "1"),
             ("computer_count", integer, "0"),
+            ("building", text),
         ],
         "groups": [
             ("has_subgroups", integer, "0"),

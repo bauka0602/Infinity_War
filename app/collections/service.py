@@ -783,7 +783,7 @@ def _room_to_dict(row):
         "id": row.id,
         "number": row.number,
         "capacity": row.capacity,
-        "building": "",
+        "building": row.building,
         "type": row.type,
         "equipment": row.equipment,
         "programme": row.programme,
@@ -1236,6 +1236,7 @@ def create_collection_item(connection, collection, payload):
             row = Room(
                 number=normalized.get("number"),
                 capacity=normalized.get("capacity"),
+                building=str(normalized.get("building", "") or ""),
                 type=normalized.get("type", ""),
                 equipment=normalized.get("equipment", ""),
                 programme=normalized.get("programme", normalized.get("department", "")),
@@ -1478,6 +1479,7 @@ def update_collection_item(connection, collection, item_id, payload):
                 raise ApiError(404, "record_not_found", "Запись не найдена")
             row.number = normalized.get("number")
             row.capacity = normalized.get("capacity")
+            row.building = str(normalized.get("building", "") or "")
             row.type = normalized.get("type", "")
             row.equipment = normalized.get("equipment", "")
             row.programme = normalized.get("programme", normalized.get("department", ""))
