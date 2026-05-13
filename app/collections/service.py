@@ -793,6 +793,15 @@ def _room_building_value(payload):
     return str(payload.get("building", "") or "")
 
 
+def _optional_int_filter(value):
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _room_to_dict(row):
     return {
         "id": row.id,
@@ -1090,8 +1099,8 @@ def list_collection(connection, collection, query, user=None):
             return [_section_to_dict(row) for row in session.scalars(select(Section).order_by(Section.id)).all()]
 
     clauses = []
-    semester = query.get("semester", [None])[0]
-    year = query.get("year", [None])[0]
+    semester = _optional_int_filter(query.get("semester", [None])[0])
+    year = _optional_int_filter(query.get("year", [None])[0])
     statement = (
         select(
             Schedule.id.label("id"),
