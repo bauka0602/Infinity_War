@@ -77,6 +77,10 @@ class ProfileAvatarRequest(BaseModel):
     avatarData: str
 
 
+class ProfileEmailRequest(BaseModel):
+    email: str
+
+
 class ImportFileRequest(BaseModel):
     fileName: str
     fileContent: str

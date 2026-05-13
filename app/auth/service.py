@@ -250,6 +250,29 @@ def _email_exists(connection, email):
         )
 
 
+def _email_exists_for_other_account(email, current_role, current_id):
+    normalized = email.strip().lower()
+    with SessionLocal() as session:
+        admin_query = select(User.id).where(func.lower(User.email) == normalized)
+        teacher_query = select(Teacher.id).where(func.lower(Teacher.email) == normalized)
+        student_query = select(Student.id).where(func.lower(Student.email) == normalized)
+
+        if current_role == "admin":
+            admin_query = admin_query.where(User.id != current_id)
+        elif current_role == "teacher":
+            teacher_query = teacher_query.where(Teacher.id != current_id)
+        elif current_role == "student":
+            student_query = student_query.where(Student.id != current_id)
+
+        return any(
+            (
+                session.scalar(admin_query),
+                session.scalar(teacher_query),
+                session.scalar(student_query),
+            )
+        )
+
+
 def _find_teacher_by_email(connection, email):
     normalized = email.strip().lower()
     with SessionLocal() as session:
@@ -571,6 +594,33 @@ def update_profile_avatar(headers, payload):
                     .where(Student.id == user["id"])
                     .values(avatar_data=avatar_data)
                 )
+            session.commit()
+
+        updated_user = _find_account_by_token(None, user["token"])
+
+    return _sanitize_profile_user(None, updated_user)
+
+
+def update_profile_email(headers, payload):
+    email = (payload.get("email") or "").strip().lower()
+    if not email:
+        raise ApiError(400, "fill_required_fields", "Заполните поля: email")
+    if "@" not in email or "." not in email.rsplit("@", 1)[-1]:
+        raise ApiError(400, "bad_request", "Некорректный email")
+
+    user = require_auth_user(headers)
+    if user["role"] not in {"teacher", "student"}:
+        raise ApiError(403, "forbidden", "Email могут менять только преподаватели и студенты")
+
+    if _email_exists_for_other_account(email, user["role"], user["id"]):
+        raise ApiError(400, "email_already_exists", "Пользователь с таким email уже существует")
+
+    with DB_LOCK:
+        with SessionLocal() as session:
+            if user["role"] == "teacher":
+                session.execute(update(Teacher).where(Teacher.id == user["id"]).values(email=email))
+            else:
+                session.execute(update(Student).where(Student.id == user["id"]).values(email=email))
             session.commit()
 
         updated_user = _find_account_by_token(None, user["token"])

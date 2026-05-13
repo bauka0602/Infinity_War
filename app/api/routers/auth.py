@@ -8,11 +8,13 @@ from ...auth.service import (
     register_user,
     request_teacher_claim,
     update_profile_avatar,
+    update_profile_email,
 )
 from ..schemas import (
     AuthLoginRequest,
     AuthRegisterRequest,
     ProfileAvatarRequest,
+    ProfileEmailRequest,
     TeacherClaimConfirmRequest,
     TeacherClaimRequest,
 )
@@ -53,3 +55,8 @@ def profile_get(request: Request):
 @router.post("/profile/avatar")
 async def profile_avatar(payload: ProfileAvatarRequest, request: Request):
     return update_profile_avatar(request.headers, payload.model_dump(exclude_none=True))
+
+
+@router.put("/profile/email")
+async def profile_email(payload: ProfileEmailRequest, request: Request):
+    return update_profile_email(request.headers, payload.model_dump(exclude_none=True))
