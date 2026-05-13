@@ -6,14 +6,12 @@ from io import BytesIO
 from sqlalchemy import case, delete, func, or_, select, update
 
 from ..auth.service import require_auth_user
-from ..courses.translations import course_meta_translations, discipline_name_translations
 from ..core.config import DB_LOCK, TEACHER_EMAIL_DOMAIN
 from ..core.errors import ApiError
 from ..core.orm import SessionLocal
 from ..models import Course, CourseComponent, Group, IupEntry, Schedule, Section, Teacher
 from ..sections.lesson_rules import requires_computers_for_component
 from ..teachers.utils import build_teacher_name_signature, normalize_teacher_name
-from ..teachers.transliteration import teacher_name_translations
 
 COURSE_EDUCATIONAL_PROGRAMME_GROUP_ALIASES = {
     "b057": "B057 - Информационные технологии",
@@ -59,11 +57,6 @@ ROP_PERIOD_COLUMN_GROUPS = (
 )
 
 ROP_LESSON_TYPES = ("lecture", "practical", "lab", "studio", "practice", "srop")
-ROP_NAME_HEADER_KEYWORDS = {
-    "ru": ("наименование дисциплины", "название дисциплины"),
-    "kk": ("пән атауы", "пәннің атауы", "дисциплина атауы"),
-    "en": ("name of discipline", "discipline name", "course name"),
-}
 
 
 def _load_workbook(file_bytes):
@@ -151,85 +144,7 @@ def _number_or_none(value):
 
 
 def _safe_row_value(row, index):
-    if index < 0:
-        return ""
     return row[index] if index < len(row) else ""
-
-
-def _find_rop_name_columns(header_row):
-    columns = {"ru": 6}
-    for index, value in enumerate(header_row):
-        normalized = _normalize_header(value).replace("_", " ")
-        for language, keywords in ROP_NAME_HEADER_KEYWORDS.items():
-            if any(keyword in normalized for keyword in keywords):
-                columns.setdefault(language, index)
-    return columns
-
-
-def _rop_course_name_i18n(row, name_columns):
-    name_ru = _cell_text(_safe_row_value(row, name_columns.get("ru", 6)))
-    fallback = discipline_name_translations(name_ru)
-    return {
-        "ru": name_ru,
-        "kk": _cell_text(_safe_row_value(row, name_columns.get("kk", -1))) or fallback["kk"],
-        "en": _cell_text(_safe_row_value(row, name_columns.get("en", -1))) or fallback["en"],
-    }
-
-
-def _translated_name_values(value, language, existing=None):
-    language = str(language or "ru").lower()
-    if language not in {"ru", "kk", "en"}:
-        language = "ru"
-    existing = existing or {}
-    clean_value = str(value or "").strip()
-    base_name = existing.get("ru") or clean_value
-    fallback = discipline_name_translations(base_name)
-    values = {
-        "ru": existing.get("ru") or fallback["ru"],
-        "kk": existing.get("kk") or fallback["kk"],
-        "en": existing.get("en") or fallback["en"],
-    }
-    if clean_value:
-        values[language] = clean_value
-    return values
-
-
-def _course_name_values_from_row(course, existing=None):
-    language = course.get("language") or "ru"
-    explicit_values = {
-        "ru": course.get("name") or "",
-        "kk": course.get("nameKk") or "",
-        "en": course.get("nameEn") or "",
-    }
-    existing_values = existing or {}
-    values = _translated_name_values(
-        explicit_values.get(language) or explicit_values["ru"],
-        language,
-        existing_values,
-    )
-    for key, value in explicit_values.items():
-        if value:
-            values[key] = value
-    return values
-
-
-def _entry_course_name_values(entry, existing=None):
-    language = entry.get("language") or "ru"
-    explicit_values = {
-        "ru": entry.get("courseName") or "",
-        "kk": entry.get("courseNameKk") or "",
-        "en": entry.get("courseNameEn") or "",
-    }
-    existing_values = existing or {}
-    values = _translated_name_values(
-        explicit_values.get(language) or explicit_values["ru"],
-        language,
-        existing_values,
-    )
-    for key, value in explicit_values.items():
-        if value:
-            values[key] = value
-    return values
 
 
 def _normalize_course_department(value):
@@ -248,6 +163,7 @@ def _upsert_rop_course(connection, course, offering):
         existing = session.scalar(
             select(Course).where(
                 func.lower(Course.code) == func.lower(course["code"]),
+                func.lower(Course.name) == func.lower(course["name"]),
                 Course.semester == offering["academicPeriod"],
                 Course.year == course.get("studyYear"),
                 func.lower(Course.programme) == func.lower(programme),
@@ -255,42 +171,19 @@ def _upsert_rop_course(connection, course, offering):
         )
         result = "updated" if existing else "inserted"
         row = existing or Course(instructor_id=None, instructor_name="")
-        name_i18n = _course_name_values_from_row(
-            course,
-            {
-                "ru": existing.name if existing else "",
-                "kk": existing.name_kk if existing else "",
-                "en": existing.name_en if existing else "",
-            },
-        )
-        row.name = name_i18n["ru"]
-        row.name_kk = name_i18n["kk"]
-        row.name_en = name_i18n["en"]
+        row.name = course["name"]
         row.code = course["code"]
         row.credits = course.get("credits")
         row.hours = offering.get("totalHours")
         row.description = description
         row.year = course.get("studyYear")
         row.semester = offering["academicPeriod"]
-        department = _normalize_course_department(course.get("department") or "B057")
-        programme_i18n = course_meta_translations(programme)
-        cycle_i18n = course_meta_translations(course.get("cycle") or "")
-        component_i18n = course_meta_translations(course.get("component") or "")
-        department_i18n = course_meta_translations(department)
-        row.department = department
+        row.department = _normalize_course_department(course.get("department") or "B057")
         row.programme = programme
-        row.programme_kk = programme_i18n["kk"]
-        row.programme_en = programme_i18n["en"]
         row.module_type = course.get("moduleType") or ""
         row.module_name = course.get("moduleName") or ""
         row.cycle = course.get("cycle") or ""
-        row.cycle_kk = cycle_i18n["kk"]
-        row.cycle_en = cycle_i18n["en"]
         row.component = course.get("component") or ""
-        row.component_kk = component_i18n["kk"]
-        row.component_en = component_i18n["en"]
-        row.department_kk = department_i18n["kk"]
-        row.department_en = department_i18n["en"]
         row.language = course.get("language") or ""
         row.academic_year = course.get("academicYear") or ""
         row.entry_year = course.get("entryYear") or ""
@@ -360,6 +253,7 @@ def _sync_rop_course_components(connection, course_id, course, offering, lesson_
         if component_key in seen_components:
             continue
         seen_components.add(component_key)
+
         with SessionLocal() as session:
             existing_component = session.scalar(
                 select(CourseComponent)
@@ -382,24 +276,9 @@ def _sync_rop_course_components(connection, course_id, course, offering, lesson_
 
         with SessionLocal() as session:
             row = session.get(CourseComponent, existing_component.id) if existing_component else None
-            component_i18n = _entry_course_name_values(
-                {
-                    "courseName": component["courseName"],
-                    "courseNameKk": component.get("courseNameKk"),
-                    "courseNameEn": component.get("courseNameEn"),
-                    "language": course.get("language") or "ru",
-                },
-                {
-                    "ru": row.course_name if row else "",
-                    "kk": row.course_name_kk if row else "",
-                    "en": row.course_name_en if row else "",
-                },
-            )
             if row:
                 row.course_code = component["courseCode"]
-                row.course_name = component_i18n["ru"]
-                row.course_name_kk = component_i18n["kk"]
-                row.course_name_en = component_i18n["en"]
+                row.course_name = component["courseName"]
                 row.programme = course.get("programme") or ""
                 row.study_year = course.get("studyYear")
                 row.semester = component["semester"]
@@ -417,9 +296,7 @@ def _sync_rop_course_components(connection, course_id, course, offering, lesson_
             row = CourseComponent(
                 course_id=course_id,
                 course_code=component["courseCode"],
-                course_name=component_i18n["ru"],
-                course_name_kk=component_i18n["kk"],
-                course_name_en=component_i18n["en"],
+                course_name=component["courseName"],
                 programme=course.get("programme") or "",
                 study_year=course.get("studyYear"),
                 academic_period=component["academicPeriod"],
@@ -535,19 +412,14 @@ def _normalize_rop_programme_name(file_name, programme):
 
 def _extract_language(file_name, rows):
     lower_name = file_name.lower()
-    if "каз" in lower_name or "_kk" in lower_name or "қаз" in lower_name or "kaz" in lower_name:
+    if "каз" in lower_name or "_kk" in lower_name or "қаз" in lower_name:
         return "kk"
-    if "англ" in lower_name or "_en" in lower_name or "english" in lower_name or "_eng" in lower_name:
-        return "en"
-    if "рус" in lower_name or "_ru" in lower_name or "russian" in lower_name:
+    if "рус" in lower_name or "_ru" in lower_name:
         return "ru"
     for row in rows[:20]:
         text = " ".join(_cell_text(value) for value in row if _cell_text(value))
-        normalized = text.lower()
         if any(marker in text for marker in ("ЖҰМЫС ОҚУ ЖОСПАРЫ", "Оқуға түскен жылы")):
             return "kk"
-        if "working curriculum" in normalized or "academic year of admission" in normalized:
-            return "en"
     return "ru"
 
 
@@ -671,110 +543,15 @@ def _normalise_iup_programme(value):
 
 def _normalise_iup_language(value):
     text = str(value or "").strip().lower()
-    if text in {"kk", "kz", "қазақ", "казахский", "kazakh", "қазақша"}:
+    if text in {"kk", "kz", "қазақ", "казахский"}:
         return "kk"
-    if text in {"ru", "русский", "орыс", "russian"}:
+    if text in {"ru", "русский", "орыс"}:
         return "ru"
-    if text in {"en", "eng", "english", "английский", "ағылшын", "ағылшынша"}:
-        return "en"
     if text.startswith(("каз", "қаз")):
         return "kk"
     if text.startswith(("рус", "орыс")):
         return "ru"
-    if text.startswith(("eng", "англ", "ағыл")):
-        return "en"
     return "ru"
-
-
-IUP_FACULTY_ALIASES = (
-    (
-        "агроном",
-        "Агрономический факультет",
-    ),
-    (
-        "лесного хозяйства",
-        "Факультет лесного хозяйства, дикой природы и окружающей среды",
-    ),
-    (
-        "дикой природы",
-        "Факультет лесного хозяйства, дикой природы и окружающей среды",
-    ),
-    (
-        "окружающей среды",
-        "Факультет лесного хозяйства, дикой природы и окружающей среды",
-    ),
-    (
-        "земельными ресурсами",
-        "Факультет управления земельными ресурсами, архитектуры и дизайна",
-    ),
-    (
-        "архитектуры",
-        "Факультет управления земельными ресурсами, архитектуры и дизайна",
-    ),
-    (
-        "ветеринар",
-        "Факультет ветеринарии и технологии животноводства",
-    ),
-    (
-        "животновод",
-        "Факультет ветеринарии и технологии животноводства",
-    ),
-    (
-        "бизнес",
-        "Факультет/Институт бизнеса и цифровых технологий",
-    ),
-    (
-        "цифровых технологий",
-        "Факультет/Институт бизнеса и цифровых технологий",
-    ),
-    (
-        "информационных систем",
-        "Факультет информационных систем",
-    ),
-    (
-        "техническ",
-        "Технический факультет",
-    ),
-    (
-        "экономическ",
-        "Экономический факультет",
-    ),
-    (
-        "энергетическ",
-        "Энергетический факультет",
-    ),
-)
-
-
-def _normalise_iup_faculty(value):
-    text = re.sub(r"\s+", " ", str(value or "").replace("\\", "/")).strip()
-    normalized = text.lower()
-    if not normalized:
-        return ""
-    for marker, faculty in IUP_FACULTY_ALIASES:
-        if marker in normalized:
-            return faculty
-    return text
-
-
-def _extract_iup_faculty(lines):
-    after_director_label = False
-    for line in lines[:40]:
-        normalized = line.lower()
-        if "директор" in normalized:
-            after_director_label = True
-            continue
-        if "индивидуальный учебный план" in normalized:
-            break
-        if "университет" in normalized or "подпись" in normalized or "печать" in normalized:
-            continue
-        if not after_director_label and not any(
-            label in normalized for label in ("факультет", "институт", "высшая школа")
-        ):
-            continue
-        if any(marker in normalized for marker, _faculty in IUP_FACULTY_ALIASES):
-            return _normalise_iup_faculty(line)
-    return ""
 
 
 def _infer_iup_group_name(file_name, programme):
@@ -801,9 +578,7 @@ def _extract_iup_metadata(file_name, lines):
         "studyCourse": None,
         "language": "ru",
         "academicYear": "",
-        "faculty": "",
     }
-    metadata["faculty"] = _extract_iup_faculty(lines)
     for index, line in enumerate(lines):
         lower_line = line.lower()
         if line.startswith("Курс "):
@@ -891,7 +666,6 @@ def _parse_iup_course_block(block):
     course_code, course_name = _split_iup_code_and_name(block[2:credits_index])
     if not course_code or not course_name:
         return None
-    course_i18n = discipline_name_translations(course_name)
 
     lesson_items = []
     cursor = credits_index + 1
@@ -930,8 +704,6 @@ def _parse_iup_course_block(block):
         "component": component,
         "code": course_code,
         "name": course_name,
-        "nameKk": course_i18n["kk"],
-        "nameEn": course_i18n["en"],
         "credits": int(block[credits_index]),
         "lessonItems": lesson_items,
     }
@@ -979,14 +751,9 @@ def _parse_iup_file(file_name, file_bytes):
 
         course = _parse_iup_course_block(lines[index:next_index])
         if course:
-            course_i18n = _course_name_values_from_row(course, {"ru": course["name"]})
             course["studyYear"] = current_study_year
             course["academicPeriod"] = current_academic_period
             course["semester"] = current_academic_period
-            course["language"] = metadata.get("language", "ru")
-            course["name"] = course_i18n["ru"]
-            course["nameKk"] = course_i18n["kk"]
-            course["nameEn"] = course_i18n["en"]
             courses.append(course)
             for lesson in course["lessonItems"]:
                 entries.append(
@@ -998,9 +765,6 @@ def _parse_iup_file(file_name, file_bytes):
                         "component": course["component"],
                         "courseCode": course["code"],
                         "courseName": course["name"],
-                        "courseNameKk": course["nameKk"],
-                        "courseNameEn": course["nameEn"],
-                        "language": metadata.get("language", "ru"),
                         "credits": course["credits"],
                         **lesson,
                     }
@@ -1028,12 +792,10 @@ def _teacher_email_from_name(name):
     return f"iup-{digest}{TEACHER_EMAIL_DOMAIN}"
 
 
-def _upsert_iup_teacher(session, teacher_name, language, faculty=""):
+def _upsert_iup_teacher(session, teacher_name, language):
     normalized_name = normalize_teacher_name(teacher_name)
     name_signature = build_teacher_name_signature(teacher_name)
     normalized_language = _normalise_iup_language(language)
-    normalized_faculty = _normalise_iup_faculty(faculty)
-    name_i18n = teacher_name_translations(teacher_name)
     existing = session.scalar(
         select(Teacher)
         .where(
@@ -1063,22 +825,13 @@ def _upsert_iup_teacher(session, teacher_name, language, faculty=""):
             existing.name_normalized = normalized_name
         if not existing.name_signature:
             existing.name_signature = name_signature
-        if not existing.name_kk:
-            existing.name_kk = name_i18n["kk"]
-        if not existing.name_en:
-            existing.name_en = name_i18n["en"]
-        if normalized_faculty and not existing.department:
-            existing.department = normalized_faculty
         existing.teaching_languages = teaching_languages
         session.flush()
         return existing.id, "existing"
 
     teacher = Teacher(
         name=teacher_name,
-        name_kk=name_i18n["kk"],
-        name_en=name_i18n["en"],
         email=_teacher_email_from_name(teacher_name),
-        department=normalized_faculty,
         subject_taught="",
         teaching_languages=normalized_language or "ru",
         name_normalized=normalized_name,
@@ -1214,18 +967,6 @@ def _get_iup_course_lists(session, parsed):
             course.get("studyYear"),
         )
         if match:
-            language = metadata.get("language", "ru")
-            name_values = _course_name_values_from_row(
-                {**course, "language": language},
-                {
-                    "ru": match.name,
-                    "kk": match.name_kk,
-                    "en": match.name_en,
-                },
-            )
-            match.name = name_values["ru"]
-            match.name_kk = name_values["kk"]
-            match.name_en = name_values["en"]
             matched_courses.append(item)
         else:
             missing_courses.append(item)
@@ -1263,18 +1004,8 @@ def _create_iup_missing_courses(session, parsed, missing_courses):
 
     for item in missing_courses:
         course = courses_by_key.get(((item.get("code") or "").lower(), item.get("semester"))) or item
-        course_name = course.get("name") or item.get("name") or item.get("code") or "Без названия"
-        department = _normalize_course_department(metadata.get("educationalProgrammeGroup") or "B057")
-        programme_i18n = course_meta_translations(metadata.get("programme", ""))
-        component_i18n = course_meta_translations(course.get("component", ""))
-        department_i18n = course_meta_translations(department)
-        course_i18n = _course_name_values_from_row(
-            {**course, "name": course_name, "language": metadata.get("language", "ru")}
-        )
         course_row = Course(
-            name=course_i18n["ru"],
-            name_kk=course_i18n["kk"],
-            name_en=course_i18n["en"],
+            name=course.get("name") or item.get("name") or item.get("code") or "Без названия",
             code=course.get("code") or item.get("code") or "",
             credits=course.get("credits"),
             hours=None,
@@ -1285,22 +1016,14 @@ def _create_iup_missing_courses(session, parsed, missing_courses):
             ),
             year=course.get("studyYear"),
             semester=course.get("semester") or item.get("semester"),
-            department=department,
+            department=_normalize_course_department(metadata.get("educationalProgrammeGroup") or "B057"),
             instructor_id=None,
             instructor_name="",
             programme=metadata.get("programme", ""),
-            programme_kk=programme_i18n["kk"],
-            programme_en=programme_i18n["en"],
             module_type="",
             module_name="",
             cycle="",
-            cycle_kk="",
-            cycle_en="",
             component=course.get("component", ""),
-            component_kk=component_i18n["kk"],
-            component_en=component_i18n["en"],
-            department_kk=department_i18n["kk"],
-            department_en=department_i18n["en"],
             language=metadata.get("language", "ru"),
             academic_year=metadata.get("academicYear", ""),
             entry_year="",
@@ -1328,16 +1051,11 @@ def _create_iup_missing_courses(session, parsed, missing_courses):
             if component_key in seen_components:
                 continue
             seen_components.add(component_key)
-            entry_i18n = _entry_course_name_values(
-                {**entry, "language": metadata.get("language", "ru")}
-            )
             session.add(
                 CourseComponent(
                     course_id=course_row.id,
                     course_code=entry.get("courseCode", ""),
                     course_name=entry.get("courseName", ""),
-                    course_name_kk=entry.get("courseNameKk") or entry_i18n["kk"],
-                    course_name_en=entry.get("courseNameEn") or entry_i18n["en"],
                     lesson_type=entry.get("lessonType"),
                     hours=entry.get("hours") or 0,
                     weekly_classes=1,
@@ -1388,9 +1106,6 @@ def _store_iup_entries(connection, parsed, create_missing_courses=False):
                 matched_courses, missing_courses = _get_iup_course_lists(session, parsed)
 
             for entry in parsed["entries"]:
-                entry_i18n = _entry_course_name_values(
-                    {**entry, "language": metadata.get("language", "ru")}
-                )
                 teacher_name = entry.get("teacherName", "")
                 teacher_id = None
                 if teacher_name:
@@ -1399,9 +1114,8 @@ def _store_iup_entries(connection, parsed, create_missing_courses=False):
                             session,
                             teacher_name,
                             metadata.get("language", "ru"),
-                            metadata.get("faculty", ""),
                         )
-                teacher_id, _status = teacher_cache[teacher_name]
+                    teacher_id, _status = teacher_cache[teacher_name]
 
                 session.add(
                     IupEntry(
@@ -1415,9 +1129,7 @@ def _store_iup_entries(connection, parsed, create_missing_courses=False):
                         semester=entry.get("semester"),
                         component=entry.get("component", ""),
                         course_code=entry["courseCode"],
-                        course_name=entry_i18n["ru"],
-                        course_name_kk=entry_i18n["kk"],
-                        course_name_en=entry_i18n["en"],
+                        course_name=entry["courseName"],
                         credits=entry.get("credits"),
                         lesson_type=entry["lessonType"],
                         teacher_id=teacher_id,
@@ -1434,17 +1146,6 @@ def _store_iup_entries(connection, parsed, create_missing_courses=False):
                         entry.get("semester"),
                     )
                     if course and course.id not in updated_courses:
-                        course_name_i18n = _course_name_values_from_row(
-                            {**entry, "name": entry["courseName"], "language": metadata.get("language", "ru")},
-                            {
-                                "ru": course.name,
-                                "kk": course.name_kk,
-                                "en": course.name_en,
-                            },
-                        )
-                        course.name = course_name_i18n["ru"]
-                        course.name_kk = course_name_i18n["kk"]
-                        course.name_en = course_name_i18n["en"]
                         course_update = session.execute(
                             update(Course)
                             .where(
@@ -1460,30 +1161,6 @@ def _store_iup_entries(connection, parsed, create_missing_courses=False):
                             updated_courses.add(course.id)
 
                     if course:
-                        existing_components = session.scalars(
-                            select(CourseComponent).where(
-                                CourseComponent.course_id == course.id,
-                                CourseComponent.lesson_type == entry["lessonType"],
-                            )
-                        ).all()
-                        for component in existing_components:
-                            if (
-                                entry.get("academicPeriod") is not None
-                                and component.academic_period is not None
-                                and component.academic_period != entry.get("academicPeriod")
-                            ):
-                                continue
-                            component_i18n = _entry_course_name_values(
-                                {**entry, "language": metadata.get("language", "ru")},
-                                {
-                                    "ru": component.course_name,
-                                    "kk": component.course_name_kk,
-                                    "en": component.course_name_en,
-                                },
-                            )
-                            component.course_name = component_i18n["ru"]
-                            component.course_name_kk = component_i18n["kk"]
-                            component.course_name_en = component_i18n["en"]
                         component_conditions = [
                             CourseComponent.course_id == course.id,
                             CourseComponent.lesson_type == entry["lessonType"],
@@ -1572,8 +1249,6 @@ def parse_iup_preview(headers, payload):
             {
                 "code": course["code"],
                 "name": course["name"],
-                "nameKk": course.get("nameKk"),
-                "nameEn": course.get("nameEn"),
                 "component": course["component"],
                 "credits": course["credits"],
                 "academicPeriod": course.get("academicPeriod"),
@@ -1618,8 +1293,6 @@ def parse_rop_preview(headers, payload):
     )
     rows = _load_rop_rows(file_name, file_bytes)
     header_row_index = _find_rop_table_header_row(rows)
-    header_row = rows[header_row_index] if header_row_index < len(rows) else []
-    name_columns = _find_rop_name_columns(header_row)
     academic_period_row = rows[header_row_index + 1] if header_row_index + 1 < len(rows) else []
     academic_periods = [
         _extract_period_number(_safe_row_value(academic_period_row, group["academic_period_column"]))
@@ -1645,7 +1318,6 @@ def parse_rop_preview(headers, payload):
     for row_index, row in enumerate(rows[header_row_index + 3 :], start=header_row_index + 4):
         if not _is_rop_course_row(row):
             continue
-        course_names = _rop_course_name_i18n(row, name_columns)
 
         course = {
             "rowNumber": row_index,
@@ -1655,9 +1327,7 @@ def parse_rop_preview(headers, payload):
             "cycle": _cell_text(_safe_row_value(row, 3)),
             "component": _cell_text(_safe_row_value(row, 4)),
             "code": _cell_text(_safe_row_value(row, 5)),
-            "name": course_names["ru"],
-            "nameKk": course_names["kk"],
-            "nameEn": course_names["en"],
+            "name": _cell_text(_safe_row_value(row, 6)),
             "credits": _number_or_none(_safe_row_value(row, 7)),
             "examPeriod": _number_or_none(_safe_row_value(row, 9)),
             "programme": metadata["programme"],
@@ -1679,8 +1349,6 @@ def parse_rop_preview(headers, payload):
             offering = {
                 "courseCode": course["code"],
                 "courseName": course["name"],
-                "courseNameKk": course["nameKk"],
-                "courseNameEn": course["nameEn"],
                 "academicPeriod": academic_period,
                 "semester": _semester_in_year(academic_period),
                 "studyYear": study_year,
@@ -1703,8 +1371,6 @@ def parse_rop_preview(headers, payload):
                         {
                             "courseCode": course["code"],
                             "courseName": course["name"],
-                            "courseNameKk": course["nameKk"],
-                            "courseNameEn": course["nameEn"],
                             "programme": metadata["programme"],
                             "studyYear": study_year,
                             "academicPeriod": academic_period,

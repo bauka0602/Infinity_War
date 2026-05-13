@@ -6,7 +6,6 @@ from difflib import SequenceMatcher
 from sqlalchemy import func, or_, select
 
 from ..collections.normalization import normalize_lesson_type, normalize_language, positive_int
-from ..courses.translations import course_meta_translations, discipline_name_translations
 from ..core.errors import ApiError
 from ..core.orm import SessionLocal
 from ..models import Course, CourseComponent, Group, IupEntry, Room, Section, Teacher
@@ -414,13 +413,8 @@ def _fallback_component_from_iup(session, iup_entry, preview=False):
     elif preview:
         course_id = None
     else:
-        name_i18n = discipline_name_translations(iup_entry.get("course_name"))
-        programme_i18n = course_meta_translations(iup_entry.get("programme") or "")
-        component_i18n = course_meta_translations(iup_entry.get("component") or "")
         course = Course(
             name=iup_entry.get("course_name"),
-            name_kk=iup_entry.get("course_name_kk") or name_i18n["kk"],
-            name_en=iup_entry.get("course_name_en") or name_i18n["en"],
             code=iup_entry.get("course_code") or iup_entry.get("course_name"),
             credits=iup_entry.get("credits"),
             hours=iup_entry.get("hours"),
@@ -431,18 +425,10 @@ def _fallback_component_from_iup(session, iup_entry, preview=False):
             instructor_id=None,
             instructor_name="",
             programme=iup_entry.get("programme") or "",
-            programme_kk=programme_i18n["kk"],
-            programme_en=programme_i18n["en"],
             module_type="",
             module_name="",
             cycle="",
-            cycle_kk="",
-            cycle_en="",
             component=iup_entry.get("component") or "",
-            component_kk=component_i18n["kk"],
-            component_en=component_i18n["en"],
-            department_kk="",
-            department_en="",
             language=iup_entry.get("language") or "",
             academic_year=iup_entry.get("academic_year") or "",
             entry_year="",

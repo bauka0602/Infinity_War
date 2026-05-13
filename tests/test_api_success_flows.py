@@ -471,7 +471,6 @@ def test_iup_import_fills_only_empty_teacher_assignments(orm):
             "programme": "Бизнес-информатика",
             "language": "ru",
             "academicYear": "2025-2026",
-            "faculty": "Факультет/Институт бизнеса и цифровых технологий",
         },
         "entries": [
             {
@@ -505,7 +504,6 @@ def test_iup_import_fills_only_empty_teacher_assignments(orm):
 
     manual_course = orm.get("Course", manual_course.id)
     empty_course = orm.get("Course", empty_course.id)
-    empty_teacher = orm.get("Teacher", empty_teacher.id)
     manual_component = orm.one("CourseComponent", course_id=manual_course.id, lesson_type="lecture")
     empty_component = orm.one("CourseComponent", course_id=empty_course.id, lesson_type="lecture")
     manual_section = orm.one("Section", course_id=manual_course.id, lesson_type="lecture")
@@ -521,7 +519,6 @@ def test_iup_import_fills_only_empty_teacher_assignments(orm):
     assert manual_section.teacher_name == "Manual Teacher"
     assert empty_course.instructor_id == empty_teacher.id
     assert empty_course.instructor_name == "Existing IUP Teacher"
-    assert empty_teacher.department == "Факультет/Институт бизнеса и цифровых технологий"
     assert empty_component.teacher_id == empty_teacher.id
     assert empty_component.teacher_name == "Existing IUP Teacher"
     assert empty_section.teacher_id == empty_teacher.id
