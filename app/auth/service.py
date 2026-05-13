@@ -685,7 +685,7 @@ def login_user(payload):
         user["token"] = token
         user["password"] = password_hash
 
-    return sanitize_user(user)
+    return _sanitize_profile_user(None, user)
 
 
 def logout_user(headers):
