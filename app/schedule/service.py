@@ -37,6 +37,7 @@ SEASON_ACADEMIC_PERIODS = {
     1: (1, 3, 5, 7),
     2: (2, 4, 6, 8),
 }
+ORLENOK_ROOM_TOKEN = "орленок"
 
 
 def monday_for_week(target_year):
@@ -61,6 +62,12 @@ def _room_block_day_for_optimizer(value):
         return datetime.fromisoformat(raw).strftime("%A")
     except ValueError:
         return raw
+
+
+def _room_building_for_schedule(room):
+    if ORLENOK_ROOM_TOKEN in str(room.get("number") or "").strip().lower():
+        return ""
+    return str(room.get("building") or "")
 
 
 def _get_room_blocked_slots(session, semester=None, year=None):
@@ -499,9 +506,8 @@ def build_schedule(connection, semester, year, algorithm, progress_callback=None
                 ).order_by(Teacher.id)
             ).mappings().all()
         ]
-        rooms = [
-            {**dict(row), "building": ""}
-            for row in session.execute(
+        rooms = []
+        room_rows = session.execute(
                 select(
                     Room.id.label("id"),
                     Room.number.label("number"),
@@ -509,12 +515,16 @@ def build_schedule(connection, semester, year, algorithm, progress_callback=None
                     Room.available.label("available"),
                     Room.type.label("type"),
                     Room.programme.label("programme"),
+                    Room.building.label("building"),
                     Room.computer_count.label("computer_count"),
                 )
                 .where(func.coalesce(Room.available, 1) == 1)
                 .order_by(Room.capacity, Room.id)
             ).mappings().all()
-        ]
+        for row in room_rows:
+            room = dict(row)
+            room["building"] = _room_building_for_schedule(room)
+            rooms.append(room)
         room_blocked_slots = _get_room_blocked_slots(session, semester, year)
         for room in rooms:
             room["unavailable_slots"] = [
