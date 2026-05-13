@@ -301,6 +301,69 @@ def _teacher_to_dict(teacher):
     return {"id": teacher.id, "name": teacher.name} if teacher else None
 
 
+def _manual_teacher_disciplines(value):
+    return [
+        item.strip()
+        for item in str(value or "").replace(";", ",").split(",")
+        if item.strip()
+    ]
+
+
+def _find_teacher_by_manual_discipline(session, iup_entry, issues, preview=False):
+    course_name = str(iup_entry.get("course_name") or "").strip()
+    normalized_course_name = normalize_course_name(course_name)
+    if not normalized_course_name:
+        return None
+
+    candidates = []
+    for teacher in session.scalars(
+        select(Teacher)
+        .where(func.trim(func.coalesce(Teacher.subject_taught, "")) != "")
+        .order_by(Teacher.id)
+    ).all():
+        manual_disciplines = _manual_teacher_disciplines(teacher.subject_taught)
+        if any(normalize_course_name(discipline) == normalized_course_name for discipline in manual_disciplines):
+            candidates.append(teacher)
+
+    if not candidates:
+        return None
+
+    language = normalize_language(iup_entry.get("language"), "")
+    if language:
+        language_matches = [
+            teacher
+            for teacher in candidates
+            if language in {
+                item.strip().lower()
+                for item in str(teacher.teaching_languages or "ru,kk").split(",")
+                if item.strip()
+            }
+        ]
+        if len(language_matches) == 1:
+            candidates = language_matches
+        elif len(language_matches) > 1:
+            candidates = language_matches
+
+    teacher = candidates[0]
+    is_ambiguous = len(candidates) > 1
+    add_issue(
+        issues,
+        "teacher_manual_discipline_ambiguous_first_used"
+        if is_ambiguous
+        else "teacher_matched_by_manual_discipline_preview" if preview else "teacher_matched_by_manual_discipline",
+        "Найдено несколько преподавателей по ручному списку дисциплин, выбран первый."
+        if is_ambiguous
+        else "Преподаватель подобран по ручному списку дисциплин.",
+        "warning" if is_ambiguous else "info",
+        iup_entry_id=iup_entry.get("id"),
+        course_name=course_name,
+        teacher_id=teacher.id,
+        teacher_name=teacher.name,
+        teacher_names=", ".join(candidate.name for candidate in candidates) if is_ambiguous else "",
+    )
+    return _teacher_to_dict(teacher)
+
+
 def _find_or_create_teacher(session, iup_entry, issues):
     teacher_id = iup_entry.get("teacher_id")
     if teacher_id:
@@ -310,6 +373,9 @@ def _find_or_create_teacher(session, iup_entry, issues):
 
     teacher_name = str(iup_entry.get("teacher_name") or "").strip()
     if not teacher_name:
+        manual_teacher = _find_teacher_by_manual_discipline(session, iup_entry, issues)
+        if manual_teacher:
+            return manual_teacher
         add_issue(
             issues,
             "teacher_missing",
@@ -366,6 +432,9 @@ def _find_teacher_for_preview(session, iup_entry, issues):
 
     teacher_name = str(iup_entry.get("teacher_name") or "").strip()
     if not teacher_name:
+        manual_teacher = _find_teacher_by_manual_discipline(session, iup_entry, issues, preview=True)
+        if manual_teacher:
+            return manual_teacher
         add_issue(
             issues,
             "teacher_missing",

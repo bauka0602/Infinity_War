@@ -79,15 +79,20 @@ def _teacher_disciplines_map(connection):
                     func.trim(func.coalesce(Section.course_name, "")) != "",
                 )
             ).all(),
+            session.execute(
+                select(Teacher.id, Teacher.subject_taught)
+                .where(func.trim(func.coalesce(Teacher.subject_taught, "")) != "")
+            ).all(),
         ]
     for rows in sources:
         for teacher_id, discipline_name in rows:
-            discipline_name = str(discipline_name or "").strip()
-            if not teacher_id or not discipline_name:
+            if not teacher_id:
                 continue
             disciplines = disciplines_by_teacher.setdefault(teacher_id, [])
-            if discipline_name not in disciplines:
-                disciplines.append(discipline_name)
+            for item in str(discipline_name or "").replace(";", ",").split(","):
+                discipline = item.strip()
+                if discipline and discipline not in disciplines:
+                    disciplines.append(discipline)
     for disciplines in disciplines_by_teacher.values():
         disciplines.sort()
     return disciplines_by_teacher
@@ -778,12 +783,22 @@ def _course_component_to_dict(row):
     }
 
 
+def _is_orlenok_room(room_number):
+    return "орленок" in str(room_number or "").strip().lower()
+
+
+def _room_building_value(payload):
+    if _is_orlenok_room(payload.get("number")):
+        return ""
+    return str(payload.get("building", "") or "")
+
+
 def _room_to_dict(row):
     return {
         "id": row.id,
         "number": row.number,
         "capacity": row.capacity,
-        "building": row.building,
+        "building": "" if _is_orlenok_room(row.number) else row.building,
         "type": row.type,
         "equipment": row.equipment,
         "programme": row.programme,
@@ -1240,7 +1255,7 @@ def create_collection_item(connection, collection, payload):
             row = Room(
                 number=normalized.get("number"),
                 capacity=normalized.get("capacity"),
-                building=str(normalized.get("building", "") or ""),
+                building=_room_building_value(normalized),
                 type=normalized.get("type", ""),
                 equipment=normalized.get("equipment", ""),
                 programme=normalized.get("programme", normalized.get("department", "")),
@@ -1485,7 +1500,7 @@ def update_collection_item(connection, collection, item_id, payload):
                 raise ApiError(404, "record_not_found", "Запись не найдена")
             row.number = normalized.get("number")
             row.capacity = normalized.get("capacity")
-            row.building = str(normalized.get("building", "") or "")
+            row.building = _room_building_value(normalized)
             row.type = normalized.get("type", "")
             row.equipment = normalized.get("equipment", "")
             row.programme = normalized.get("programme", normalized.get("department", ""))

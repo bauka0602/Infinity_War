@@ -294,10 +294,20 @@ def _get_teacher_assigned_disciplines(connection, teacher_id):
                     Section.teacher_id == teacher_id,
                     func.trim(func.coalesce(Section.course_name, "")) != "",
                 ),
+                select(Teacher.subject_taught.label("discipline_name")).where(
+                    Teacher.id == teacher_id,
+                    func.trim(func.coalesce(Teacher.subject_taught, "")) != "",
+                ),
             )
             .order_by("discipline_name")
         ).all()
-    return [row.discipline_name for row in rows if row.discipline_name]
+    disciplines = []
+    for row in rows:
+        for item in str(row.discipline_name or "").replace(";", ",").split(","):
+            discipline = item.strip()
+            if discipline and discipline not in disciplines:
+                disciplines.append(discipline)
+    return sorted(disciplines)
 
 
 def _sanitize_profile_user(connection, user):
