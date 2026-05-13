@@ -715,6 +715,7 @@ def validate_schedule_payload(connection, payload, exclude_schedule_id=None):
                 Section.lesson_type.label("lesson_type"),
                 Section.subgroup_mode.label("subgroup_mode"),
                 Section.subgroup_count.label("subgroup_count"),
+                Section.classes_count.label("classes_count"),
                 Section.requires_computers.label("requires_computers"),
                 func.coalesce(Section.teacher_id, Course.instructor_id).label("teacher_id"),
                 func.coalesce(func.nullif(Section.teacher_name, ""), Course.instructor_name, "").label("teacher_name"),
@@ -757,6 +758,23 @@ def validate_schedule_payload(connection, payload, exclude_schedule_id=None):
         if section.get("study_course") and int(section.get("study_course")) != int(section.get("course_year") or 0):
             raise ApiError(400, "bad_request", "Курс группы не совпадает с курсом дисциплины")
         lesson_type = normalize_lesson_type(section.get("lesson_type"))
+        section_schedule_count = select(func.count()).select_from(Schedule).where(
+            Schedule.section_id == section_id,
+            Schedule.semester == payload.get("semester"),
+            Schedule.year == payload.get("year"),
+        )
+        if normalize_subgroup_mode(section.get("subgroup_mode"), lesson_type) != "none":
+            section_schedule_count = section_schedule_count.where(
+                func.upper(func.coalesce(Schedule.subgroup, "")) == subgroup
+            )
+        if exclude_schedule_id is not None:
+            section_schedule_count = section_schedule_count.where(Schedule.id != exclude_schedule_id)
+        if int(session.scalar(section_schedule_count) or 0) >= int(section.get("classes_count") or 1):
+            raise ApiError(
+                400,
+                "schedule_section_limit_reached",
+                "Эта секция уже полностью добавлена в расписание",
+            )
         requires_computers = bool(section.get("requires_computers")) or lesson_type == "lab"
         if not schedule_room_type_matches(room.get("type"), lesson_type, requires_computers):
             raise ApiError(400, "bad_request", "Аудитория не подходит для типа занятия")
