@@ -611,6 +611,7 @@ def update_profile_email(headers, payload):
     user = require_auth_user(headers)
     if user["role"] not in {"teacher", "student"}:
         raise ApiError(403, "forbidden", "Email могут менять только преподаватели и студенты")
+    ensure_teacher_email_allowed(email, user["role"])
 
     if _email_exists_for_other_account(email, user["role"], user["id"]):
         raise ApiError(400, "email_already_exists", "Пользователь с таким email уже существует")
