@@ -16,11 +16,6 @@ class User(Base):
     role: Mapped[str] = mapped_column(Text, nullable=False)
     token: Mapped[str] = mapped_column(Text, nullable=False)
     avatar_data: Mapped[str | None] = mapped_column(Text)
-    department: Mapped[str | None] = mapped_column(Text)
-    programme: Mapped[str | None] = mapped_column(Text)
-    group_id: Mapped[int | None] = mapped_column(Integer)
-    group_name: Mapped[str | None] = mapped_column(Text)
-    subgroup: Mapped[str | None] = mapped_column(Text)
 
 
 class Student(Base):

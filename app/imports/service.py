@@ -1699,6 +1699,7 @@ def generate_schedule_export(headers, semester=None, year=None, language=None, g
     header_fill = PatternFill("solid", fgColor="014531")
     header_font = Font(color="FFFFFF", bold=True)
     title_font = Font(color="014531", bold=True, size=14)
+    day_font = Font(bold=True)
     table_border = Border(
         left=Side(style="thin", color="000000"),
         right=Side(style="thin", color="000000"),
@@ -1788,6 +1789,8 @@ def generate_schedule_export(headers, semester=None, year=None, language=None, g
             if row_number == 2:
                 for cell in row:
                     cell.alignment = center_alignment
+            elif row[0].value:
+                row[0].font = day_font
 
     buffer = BytesIO()
     workbook.save(buffer)

@@ -31,11 +31,6 @@ def _seed_user(row):
         role=row["role"],
         token=row["token"],
         avatar_data=row.get("avatarData") or row.get("avatar_data"),
-        department=row.get("department", ""),
-        programme=row.get("programmeName", row.get("programme", "")),
-        group_id=row.get("group_id"),
-        group_name=row.get("group_name", ""),
-        subgroup=row.get("subgroup", ""),
     )
 
 
