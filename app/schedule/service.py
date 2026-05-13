@@ -6,9 +6,9 @@ from sqlalchemy import delete, func, or_, select, update
 
 from ..core.orm import SessionLocal
 from ..models import Course, Group, Room, RoomBlock, Schedule, Section, Teacher, TeacherPreferenceRequest
-from ..programmes.education import get_home_room_programmes
+from ..programmes.education import get_home_room_programmes, room_matches_home_programmes
 from ..core.errors import ApiError
-from ..programmes.utils import normalize_programme_text
+from ..programmes.utils import normalize_programme_text, same_programme
 from .config import CP_SAT_WARM_START_ENABLED, normalize_schedule_algorithm
 from .cp_sat import optimize_cpsat_schedule
 from .cp_sat.cp_sat_fast import optimize_cpsat_fast_schedule
@@ -162,6 +162,49 @@ def _schedule_from_generated_row(row):
         relocated_from_room_number=row[17],
         relocation_reason=row[18],
     )
+
+
+def _resolve_generated_room_programme_meta(session, schedule):
+    row = session.execute(
+        select(
+            Course.programme.label("course_programme"),
+            Group.programme.label("group_programme"),
+            Group.specialty_code.label("specialty_code"),
+            Room.programme.label("room_programme"),
+        )
+        .select_from(Section)
+        .join(Course, Course.id == Section.course_id)
+        .join(Group, Group.id == Section.group_id)
+        .join(Room, Room.id == schedule.room_id)
+        .where(Section.id == schedule.section_id)
+    ).mappings().first()
+    if not row:
+        return "", 0
+
+    course_programme = row.get("course_programme") or ""
+    group_programme = row.get("group_programme") or ""
+    specialty_code = row.get("specialty_code") or ""
+    room_programme = row.get("room_programme") or ""
+    home_match = room_matches_home_programmes(room_programme, group_programme, specialty_code)
+    if group_programme or specialty_code:
+        mismatch = bool(room_programme and not home_match)
+    else:
+        mismatch = bool(
+            course_programme
+            and room_programme
+            and not same_programme(course_programme, room_programme)
+        )
+    return room_programme, 1 if mismatch else 0
+
+
+def _refresh_generated_room_programme_meta(session, semester, year):
+    schedules = session.scalars(
+        select(Schedule).where(Schedule.semester == semester, Schedule.year == year)
+    ).all()
+    for schedule in schedules:
+        room_programme, mismatch = _resolve_generated_room_programme_meta(session, schedule)
+        schedule.room_programme = room_programme
+        schedule.room_programme_mismatch = mismatch
 
 
 def academic_periods_for_schedule_semester(semester):
@@ -697,6 +740,8 @@ def build_schedule(connection, semester, year, algorithm, progress_callback=None
             )
         )
         session.add_all(_schedule_from_generated_row(row) for row in rows)
+        session.flush()
+        _refresh_generated_room_programme_meta(session, semester, year)
 
         if generated_group_ids:
             session.execute(

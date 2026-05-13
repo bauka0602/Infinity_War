@@ -892,27 +892,27 @@ def test_schedule_generation_success_flow_with_export(client, admin_auth_headers
     assert export_response.status_code == 200
 
     workbook = load_workbook(filename=BytesIO(export_response.content), data_only=True)
-    sheet = workbook["Schedule"]
+    assert "Schedule" not in workbook.sheetnames
+    sheet = workbook["SE-24-01"]
     rows = list(sheet.iter_rows(values_only=True))
 
-    assert rows[0] == (
-        "course_name",
-        "group_name",
-        "subgroup",
-        "teacher_name",
-        "room_number",
-        "day",
-        "start_hour",
-        "semester",
-        "year",
-        "algorithm",
-        "room_programme",
-        "room_programme_mismatch",
+    assert rows[0][0] == "Расписание - SE-24-01"
+    assert rows[1] == (
+        "День недели",
+        "Время занятия",
+        "Название предмета",
+        "Тип занятия",
+        "ФИО преподавателя",
+        "Аудитория",
     )
-    assert len(rows) == 3
-    assert all(row[0] == "Algorithms" for row in rows[1:])
-    assert all(row[1] == "SE-24-01" for row in rows[1:])
-    assert all(row[4] == "401" for row in rows[1:])
+    data_rows = [row for row in rows[2:] if any(cell is not None for cell in row)]
+    assert len(rows) == 5
+    assert len(data_rows) == 2
+    assert all(row[2] == "Algorithms" for row in data_rows)
+    assert all(row[4] == "Aruzhan Saparova" for row in data_rows)
+    assert all(row[5] == "401" for row in data_rows)
+    assert sheet["A2"].border.left.style == "thin"
+    assert sheet["F5"].border.right.style == "thin"
 
 
 def test_manual_schedule_rejects_teacher_conflict(client, admin_auth_headers):
@@ -1126,13 +1126,14 @@ def test_schedule_export_supports_semester_and_year_scope(client, admin_auth_hea
     assert export_response.status_code == 200
 
     workbook = load_workbook(filename=BytesIO(export_response.content), data_only=True)
-    sheet = workbook["Schedule"]
+    assert "Schedule" not in workbook.sheetnames
+    sheet = workbook["SE-24-01"]
     rows = list(sheet.iter_rows(values_only=True))
 
-    assert len(rows) == 2
-    assert rows[1][0] == "Algorithms"
-    assert rows[1][7] == 1
-    assert rows[1][8] == 2026
+    assert len(rows) == 3
+    assert rows[2][2] == "Algorithms"
+    assert rows[2][0] == "Понедельник"
+    assert rows[2][1] == "09:00-09:50"
 
 
 def test_auto_subgroups_are_limited_to_a_and_b():

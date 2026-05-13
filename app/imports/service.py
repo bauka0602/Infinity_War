@@ -1624,17 +1624,29 @@ def _export_sheet_title(group_name, used_titles):
     return candidate
 
 
+def _optional_export_int(value):
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def generate_schedule_export(headers, semester=None, year=None, language=None, group_id=None):
     user = require_auth_user(headers)
     if user["role"] != "admin":
         raise ApiError(403, "forbidden", "Недостаточно прав")
+    semester = _optional_export_int(semester)
+    year = _optional_export_int(year)
+    group_id = _optional_export_int(group_id)
     normalized_language = str(language or "ru").lower()
     if normalized_language not in EXPORT_TRANSLATIONS:
         normalized_language = "ru"
 
     try:
         from openpyxl import Workbook
-        from openpyxl.styles import Alignment, Font, PatternFill
+        from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     except ImportError as exc:
         raise ApiError(
             500,
@@ -1684,44 +1696,15 @@ def generate_schedule_export(headers, semester=None, year=None, language=None, g
     workbook = Workbook()
     workbook.remove(workbook.active)
 
-    compatibility_sheet = workbook.create_sheet("Schedule")
-    compatibility_sheet.append(
-        [
-            "course_name",
-            "group_name",
-            "subgroup",
-            "teacher_name",
-            "room_number",
-            "day",
-            "start_hour",
-            "semester",
-            "year",
-            "algorithm",
-            "room_programme",
-            "room_programme_mismatch",
-        ]
-    )
-    for item in schedules:
-        compatibility_sheet.append(
-            [
-                item.get("course_name", ""),
-                item.get("group_name", ""),
-                item.get("subgroup", ""),
-                item.get("teacher_name", ""),
-                item.get("room_number", ""),
-                item.get("day", ""),
-                item.get("start_hour", ""),
-                item.get("semester", ""),
-                item.get("year", ""),
-                item.get("algorithm", ""),
-                item.get("room_programme", ""),
-                item.get("room_programme_mismatch", ""),
-            ]
-        )
-
     header_fill = PatternFill("solid", fgColor="014531")
     header_font = Font(color="FFFFFF", bold=True)
     title_font = Font(color="014531", bold=True, size=14)
+    table_border = Border(
+        left=Side(style="thin", color="000000"),
+        right=Side(style="thin", color="000000"),
+        top=Side(style="thin", color="000000"),
+        bottom=Side(style="thin", color="000000"),
+    )
     center_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     text_alignment = Alignment(vertical="top", wrap_text=True)
     used_titles = set()
@@ -1753,6 +1736,8 @@ def generate_schedule_export(headers, semester=None, year=None, language=None, g
             cell.font = header_font
             cell.alignment = center_alignment
 
+        previous_day_label = None
+        spacer_rows = set()
         for item in group_schedules:
             weekday_key = _export_weekday_key(item.get("day"))
             day_label = _export_translation(normalized_language, weekday_key)
@@ -1760,12 +1745,16 @@ def generate_schedule_export(headers, semester=None, year=None, language=None, g
             subgroup = str(item.get("subgroup") or "").strip()
             course_name = item.get("course_name") or ""
 
+            if previous_day_label and day_label != previous_day_label:
+                sheet.append(["", "", "", "", "", ""])
+                spacer_rows.add(sheet.max_row)
+
             if subgroup:
                 course_name = f"{course_name} ({subgroup})"
 
             sheet.append(
                 [
-                    day_label,
+                    "" if day_label == previous_day_label else day_label,
                     time_label,
                     course_name,
                     _export_translation(
@@ -1776,6 +1765,7 @@ def generate_schedule_export(headers, semester=None, year=None, language=None, g
                     item.get("room_number", ""),
                 ]
             )
+            previous_day_label = day_label
 
         for column, width in {
             "A": 22,
@@ -1789,10 +1779,15 @@ def generate_schedule_export(headers, semester=None, year=None, language=None, g
 
         sheet.freeze_panes = "A3"
         sheet.row_dimensions[2].height = 24
-        for row in sheet.iter_rows(min_row=3):
-            sheet.row_dimensions[row[0].row].height = 28
+        for row in sheet.iter_rows(min_row=2, max_col=6):
+            row_number = row[0].row
+            sheet.row_dimensions[row_number].height = 12 if row_number in spacer_rows else 28
             for cell in row:
+                cell.border = table_border
                 cell.alignment = text_alignment
+            if row_number == 2:
+                for cell in row:
+                    cell.alignment = center_alignment
 
     buffer = BytesIO()
     workbook.save(buffer)
