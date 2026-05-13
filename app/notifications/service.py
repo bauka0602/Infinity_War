@@ -211,9 +211,6 @@ def create_schedule_regeneration_notifications(connection, semester, year, befor
         created = []
         all_recipient_keys = set(before_snapshots) | set(after_snapshots)
         for key in all_recipient_keys:
-            if before_snapshots.get(key, set()) == after_snapshots.get(key, set()):
-                continue
-
             recipient = after_recipient_info.get(key) or before_recipient_info.get(key)
             if recipient is None:
                 continue

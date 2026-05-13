@@ -94,6 +94,146 @@ def test_admin_can_create_course_with_credits_and_hours(client, admin_auth_heade
     assert course["component"] == "КВ"
 
 
+def test_manual_schedule_entry_notifies_teacher_and_students(client, admin_auth_headers, orm):
+    teacher_response = client.post(
+        "/api/teachers",
+        headers=admin_auth_headers,
+        json={
+            "name": "Notify Teacher",
+            "email": "notify.teacher@kazatu.edu.kz",
+            "phone": "+77000000001",
+            "department": "CS",
+            "teaching_languages": "ru,kk",
+        },
+    )
+    assert teacher_response.status_code == 201
+    teacher = teacher_response.json()
+
+    course_response = client.post(
+        "/api/disciplines",
+        headers=admin_auth_headers,
+        json={
+            "name": "Notification Course",
+            "code": "NOT201",
+            "credits": 5,
+            "hours": 150,
+            "year": 2,
+            "semester": 1,
+            "department": "CS",
+            "programme": "Software Engineering",
+            "instructor_id": teacher["id"],
+            "instructor_name": teacher["name"],
+        },
+    )
+    assert course_response.status_code == 201
+    course = course_response.json()
+
+    room_response = client.post(
+        "/api/rooms",
+        headers=admin_auth_headers,
+        json={
+            "number": "2414",
+            "capacity": 40,
+            "building": "2",
+            "type": "lecture",
+            "department": "CS",
+            "available": 1,
+        },
+    )
+    assert room_response.status_code == 201
+    room = room_response.json()
+
+    group_response = client.post(
+        "/api/groups",
+        headers=admin_auth_headers,
+        json={
+            "name": "SE-24-09",
+            "student_count": 24,
+            "study_course": 2,
+            "has_subgroups": 0,
+            "language": "ru",
+            "programme": "b057",
+            "specialty_code": "6B06101",
+        },
+    )
+    assert group_response.status_code == 201
+    group = group_response.json()
+
+    student_response = client.post(
+        "/api/auth/register",
+        json={
+            "email": "notify.student@example.com",
+            "password": "student123",
+            "displayName": "Notify Student",
+            "role": "student",
+            "department": "b057",
+            "programmeName": "6B06101",
+            "groupId": group["id"],
+            "language": "ru",
+        },
+    )
+    assert student_response.status_code == 201
+    student = student_response.json()
+
+    section_response = client.post(
+        "/api/sections",
+        headers=admin_auth_headers,
+        json={
+            "course_id": course["id"],
+            "course_name": course["name"],
+            "group_id": group["id"],
+            "group_name": group["name"],
+            "classes_count": 1,
+            "lesson_type": "lecture",
+            "teacher_id": teacher["id"],
+            "teacher_name": teacher["name"],
+        },
+    )
+    assert section_response.status_code == 201
+    section = section_response.json()
+
+    schedule_response = client.post(
+        "/api/schedules",
+        headers=admin_auth_headers,
+        json={
+            "section_id": section["id"],
+            "course_id": course["id"],
+            "course_name": course["name"],
+            "teacher_id": teacher["id"],
+            "teacher_name": teacher["name"],
+            "room_id": room["id"],
+            "room_number": room["number"],
+            "group_id": group["id"],
+            "group_name": group["name"],
+            "subgroup": "",
+            "day": "monday",
+            "start_hour": 12,
+            "semester": 1,
+            "year": 2026,
+            "algorithm": "manual",
+        },
+    )
+    assert schedule_response.status_code == 201
+
+    teacher_notifications = orm.list(
+        "Notification",
+        "id",
+        recipient_role="teacher",
+        recipient_id=teacher["id"],
+    )
+    assert len(teacher_notifications) == 1
+    assert teacher_notifications[0].notification_type == "schedule_changed"
+
+    student_notifications_response = client.get(
+        "/api/notifications",
+        headers={"Authorization": f"Bearer {student['token']}"},
+    )
+    assert student_notifications_response.status_code == 200
+    student_notifications = student_notifications_response.json()
+    assert student_notifications["unreadCount"] == 1
+    assert student_notifications["items"][0]["notification_type"] == "schedule_changed"
+
+
 def test_admin_clear_all_removes_course_components(
     client,
     admin_auth_headers,
