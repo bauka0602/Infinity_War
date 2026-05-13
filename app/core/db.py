@@ -21,6 +21,8 @@ from ..models import (
     User,
 )
 from ..teachers.utils import build_teacher_name_signature, normalize_teacher_name
+from ..teachers.transliteration import teacher_name_translations
+from ..courses.translations import course_meta_translations, discipline_name_translations
 
 
 def _seed_user(row):
@@ -40,8 +42,15 @@ def _seed_user(row):
 
 
 def _seed_course(row):
+    name_i18n = discipline_name_translations(row["name"])
+    programme_i18n = course_meta_translations(row.get("programme_name", row.get("programme", "")))
+    cycle_i18n = course_meta_translations(row.get("cycle", ""))
+    component_i18n = course_meta_translations(row.get("component", ""))
+    department_i18n = course_meta_translations(row.get("department", ""))
     return Course(
         name=row["name"],
+        name_kk=row.get("name_kk") or name_i18n["kk"],
+        name_en=row.get("name_en") or name_i18n["en"],
         code=row["code"],
         credits=row.get("credits"),
         hours=row.get("hours"),
@@ -52,10 +61,18 @@ def _seed_course(row):
         instructor_id=row.get("instructor_id"),
         instructor_name=row.get("instructor_name", ""),
         programme=row.get("programme_name", row.get("programme", "")),
+        programme_kk=row.get("programme_kk") or programme_i18n["kk"],
+        programme_en=row.get("programme_en") or programme_i18n["en"],
         module_type=row.get("module_type", ""),
         module_name=row.get("module_name", ""),
         cycle=row.get("cycle", ""),
+        cycle_kk=row.get("cycle_kk") or cycle_i18n["kk"],
+        cycle_en=row.get("cycle_en") or cycle_i18n["en"],
         component=row.get("component", ""),
+        component_kk=row.get("component_kk") or component_i18n["kk"],
+        component_en=row.get("component_en") or component_i18n["en"],
+        department_kk=row.get("department_kk") or department_i18n["kk"],
+        department_en=row.get("department_en") or department_i18n["en"],
         language=row.get("language", ""),
         academic_year=row.get("academic_year", ""),
         entry_year=row.get("entry_year", ""),
@@ -64,10 +81,18 @@ def _seed_course(row):
 
 
 def _seed_teacher(row):
+    name_i18n = teacher_name_translations(
+        row["name"],
+        row.get("name_kk"),
+        row.get("name_en"),
+    )
     return Teacher(
         name=row["name"],
+        name_kk=name_i18n["kk"],
+        name_en=name_i18n["en"],
         email=row["email"],
         phone=row.get("phone", ""),
+        department=row.get("department", ""),
         subject_taught=row.get("specialization", row.get("department", "")),
         weekly_hours_limit=row.get("max_hours_per_week", row.get("weekly_hours_limit")),
         name_normalized=normalize_teacher_name(row["name"]),
@@ -81,6 +106,7 @@ def _seed_room(row):
         number=row["number"],
         capacity=row.get("capacity"),
         type=row.get("type", ""),
+        building=row.get("building", ""),
         equipment=row.get("equipment", ""),
         programme=row.get("programme", row.get("department", "")),
         available=1 if row.get("is_available", row.get("available", 1)) else 0,

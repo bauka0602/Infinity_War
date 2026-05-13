@@ -500,12 +500,13 @@ def build_schedule(connection, semester, year, algorithm, progress_callback=None
             ).mappings().all()
         ]
         rooms = [
-            {**dict(row), "building": ""}
+            dict(row)
             for row in session.execute(
                 select(
                     Room.id.label("id"),
                     Room.number.label("number"),
                     Room.capacity.label("capacity"),
+                    Room.building.label("building"),
                     Room.available.label("available"),
                     Room.type.label("type"),
                     Room.programme.label("programme"),

@@ -152,6 +152,7 @@ def test_iup_parser_preserves_academic_period_boundaries_for_real_pdf():
     periods = {entry["academicPeriod"] for entry in parsed["entries"]}
 
     assert {1, 2}.issubset(periods)
+    assert parsed["metadata"]["faculty"] == "Факультет/Институт бизнеса и цифровых технологий"
 
 
 def test_physics_is_not_treated_as_physical_education():

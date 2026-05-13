@@ -1,6 +1,6 @@
 from math import ceil
 
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import delete, func, literal, or_, select, update
 
 from ..core.orm import SessionLocal
 from ..models import (
@@ -24,6 +24,7 @@ from ..programmes.education import (
     room_matches_home_programmes,
 )
 from ..core.errors import ApiError
+from ..courses.translations import course_meta_translations, discipline_name_translations
 from ..notifications.service import create_schedule_change_notifications
 from ..programmes.utils import same_programme
 from ..rooms.availability import (
@@ -31,6 +32,7 @@ from ..rooms.availability import (
     recompute_room_availability,
 )
 from ..teachers.utils import build_teacher_name_signature, normalize_teacher_name
+from ..teachers.transliteration import teacher_name_translations
 from .normalization import (
     MIN_COMPUTER_COUNT,
     infer_group_entry_year,
@@ -59,21 +61,26 @@ def _teacher_disciplines_map(connection):
     with SessionLocal() as session:
         sources = [
             session.execute(
-                select(CourseComponent.teacher_id, CourseComponent.course_name)
+                select(
+                    CourseComponent.teacher_id,
+                    CourseComponent.course_name,
+                    CourseComponent.course_name_kk,
+                    CourseComponent.course_name_en,
+                )
                 .where(
                     CourseComponent.teacher_id.is_not(None),
                     func.trim(func.coalesce(CourseComponent.course_name, "")) != "",
                 )
             ).all(),
             session.execute(
-                select(Course.instructor_id, Course.name)
+                select(Course.instructor_id, Course.name, Course.name_kk, Course.name_en)
                 .where(
                     Course.instructor_id.is_not(None),
                     func.trim(func.coalesce(Course.name, "")) != "",
                 )
             ).all(),
             session.execute(
-                select(Section.teacher_id, Section.course_name)
+                select(Section.teacher_id, Section.course_name, literal(None), literal(None))
                 .where(
                     Section.teacher_id.is_not(None),
                     func.trim(func.coalesce(Section.course_name, "")) != "",
@@ -81,24 +88,38 @@ def _teacher_disciplines_map(connection):
             ).all(),
         ]
     for rows in sources:
-        for teacher_id, discipline_name in rows:
+        for teacher_id, discipline_name, discipline_name_kk, discipline_name_en in rows:
             discipline_name = str(discipline_name or "").strip()
             if not teacher_id or not discipline_name:
                 continue
             disciplines = disciplines_by_teacher.setdefault(teacher_id, [])
-            if discipline_name not in disciplines:
-                disciplines.append(discipline_name)
+            if not any(item["ru"] == discipline_name for item in disciplines):
+                fallback_i18n = discipline_name_translations(discipline_name)
+                disciplines.append({
+                    "ru": discipline_name,
+                    "kk": discipline_name_kk or fallback_i18n["kk"],
+                    "en": discipline_name_en or fallback_i18n["en"],
+                })
     for disciplines in disciplines_by_teacher.values():
-        disciplines.sort()
+        disciplines.sort(key=lambda item: item["ru"])
     return disciplines_by_teacher
 
 
 def _serialize_teacher(row, disciplines_by_teacher=None):
     disciplines = list((disciplines_by_teacher or {}).get(row["id"], []))
+    discipline_names = [discipline["ru"] for discipline in disciplines]
+    name_i18n = teacher_name_translations(
+        row.get("name"),
+        row.get("name_kk"),
+        row.get("name_en"),
+    )
     return {
         **row,
-        "assigned_disciplines": disciplines,
-        "assigned_disciplines_text": ", ".join(disciplines),
+        "name_kk": name_i18n["kk"],
+        "name_en": name_i18n["en"],
+        "assigned_disciplines": discipline_names,
+        "assigned_disciplines_i18n": disciplines,
+        "assigned_disciplines_text": ", ".join(discipline_names),
         "assigned_disciplines_count": len(disciplines),
     }
 
@@ -420,6 +441,7 @@ def _find_alternative_room_for_schedule(session, schedule_row, blocked_slots_by_
                 Room.id.label("id"),
                 Room.number.label("number"),
                 Room.capacity.label("capacity"),
+                Room.building.label("building"),
                 Room.type.label("type"),
                 Room.available.label("available"),
                 Room.computer_count.label("computer_count"),
@@ -636,6 +658,7 @@ def validate_schedule_payload(connection, payload, exclude_schedule_id=None):
                 Room.id.label("id"),
                 Room.number.label("number"),
                 Room.capacity.label("capacity"),
+                Room.building.label("building"),
                 Room.type.label("type"),
                 Room.available.label("available"),
                 Room.computer_count.label("computer_count"),
@@ -738,6 +761,8 @@ def _course_to_dict(row):
     return {
         "id": row.id,
         "name": row.name,
+        "name_kk": row.name_kk,
+        "name_en": row.name_en,
         "code": row.code,
         "credits": row.credits,
         "hours": row.hours,
@@ -748,10 +773,18 @@ def _course_to_dict(row):
         "instructor_id": row.instructor_id,
         "instructor_name": row.instructor_name,
         "programme": row.programme,
+        "programme_kk": row.programme_kk,
+        "programme_en": row.programme_en,
         "module_type": row.module_type,
         "module_name": row.module_name,
         "cycle": row.cycle,
+        "cycle_kk": row.cycle_kk,
+        "cycle_en": row.cycle_en,
         "component": row.component,
+        "component_kk": row.component_kk,
+        "component_en": row.component_en,
+        "department_kk": row.department_kk,
+        "department_en": row.department_en,
         "language": row.language,
         "academic_year": row.academic_year,
         "entry_year": row.entry_year,
@@ -765,6 +798,8 @@ def _course_component_to_dict(row):
         "course_id": row.course_id,
         "course_code": row.course_code,
         "course_name": row.course_name,
+        "course_name_kk": row.course_name_kk,
+        "course_name_en": row.course_name_en,
         "programme": row.programme,
         "study_year": row.study_year,
         "academic_period": row.academic_period,
@@ -783,7 +818,7 @@ def _room_to_dict(row):
         "id": row.id,
         "number": row.number,
         "capacity": row.capacity,
-        "building": "",
+        "building": row.building,
         "type": row.type,
         "equipment": row.equipment,
         "programme": row.programme,
@@ -904,8 +939,11 @@ def get_collection_item(collection, item_id):
             return {
                 "id": row.id,
                 "name": row.name,
+                "name_kk": row.name_kk,
+                "name_en": row.name_en,
                 "email": row.email,
                 "phone": row.phone,
+                "department": row.department,
                 "subject_taught": row.subject_taught,
                 "weekly_hours_limit": row.weekly_hours_limit,
                 "teaching_languages": row.teaching_languages,
@@ -987,6 +1025,8 @@ def list_collection(connection, collection, query, user=None):
                     "component": row.component,
                     "course_code": row.course_code,
                     "course_name": row.course_name,
+                    "course_name_kk": row.course_name_kk,
+                    "course_name_en": row.course_name_en,
                     "credits": row.credits,
                     "lesson_type": row.lesson_type,
                     "teacher_id": row.teacher_id,
@@ -1010,8 +1050,11 @@ def list_collection(connection, collection, query, user=None):
                 select(
                     Teacher.id.label("id"),
                     Teacher.name.label("name"),
+                    Teacher.name_kk.label("name_kk"),
+                    Teacher.name_en.label("name_en"),
                     Teacher.email.label("email"),
                     Teacher.phone.label("phone"),
+                    Teacher.department.label("department"),
                     Teacher.subject_taught.label("subject_taught"),
                     Teacher.weekly_hours_limit.label("weekly_hours_limit"),
                     Teacher.teaching_languages.label("teaching_languages"),
@@ -1136,23 +1179,40 @@ def create_collection_item(connection, collection, payload):
         normalized = normalize_number_fields(payload, ["credits", "hours", "year", "study_year", "semester", "instructor_id", "requires_computers"])
         course_name = normalized.get("name")
         course_code = normalized.get("code") or course_name
+        course_i18n = discipline_name_translations(course_name)
+        programme = normalized.get("programme", normalized.get("programme_name", ""))
+        department = normalized.get("department", "")
+        programme_i18n = course_meta_translations(programme)
+        cycle_i18n = course_meta_translations(normalized.get("cycle", ""))
+        component_i18n = course_meta_translations(normalized.get("component", ""))
+        department_i18n = course_meta_translations(department)
         with SessionLocal() as session:
             row = Course(
                 name=course_name,
+                name_kk=normalized.get("name_kk") or course_i18n["kk"],
+                name_en=normalized.get("name_en") or course_i18n["en"],
                 code=course_code,
                 credits=normalized.get("credits"),
                 hours=normalized.get("hours"),
                 description=normalized.get("description", ""),
                 year=normalized.get("year", normalized.get("study_year")),
                 semester=normalized.get("semester"),
-                department=normalized.get("department", ""),
+                department=department,
                 instructor_id=normalized.get("instructor_id"),
                 instructor_name=normalized.get("instructor_name", ""),
-                programme=normalized.get("programme", normalized.get("programme_name", "")),
+                programme=programme,
+                programme_kk=normalized.get("programme_kk") or programme_i18n["kk"],
+                programme_en=normalized.get("programme_en") or programme_i18n["en"],
                 module_type=normalized.get("module_type", ""),
                 module_name=normalized.get("module_name", ""),
                 cycle=normalized.get("cycle", ""),
+                cycle_kk=normalized.get("cycle_kk") or cycle_i18n["kk"],
+                cycle_en=normalized.get("cycle_en") or cycle_i18n["en"],
                 component=normalized.get("component", ""),
+                component_kk=normalized.get("component_kk") or component_i18n["kk"],
+                component_en=normalized.get("component_en") or component_i18n["en"],
+                department_kk=normalized.get("department_kk") or department_i18n["kk"],
+                department_en=normalized.get("department_en") or department_i18n["en"],
                 language=normalized.get("language", ""),
                 academic_year=normalized.get("academic_year", ""),
                 entry_year=normalized.get("entry_year", ""),
@@ -1177,11 +1237,14 @@ def create_collection_item(connection, collection, payload):
             ],
         )
         lesson_type = normalize_lesson_type(normalized.get("lesson_type"))
+        component_i18n = discipline_name_translations(normalized.get("course_name", ""))
         with SessionLocal() as session:
             row = CourseComponent(
                 course_id=normalized.get("course_id"),
                 course_code=normalized.get("course_code", ""),
                 course_name=normalized.get("course_name", ""),
+                course_name_kk=normalized.get("course_name_kk") or component_i18n["kk"],
+                course_name_en=normalized.get("course_name_en") or component_i18n["en"],
                 programme=normalized.get("programme", ""),
                 study_year=normalized.get("study_year"),
                 academic_period=normalized.get("academic_period"),
@@ -1206,12 +1269,20 @@ def create_collection_item(connection, collection, payload):
         normalized = normalize_number_fields(payload, ["weekly_hours_limit", "max_hours_per_week"])
         validate_teacher_email(normalized.get("email"))
         teaching_languages = ",".join(normalize_teaching_languages(normalized.get("teaching_languages")))
+        name_i18n = teacher_name_translations(
+            normalized.get("name"),
+            normalized.get("name_kk"),
+            normalized.get("name_en"),
+        )
         with SessionLocal() as session:
             row = Teacher(
                 name=normalized.get("name"),
+                name_kk=name_i18n["kk"],
+                name_en=name_i18n["en"],
                 email=normalized.get("email"),
                 phone=normalized.get("phone", ""),
-                subject_taught=normalized.get("subject_taught", normalized.get("department", normalized.get("specialization", ""))),
+                department=normalized.get("department", ""),
+                subject_taught=normalized.get("subject_taught", normalized.get("specialization", "")),
                 weekly_hours_limit=normalized.get("weekly_hours_limit", normalized.get("max_hours_per_week")),
                 teaching_languages=teaching_languages,
                 name_normalized=normalize_teacher_name(normalized.get("name")),
@@ -1222,8 +1293,11 @@ def create_collection_item(connection, collection, payload):
             teacher = {
                 "id": row.id,
                 "name": row.name,
+                "name_kk": row.name_kk,
+                "name_en": row.name_en,
                 "email": row.email,
                 "phone": row.phone,
+                "department": row.department,
                 "subject_taught": row.subject_taught,
                 "weekly_hours_limit": row.weekly_hours_limit,
                 "teaching_languages": row.teaching_languages,
@@ -1237,6 +1311,7 @@ def create_collection_item(connection, collection, payload):
                 number=normalized.get("number"),
                 capacity=normalized.get("capacity"),
                 type=normalized.get("type", ""),
+                building=str(normalized.get("building", "") or ""),
                 equipment=normalized.get("equipment", ""),
                 programme=normalized.get("programme", normalized.get("department", "")),
                 available=1 if normalized.get("available", normalized.get("is_available", 1)) else 0,
@@ -1414,25 +1489,42 @@ def update_collection_item(connection, collection, item_id, payload):
         normalized = normalize_number_fields(payload, ["credits", "hours", "year", "study_year", "semester", "instructor_id", "requires_computers"])
         course_name = normalized.get("name")
         course_code = normalized.get("code") or course_name
+        course_i18n = discipline_name_translations(course_name)
+        programme = normalized.get("programme", normalized.get("programme_name", ""))
+        department = normalized.get("department", "")
+        programme_i18n = course_meta_translations(programme)
+        cycle_i18n = course_meta_translations(normalized.get("cycle", ""))
+        component_i18n = course_meta_translations(normalized.get("component", ""))
+        department_i18n = course_meta_translations(department)
         with SessionLocal() as session:
             row = session.get(Course, item_id)
             if row is None:
                 raise ApiError(404, "record_not_found", "Запись не найдена")
             row.name = course_name
+            row.name_kk = normalized.get("name_kk") or course_i18n["kk"]
+            row.name_en = normalized.get("name_en") or course_i18n["en"]
             row.code = course_code
             row.credits = normalized.get("credits")
             row.hours = normalized.get("hours")
             row.description = normalized.get("description", "")
             row.year = normalized.get("year", normalized.get("study_year"))
             row.semester = normalized.get("semester")
-            row.department = normalized.get("department", "")
+            row.department = department
             row.instructor_id = normalized.get("instructor_id")
             row.instructor_name = normalized.get("instructor_name", "")
-            row.programme = normalized.get("programme", normalized.get("programme_name", ""))
+            row.programme = programme
+            row.programme_kk = normalized.get("programme_kk") or programme_i18n["kk"]
+            row.programme_en = normalized.get("programme_en") or programme_i18n["en"]
             row.module_type = normalized.get("module_type", "")
             row.module_name = normalized.get("module_name", "")
             row.cycle = normalized.get("cycle", "")
+            row.cycle_kk = normalized.get("cycle_kk") or cycle_i18n["kk"]
+            row.cycle_en = normalized.get("cycle_en") or cycle_i18n["en"]
             row.component = normalized.get("component", "")
+            row.component_kk = normalized.get("component_kk") or component_i18n["kk"]
+            row.component_en = normalized.get("component_en") or component_i18n["en"]
+            row.department_kk = normalized.get("department_kk") or department_i18n["kk"]
+            row.department_en = normalized.get("department_en") or department_i18n["en"]
             row.language = normalized.get("language", "")
             row.academic_year = normalized.get("academic_year", "")
             row.entry_year = normalized.get("entry_year", "")
@@ -1446,14 +1538,22 @@ def update_collection_item(connection, collection, item_id, payload):
         normalized = normalize_number_fields(payload, ["weekly_hours_limit", "max_hours_per_week"])
         validate_teacher_email(normalized.get("email"))
         teaching_languages = ",".join(normalize_teaching_languages(normalized.get("teaching_languages")))
+        name_i18n = teacher_name_translations(
+            normalized.get("name"),
+            normalized.get("name_kk"),
+            normalized.get("name_en"),
+        )
         with SessionLocal() as session:
             row = session.get(Teacher, item_id)
             if row is None:
                 raise ApiError(404, "record_not_found", "Запись не найдена")
             row.name = normalized.get("name")
+            row.name_kk = name_i18n["kk"]
+            row.name_en = name_i18n["en"]
             row.email = normalized.get("email")
             row.phone = normalized.get("phone", "")
-            row.subject_taught = normalized.get("subject_taught", normalized.get("department", normalized.get("specialization", "")))
+            row.department = normalized.get("department", "")
+            row.subject_taught = normalized.get("subject_taught", normalized.get("specialization", ""))
             row.weekly_hours_limit = normalized.get("weekly_hours_limit", normalized.get("max_hours_per_week"))
             row.teaching_languages = teaching_languages
             row.name_normalized = normalize_teacher_name(normalized.get("name"))
@@ -1462,8 +1562,11 @@ def update_collection_item(connection, collection, item_id, payload):
             teacher = {
                 "id": row.id,
                 "name": row.name,
+                "name_kk": row.name_kk,
+                "name_en": row.name_en,
                 "email": row.email,
                 "phone": row.phone,
+                "department": row.department,
                 "subject_taught": row.subject_taught,
                 "weekly_hours_limit": row.weekly_hours_limit,
                 "teaching_languages": row.teaching_languages,
@@ -1479,6 +1582,7 @@ def update_collection_item(connection, collection, item_id, payload):
             row.number = normalized.get("number")
             row.capacity = normalized.get("capacity")
             row.type = normalized.get("type", "")
+            row.building = str(normalized.get("building", "") or "")
             row.equipment = normalized.get("equipment", "")
             row.programme = normalized.get("programme", normalized.get("department", ""))
             row.available = 1 if normalized.get("available", normalized.get("is_available", 1)) else 0
