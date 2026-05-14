@@ -1,0 +1,869 @@
+{
+  "faculties": [
+    {
+      "value": "Агрономический факультет",
+      "labels": {
+        "ru": "Агрономический факультет",
+        "kk": "Агрономия факультеті",
+        "en": "Faculty of Agronomy"
+      }
+    },
+    {
+      "value": "Факультет лесного хозяйства, дикой природы и окружающей среды",
+      "labels": {
+        "ru": "Факультет лесного хозяйства, дикой природы и окружающей среды",
+        "kk": "Орман шаруашылығы, жабайы табиғат және қоршаған орта факультеті",
+        "en": "Faculty of Forestry, Wildlife and Environment"
+      }
+    },
+    {
+      "value": "Факультет управления земельными ресурсами, архитектуры и дизайна",
+      "labels": {
+        "ru": "Факультет управления земельными ресурсами, архитектуры и дизайна",
+        "kk": "Жер ресурстарын басқару, сәулет және дизайн факультеті",
+        "en": "Faculty of Land Resources Management, Architecture and Design"
+      }
+    },
+    {
+      "value": "Факультет ветеринарии и технологии животноводства",
+      "labels": {
+        "ru": "Факультет ветеринарии и технологии животноводства",
+        "kk": "Ветеринария және мал шаруашылығы технологиясы факультеті",
+        "en": "Faculty of Veterinary Medicine and Animal Husbandry Technology"
+      }
+    },
+    {
+      "value": "Факультет/Институт бизнеса и цифровых технологий",
+      "labels": {
+        "ru": "Факультет/Институт бизнеса и цифровых технологий",
+        "kk": "Бизнес және цифрлық технологиялар факультеті/институты",
+        "en": "Faculty/Institute of Business and Digital Technologies"
+      }
+    },
+    {
+      "value": "Технический факультет",
+      "labels": {
+        "ru": "Технический факультет",
+        "kk": "Техникалық факультет",
+        "en": "Technical Faculty"
+      }
+    },
+    {
+      "value": "Экономический факультет",
+      "labels": {
+        "ru": "Экономический факультет",
+        "kk": "Экономика факультеті",
+        "en": "Faculty of Economics"
+      }
+    },
+    {
+      "value": "Энергетический факультет",
+      "labels": {
+        "ru": "Энергетический факультет",
+        "kk": "Энергетика факультеті",
+        "en": "Faculty of Energy"
+      }
+    }
+  ],
+  "studyLanguages": [
+    {
+      "value": "ru",
+      "labelKey": "languageRussian"
+    },
+    {
+      "value": "kk",
+      "labelKey": "languageKazakh"
+    }
+  ],
+  "educationGroups": [
+    {
+      "value": "b031",
+      "label": "Мода, дизайн (B031)",
+      "programmes": [
+        {
+          "code": "6B02101",
+          "label": "Дизайн"
+        }
+      ]
+    },
+    {
+      "value": "b044",
+      "label": "Менеджмент и управление (B044)",
+      "programmes": [
+        {
+          "code": "6B04103",
+          "label": "Управление бизнесом и предпринимательство"
+        },
+        {
+          "code": "6B04105",
+          "label": "Экономика современного бизнеса"
+        }
+      ]
+    },
+    {
+      "value": "b045",
+      "label": "Аудит и налогообложение (B045)",
+      "programmes": [
+        {
+          "code": "6B04106",
+          "label": "Бухгалтерский учет, аудит и налоговый консалтинг"
+        }
+      ]
+    },
+    {
+      "value": "b046",
+      "label": "Финансы, экономика, банковское и страховое дело (B046)",
+      "programmes": [
+        {
+          "code": "6B04102",
+          "label": "Финансовая аналитика"
+        }
+      ]
+    },
+    {
+      "value": "b047",
+      "label": "Маркетинг и реклама (B047)",
+      "programmes": [
+        {
+          "code": "6B04104",
+          "label": "Digital Маркетинг"
+        }
+      ]
+    },
+    {
+      "value": "b050",
+      "label": "Биологические и смежные науки (B050)",
+      "programmes": [
+        {
+          "code": "6B05101",
+          "label": "Сельскохозяйственная биотехнология"
+        },
+        {
+          "code": "6B05102",
+          "label": "Биотехнология"
+        },
+        {
+          "code": "6B05103",
+          "label": "Биология"
+        }
+      ]
+    },
+    {
+      "value": "b051",
+      "label": "Окружающая среда (B051)",
+      "programmes": [
+        {
+          "code": "6B05201",
+          "label": "Природопользование"
+        },
+        {
+          "code": "6B05202",
+          "label": "Агроэкология"
+        }
+      ]
+    },
+    {
+      "value": "b057",
+      "label": "Информационные технологии (B057)",
+      "programmes": [
+        {
+          "code": "6B06101",
+          "label": "Программная инженерия"
+        },
+        {
+          "code": "6B06103",
+          "label": "Компьютерная инженерия"
+        },
+        {
+          "code": "6B06102",
+          "label": "Бизнес-информатика"
+        },
+        {
+          "code": "6B06115",
+          "label": "Цифровые агросистемы и комплексы"
+        },
+        {
+          "code": "6B06104",
+          "label": "DevOps инжиниринг"
+        }
+      ]
+    },
+    {
+      "value": "b059",
+      "label": "Коммуникации и коммуникационные технологии (B059)",
+      "programmes": [
+        {
+          "code": "6B06201",
+          "label": "Телекоммуникационные сети и системы"
+        },
+        {
+          "code": "6B06202",
+          "label": "Радиотехника и электроника"
+        }
+      ]
+    },
+    {
+      "value": "b062",
+      "label": "Электротехника и энергетика (B062)",
+      "programmes": [
+        {
+          "code": "6B07101",
+          "label": "Теплоэнергетическая инженерия"
+        },
+        {
+          "code": "6B07102",
+          "label": "Электроэнергетика"
+        },
+        {
+          "code": "6B07103",
+          "label": "Электротехническая инженерия"
+        },
+        {
+          "code": "6B07107",
+          "label": "Теплогазоснабжение, вентиляция и экоинженерия в сельском хозяйстве"
+        }
+      ]
+    },
+    {
+      "value": "b063",
+      "label": "Электротехника и автоматизация (B063)",
+      "programmes": [
+        {
+          "code": "6B07108",
+          "label": "Автоматизация и энергетическая эффективность процессов и производств"
+        }
+      ]
+    },
+    {
+      "value": "b064",
+      "label": "Механика и металлообработка (B064)",
+      "programmes": [
+        {
+          "code": "6B07104",
+          "label": "Технологические машины и оборудование"
+        },
+        {
+          "code": "6B07105",
+          "label": "Механическая инженерия"
+        }
+      ]
+    },
+    {
+      "value": "b065",
+      "label": "Транспортная техника и технологии / Автотранспортные средства (B065)",
+      "programmes": [
+        {
+          "code": "6B07106",
+          "label": "Транспорт, транспортная техника и технологии"
+        },
+        {
+          "code": "6B07111",
+          "label": "Технический сервис автотранспортных средств (мастер производственного обучения)"
+        }
+      ]
+    },
+    {
+      "value": "b068",
+      "label": "Производство продуктов питания (B068)",
+      "programmes": [
+        {
+          "code": "6B07201",
+          "label": "Технология пищевых продуктов"
+        }
+      ]
+    },
+    {
+      "value": "b073",
+      "label": "Архитектура (B073)",
+      "programmes": [
+        {
+          "code": "6B07301",
+          "label": "Архитектура"
+        }
+      ]
+    },
+    {
+      "value": "b074",
+      "label": "Градостроительство, строительные работы и гражданское строительство (B074)",
+      "programmes": [
+        {
+          "code": "6B07302",
+          "label": "Геодезия и картография"
+        },
+        {
+          "code": "6B07307",
+          "label": "Геодезические работы в строительстве"
+        },
+        {
+          "code": "6B07306",
+          "label": "Геопространственная цифровая геодезия"
+        }
+      ]
+    },
+    {
+      "value": "b075",
+      "label": "Кадастр и землеустройство (B075)",
+      "programmes": [
+        {
+          "code": "6B07303",
+          "label": "Кадастр"
+        },
+        {
+          "code": "6B07304",
+          "label": "Землеустройство"
+        }
+      ]
+    },
+    {
+      "value": "b076",
+      "label": "Стандартизация, сертификация и метрология (B076)",
+      "programmes": [
+        {
+          "code": "6B07501",
+          "label": "Стандартизация, сертификация и метрология"
+        }
+      ]
+    },
+    {
+      "value": "b077",
+      "label": "Растениеводство (B077)",
+      "programmes": [
+        {
+          "code": "6B08101",
+          "label": "Агрономия"
+        },
+        {
+          "code": "6B08102",
+          "label": "Селекция и семеноводство"
+        },
+        {
+          "code": "6B08103",
+          "label": "Почвоведение и агрохимия"
+        },
+        {
+          "code": "6B08104",
+          "label": "Фитосанитарная безопасность"
+        },
+        {
+          "code": "6B08105",
+          "label": "Передовая агрономическая наука"
+        },
+        {
+          "code": "6B08106",
+          "label": "Агротехнология"
+        }
+      ]
+    },
+    {
+      "value": "b078",
+      "label": "Животноводство (B078)",
+      "programmes": [
+        {
+          "code": "6B08201",
+          "label": "Животноводство"
+        },
+        {
+          "code": "6B08203",
+          "label": "Птицеводство"
+        },
+        {
+          "code": "6B08204",
+          "label": "Зоотехния"
+        }
+      ]
+    },
+    {
+      "value": "b079",
+      "label": "Лесное хозяйство (B079)",
+      "programmes": [
+        {
+          "code": "6B08301",
+          "label": "Охотоведение и звероводство"
+        },
+        {
+          "code": "6B08302",
+          "label": "Ландшафтный дизайн и озеленение"
+        },
+        {
+          "code": "6B08303",
+          "label": "Защитное лесоразведение"
+        },
+        {
+          "code": "6B08304",
+          "label": "Лесные ресурсы и лесоводство"
+        }
+      ]
+    },
+    {
+      "value": "b080",
+      "label": "Рыбное хозяйство (B080)",
+      "programmes": [
+        {
+          "code": "6B08401",
+          "label": "Аквакультура и водные биоресурсы"
+        }
+      ]
+    },
+    {
+      "value": "b082",
+      "label": "Водные ресурсы и водопользование (B082)",
+      "programmes": []
+    },
+    {
+      "value": "b083",
+      "label": "Ветеринария (B083)",
+      "programmes": [
+        {
+          "code": "6B09101",
+          "label": "Ветеринарная безопасность"
+        },
+        {
+          "code": "6B09102",
+          "label": "Пищевая безопасность"
+        },
+        {
+          "code": "6B09103",
+          "label": "Ветеринария"
+        }
+      ]
+    },
+    {
+      "value": "b095",
+      "label": "Транспортные услуги (B095)",
+      "programmes": [
+        {
+          "code": "6B11301",
+          "label": "Логистика на транспорте"
+        },
+        {
+          "code": "6B11302",
+          "label": "Организация и безопасность дорожного движения"
+        }
+      ]
+    },
+    {
+      "value": "b162",
+      "label": "Теплоэнергетика (B162)",
+      "programmes": [
+        {
+          "code": "6B07110",
+          "label": "Теплоэнергетическая инженерия"
+        }
+      ]
+    },
+    {
+      "value": "b174",
+      "label": "Геодезия и картография (B174)",
+      "programmes": [
+        {
+          "code": "6B07305",
+          "label": "Геодезия и картография"
+        }
+      ]
+    },
+    {
+      "value": "b183",
+      "label": "Агроинженерия (B183)",
+      "programmes": [
+        {
+          "code": "6B08701",
+          "label": "Агроинженерия"
+        },
+        {
+          "code": "6B08702",
+          "label": "Энергообеспечение и автоматизация сельского хозяйства"
+        }
+      ]
+    }
+  ],
+  "educationGroupLabels": {
+    "b031": {
+      "kk": "Сән, дизайн (B031)",
+      "en": "Fashion, Design (B031)"
+    },
+    "b044": {
+      "kk": "Менеджмент және басқару (B044)",
+      "en": "Management and Administration (B044)"
+    },
+    "b045": {
+      "kk": "Аудит және салық салу (B045)",
+      "en": "Audit and Taxation (B045)"
+    },
+    "b046": {
+      "kk": "Қаржы, экономика, банк және сақтандыру ісі (B046)",
+      "en": "Finance, Economics, Banking and Insurance (B046)"
+    },
+    "b047": {
+      "kk": "Маркетинг және жарнама (B047)",
+      "en": "Marketing and Advertising (B047)"
+    },
+    "b050": {
+      "kk": "Биологиялық және сабақтас ғылымдар (B050)",
+      "en": "Biological and Related Sciences (B050)"
+    },
+    "b051": {
+      "kk": "Қоршаған орта (B051)",
+      "en": "Environment (B051)"
+    },
+    "b057": {
+      "kk": "Ақпараттық технологиялар (B057)",
+      "en": "Information Technologies (B057)"
+    },
+    "b059": {
+      "kk": "Коммуникациялар және коммуникациялық технологиялар (B059)",
+      "en": "Communications and Communication Technologies (B059)"
+    },
+    "b062": {
+      "kk": "Электротехника және энергетика (B062)",
+      "en": "Electrical Engineering and Energy (B062)"
+    },
+    "b063": {
+      "kk": "Электротехника және автоматтандыру (B063)",
+      "en": "Electrical Engineering and Automation (B063)"
+    },
+    "b064": {
+      "kk": "Механика және металл өңдеу (B064)",
+      "en": "Mechanics and Metalworking (B064)"
+    },
+    "b065": {
+      "kk": "Көлік техникасы және технологиялары / Автокөлік құралдары (B065)",
+      "en": "Transport Equipment and Technologies / Motor Vehicles (B065)"
+    },
+    "b068": {
+      "kk": "Азық-түлік өнімдерін өндіру (B068)",
+      "en": "Food Production (B068)"
+    },
+    "b073": {
+      "kk": "Сәулет (B073)",
+      "en": "Architecture (B073)"
+    },
+    "b074": {
+      "kk": "Қала құрылысы, құрылыс жұмыстары және азаматтық құрылыс (B074)",
+      "en": "Urban Planning, Construction Works and Civil Engineering (B074)"
+    },
+    "b075": {
+      "kk": "Кадастр және жерге орналастыру (B075)",
+      "en": "Cadastre and Land Management (B075)"
+    },
+    "b076": {
+      "kk": "Стандарттау, сертификаттау және метрология (B076)",
+      "en": "Standardization, Certification and Metrology (B076)"
+    },
+    "b077": {
+      "kk": "Өсімдік шаруашылығы (B077)",
+      "en": "Crop Production (B077)"
+    },
+    "b078": {
+      "kk": "Мал шаруашылығы (B078)",
+      "en": "Animal Husbandry (B078)"
+    },
+    "b079": {
+      "kk": "Орман шаруашылығы (B079)",
+      "en": "Forestry (B079)"
+    },
+    "b080": {
+      "kk": "Балық шаруашылығы (B080)",
+      "en": "Fisheries (B080)"
+    },
+    "b082": {
+      "kk": "Су ресурстары және суды пайдалану (B082)",
+      "en": "Water Resources and Water Use (B082)"
+    },
+    "b083": {
+      "kk": "Ветеринария (B083)",
+      "en": "Veterinary Medicine (B083)"
+    },
+    "b095": {
+      "kk": "Көлік қызметтері (B095)",
+      "en": "Transport Services (B095)"
+    },
+    "b162": {
+      "kk": "Жылу энергетикасы (B162)",
+      "en": "Thermal Power Engineering (B162)"
+    },
+    "b174": {
+      "kk": "Геодезия және картография (B174)",
+      "en": "Geodesy and Cartography (B174)"
+    },
+    "b183": {
+      "kk": "Агроинженерия (B183)",
+      "en": "Agricultural Engineering (B183)"
+    }
+  },
+  "programmeLabels": {
+    "6B02101": {
+      "kk": "Дизайн",
+      "en": "Design"
+    },
+    "6B04102": {
+      "kk": "Қаржылық аналитика",
+      "en": "Financial Analytics"
+    },
+    "6B04103": {
+      "kk": "Бизнесті басқару және кәсіпкерлік",
+      "en": "Business Management and Entrepreneurship"
+    },
+    "6B04104": {
+      "kk": "Digital маркетинг",
+      "en": "Digital Marketing"
+    },
+    "6B04105": {
+      "kk": "Қазіргі бизнес экономикасы",
+      "en": "Economics of Modern Business"
+    },
+    "6B04106": {
+      "kk": "Бухгалтерлік есеп, аудит және салық консалтингі",
+      "en": "Accounting, Audit and Tax Consulting"
+    },
+    "6B05101": {
+      "kk": "Ауыл шаруашылығы биотехнологиясы",
+      "en": "Agricultural Biotechnology"
+    },
+    "6B05102": {
+      "kk": "Биотехнология",
+      "en": "Biotechnology"
+    },
+    "6B05103": {
+      "kk": "Биология",
+      "en": "Biology"
+    },
+    "6B05201": {
+      "kk": "Табиғатты пайдалану",
+      "en": "Environmental Management"
+    },
+    "6B05202": {
+      "kk": "Агроэкология",
+      "en": "Agroecology"
+    },
+    "6B06101": {
+      "kk": "Бағдарламалық инженерия",
+      "en": "Software Engineering"
+    },
+    "6B06102": {
+      "kk": "Бизнес-информатика",
+      "en": "Business Informatics"
+    },
+    "6B06103": {
+      "kk": "Компьютерлік инженерия",
+      "en": "Computer Engineering"
+    },
+    "6B06104": {
+      "kk": "DevOps инженериясы",
+      "en": "DevOps Engineering"
+    },
+    "6B06115": {
+      "kk": "Цифрлық агрожүйелер мен кешендер",
+      "en": "Digital Agro-Systems and Complexes"
+    },
+    "6B06201": {
+      "kk": "Телекоммуникациялық желілер мен жүйелер",
+      "en": "Telecommunication Networks and Systems"
+    },
+    "6B06202": {
+      "kk": "Радиотехника және электроника",
+      "en": "Radio Engineering and Electronics"
+    },
+    "6B07101": {
+      "kk": "Жылу энергетикалық инженерия",
+      "en": "Thermal Power Engineering"
+    },
+    "6B07102": {
+      "kk": "Электр энергетикасы",
+      "en": "Electric Power Engineering"
+    },
+    "6B07103": {
+      "kk": "Электротехникалық инженерия",
+      "en": "Electrical Engineering"
+    },
+    "6B07104": {
+      "kk": "Технологиялық машиналар мен жабдықтар",
+      "en": "Technological Machines and Equipment"
+    },
+    "6B07105": {
+      "kk": "Механикалық инженерия",
+      "en": "Mechanical Engineering"
+    },
+    "6B07106": {
+      "kk": "Көлік, көлік техникасы және технологиялары",
+      "en": "Transport, Transport Equipment and Technologies"
+    },
+    "6B07107": {
+      "kk": "Ауыл шаруашылығындағы жылу-газбен жабдықтау, желдету және экоинженерия",
+      "en": "Heat and Gas Supply, Ventilation and Eco-Engineering in Agriculture"
+    },
+    "6B07108": {
+      "kk": "Процестер мен өндірістерді автоматтандыру және энергетикалық тиімділігі",
+      "en": "Automation and Energy Efficiency of Processes and Production"
+    },
+    "6B07110": {
+      "kk": "Жылу энергетикалық инженерия",
+      "en": "Thermal Power Engineering"
+    },
+    "6B07111": {
+      "kk": "Автокөлік құралдарының техникалық сервисі (өндірістік оқыту шебері)",
+      "en": "Technical Service of Motor Vehicles (Industrial Training Master)"
+    },
+    "6B07201": {
+      "kk": "Тағам өнімдерінің технологиясы",
+      "en": "Food Technology"
+    },
+    "6B07301": {
+      "kk": "Сәулет",
+      "en": "Architecture"
+    },
+    "6B07302": {
+      "kk": "Геодезия және картография",
+      "en": "Geodesy and Cartography"
+    },
+    "6B07303": {
+      "kk": "Кадастр",
+      "en": "Cadastre"
+    },
+    "6B07304": {
+      "kk": "Жерге орналастыру",
+      "en": "Land Management"
+    },
+    "6B07305": {
+      "kk": "Геодезия және картография",
+      "en": "Geodesy and Cartography"
+    },
+    "6B07306": {
+      "kk": "Геокеңістіктік цифрлық геодезия",
+      "en": "Geospatial Digital Geodesy"
+    },
+    "6B07307": {
+      "kk": "Құрылыстағы геодезиялық жұмыстар",
+      "en": "Geodetic Works in Construction"
+    },
+    "6B07501": {
+      "kk": "Стандарттау, сертификаттау және метрология",
+      "en": "Standardization, Certification and Metrology"
+    },
+    "6B08101": {
+      "kk": "Агрономия",
+      "en": "Agronomy"
+    },
+    "6B08102": {
+      "kk": "Селекция және тұқым шаруашылығы",
+      "en": "Selection and Seed Production"
+    },
+    "6B08103": {
+      "kk": "Топырақтану және агрохимия",
+      "en": "Soil Science and Agrochemistry"
+    },
+    "6B08104": {
+      "kk": "Фитосанитарлық қауіпсіздік",
+      "en": "Phytosanitary Safety"
+    },
+    "6B08105": {
+      "kk": "Озық агрономиялық ғылым",
+      "en": "Advanced Agronomic Science"
+    },
+    "6B08106": {
+      "kk": "Агротехнология",
+      "en": "Agrotechnology"
+    },
+    "6B08201": {
+      "kk": "Мал шаруашылығы",
+      "en": "Animal Husbandry"
+    },
+    "6B08203": {
+      "kk": "Құс шаруашылығы",
+      "en": "Poultry Farming"
+    },
+    "6B08204": {
+      "kk": "Зоотехния",
+      "en": "Zootechnics"
+    },
+    "6B08301": {
+      "kk": "Аңшылықтану және аң өсіру",
+      "en": "Game Management and Fur Farming"
+    },
+    "6B08302": {
+      "kk": "Ландшафттық дизайн және көгалдандыру",
+      "en": "Landscape Design and Greening"
+    },
+    "6B08303": {
+      "kk": "Қорғаныш орман өсіру",
+      "en": "Protective Afforestation"
+    },
+    "6B08304": {
+      "kk": "Орман ресурстары және орман шаруашылығы",
+      "en": "Forest Resources and Forestry"
+    },
+    "6B08401": {
+      "kk": "Аквакультура және су биоресурстары",
+      "en": "Aquaculture and Aquatic Bioresources"
+    },
+    "6B08701": {
+      "kk": "Агроинженерия",
+      "en": "Agricultural Engineering"
+    },
+    "6B08702": {
+      "kk": "Ауыл шаруашылығын энергиямен қамтамасыз ету және автоматтандыру",
+      "en": "Energy Supply and Automation of Agriculture"
+    },
+    "6B09101": {
+      "kk": "Ветеринариялық қауіпсіздік",
+      "en": "Veterinary Safety"
+    },
+    "6B09102": {
+      "kk": "Тағам қауіпсіздігі",
+      "en": "Food Safety"
+    },
+    "6B09103": {
+      "kk": "Ветеринария",
+      "en": "Veterinary Medicine"
+    },
+    "6B11301": {
+      "kk": "Көліктегі логистика",
+      "en": "Transport Logistics"
+    },
+    "6B11302": {
+      "kk": "Жол қозғалысын ұйымдастыру және қауіпсіздігі",
+      "en": "Traffic Organization and Safety"
+    }
+  },
+  "roomProgrammes": [
+    {
+      "value": "kazakhstan_history_department",
+      "labels": {
+        "kk": "Қазақстан тарихы кафедрасы (7)",
+        "ru": "Кафедра истории Казахстана (7)",
+        "en": "Department of History of Kazakhstan (7)"
+      }
+    },
+    {
+      "value": "computer_sciences_department",
+      "labels": {
+        "kk": "Компьютерлік ғылымдар кафедрасы (5)",
+        "ru": "Кафедра компьютерных наук (5)",
+        "en": "Department of Computer Sciences (5)"
+      }
+    },
+    {
+      "value": "information_systems_department",
+      "labels": {
+        "kk": "Ақпараттық жүйелер кафедрасы (4)",
+        "ru": "Кафедра информационных систем (4)",
+        "en": "Department of Information Systems (4)"
+      }
+    },
+    {
+      "value": "physics_chemistry_department",
+      "labels": {
+        "kk": "Физика және химия кафедрасы (3)",
+        "ru": "Кафедра физики и химии (3)",
+        "en": "Department of Physics and Chemistry (3)"
+      }
+    },
+    {
+      "value": "humanitarian_pedagogical_institute",
+      "labels": {
+        "kk": "Гуманитарлық және педагогикалық ғылымдар институты (6)",
+        "ru": "Институт гуманитарных и педагогических наук (6)",
+        "en": "Institute of Humanities and Pedagogical Sciences (6)"
+      }
+    }
+  ]
+}

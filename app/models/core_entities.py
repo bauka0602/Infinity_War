@@ -236,3 +236,75 @@ class Notification(Base):
     is_read: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[str] = mapped_column(Text, nullable=False)
     read_at: Mapped[str | None] = mapped_column(Text)
+
+
+class ReferenceDataset(Base):
+    __tablename__ = "reference_datasets"
+
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    data_json: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class ReferenceFaculty(Base):
+    __tablename__ = "reference_faculties"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    label_ru: Mapped[str] = mapped_column(Text, nullable=False)
+    label_kk: Mapped[str | None] = mapped_column(Text)
+    label_en: Mapped[str | None] = mapped_column(Text)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_active: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_at: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class ReferenceStudyLanguage(Base):
+    __tablename__ = "reference_study_languages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    label_key: Mapped[str] = mapped_column(Text, nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_active: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_at: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class ReferenceEducationGroup(Base):
+    __tablename__ = "reference_education_groups"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    code: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    label_ru: Mapped[str] = mapped_column(Text, nullable=False)
+    label_kk: Mapped[str | None] = mapped_column(Text)
+    label_en: Mapped[str | None] = mapped_column(Text)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_active: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_at: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class ReferenceEducationalProgramme(Base):
+    __tablename__ = "reference_educational_programmes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    code: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    education_group_code: Mapped[str] = mapped_column(Text, nullable=False)
+    label_ru: Mapped[str] = mapped_column(Text, nullable=False)
+    label_kk: Mapped[str | None] = mapped_column(Text)
+    label_en: Mapped[str | None] = mapped_column(Text)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_active: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_at: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class ReferenceRoomProgramme(Base):
+    __tablename__ = "reference_room_programmes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    label_ru: Mapped[str] = mapped_column(Text, nullable=False)
+    label_kk: Mapped[str | None] = mapped_column(Text)
+    label_en: Mapped[str | None] = mapped_column(Text)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_active: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_at: Mapped[str] = mapped_column(Text, nullable=False)

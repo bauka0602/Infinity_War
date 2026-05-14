@@ -7,7 +7,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
 from .common import json_error
-from .routers import admin, auth, collections, imports, notifications, public, schedules, system, teacher_preferences
+from .routers import admin, auth, collections, imports, notifications, public, reference, schedules, system, teacher_preferences
 from ..core.config import ALLOWED_ORIGINS
 from ..core.errors import ApiError
 from ..core.monitoring import capture_exception, init_monitoring, instrument_fastapi
@@ -62,6 +62,7 @@ def create_app():
         auth,
         notifications,
         teacher_preferences,
+        reference,
         public,
         imports,
         admin,

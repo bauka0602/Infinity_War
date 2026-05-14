@@ -48,6 +48,17 @@ IUP_FACULTY_ALIASES = (
     ("энергетическ", "Энергетический факультет"),
 )
 
+IUP_FACULTY_LABEL_PATTERNS = (
+    "институт/факультет",
+    "факультет/институт",
+    "институт / факультет",
+    "факультет / институт",
+    "institute/faculty",
+    "faculty/institute",
+    "директор высшей школы(факультета)",
+    "директор высшей школы (факультета)",
+)
+
 ROP_PERIOD_COLUMN_GROUPS = (
     {
         "academic_period_column": 10,
@@ -582,10 +593,56 @@ def _normalise_iup_faculty(value):
     return text
 
 
+def _extract_iup_faculty_from_label_line(line):
+    text = re.sub(r"\s+", " ", str(line or "").replace("\\", "/")).strip(" :-")
+    normalized = text.lower()
+    for label in IUP_FACULTY_LABEL_PATTERNS:
+        label_index = normalized.find(label)
+        if label_index < 0:
+            continue
+        value = text[label_index + len(label) :].strip(" :-")
+        if value:
+            return _normalise_iup_faculty(value)
+    return ""
+
+
 def _extract_iup_faculty(lines):
-    for line in lines[:40]:
+    header_lines = lines[:40]
+    for index, line in enumerate(header_lines):
         normalized = line.lower()
-        if "университет" in normalized or "подпись" in normalized or "печать" in normalized:
+        if (
+            "университет" in normalized
+            or "агротехнический" in normalized
+            or "агротехникалық" in normalized
+            or "подпись" in normalized
+            or "печать" in normalized
+        ):
+            continue
+        faculty = _extract_iup_faculty_from_label_line(line)
+        if faculty:
+            return faculty
+        if any(label in normalized for label in IUP_FACULTY_LABEL_PATTERNS):
+            for next_line in header_lines[index + 1 : index + 4]:
+                next_normalized = next_line.lower()
+                if (
+                    next_line.strip()
+                    and "университет" not in next_normalized
+                    and "агротехнический" not in next_normalized
+                    and "агротехникалық" not in next_normalized
+                    and "подпись" not in next_normalized
+                    and "печать" not in next_normalized
+                ):
+                    return _normalise_iup_faculty(next_line)
+
+    for line in header_lines:
+        normalized = line.lower()
+        if (
+            "университет" in normalized
+            or "агротехнический" in normalized
+            or "агротехникалық" in normalized
+            or "подпись" in normalized
+            or "печать" in normalized
+        ):
             continue
         if any(marker in normalized for marker, _faculty in IUP_FACULTY_ALIASES):
             return _normalise_iup_faculty(line)

@@ -21,6 +21,7 @@ from ..models import (
     User,
 )
 from ..teachers.utils import build_teacher_name_signature, normalize_teacher_name
+from ..reference.service import ensure_reference_datasets, ensure_reference_tables
 
 
 def _seed_user(row):
@@ -169,6 +170,8 @@ def ensure_database():
 
     with SessionLocal() as session:
         has_application_data = _application_row_count(session) > 0
+    ensure_reference_datasets()
+    ensure_reference_tables()
     if has_application_data:
         return
 

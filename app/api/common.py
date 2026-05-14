@@ -2,6 +2,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from ..auth.service import require_auth_user
+from ..core.errors import ApiError
 
 COLLECTION_ALIASES = {
     "disciplines": "courses",
